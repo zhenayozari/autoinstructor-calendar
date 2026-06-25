@@ -58,6 +58,8 @@ type Booking = {
   created_at: string;
 };
 
+type QuickActionType = "slot" | "day" | "copy-day" | "copy-week";
+
 export function AdminScheduleWorkspace({
   instructors,
   lessonTypes,
@@ -68,6 +70,8 @@ export function AdminScheduleWorkspace({
   initialInstructorId,
   canSelectInstructor,
   adminEnabled,
+  initialSlotDate,
+  initialOpenSlotForm = false,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
@@ -78,12 +82,34 @@ export function AdminScheduleWorkspace({
   initialInstructorId: string;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  initialSlotDate?: string;
+  initialOpenSlotForm?: boolean;
 }) {
   const [instructorId, setInstructorId] = useState(initialInstructorId);
   const [weekDate, setWeekDate] = useState(defaultWeekDate);
+  const [slotDefaultDate, setSlotDefaultDate] = useState<string | null>(
+    initialSlotDate ?? null,
+  );
+  const [slotRequestKey, setSlotRequestKey] = useState(
+    initialOpenSlotForm ? 1 : 0,
+  );
+  const [activeQuickAction, setActiveQuickAction] =
+    useState<QuickActionType | null>(initialOpenSlotForm ? "slot" : null);
   const selectedInstructor = instructors.find(
     (instructor) => instructor.id === instructorId,
   );
+
+  function handleCreateSlotForDate(date: string) {
+    setSlotDefaultDate(date);
+    setSlotRequestKey((current) => current + 1);
+    setActiveQuickAction("slot");
+
+    window.setTimeout(() => {
+      document
+        .getElementById("schedule-quick-actions")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
 
   return (
     <div className="space-y-4 sm:space-y-5">
@@ -122,25 +148,32 @@ export function AdminScheduleWorkspace({
             onInstructorChange={setInstructorId}
             canSelectInstructor={canSelectInstructor}
             adminEnabled={adminEnabled}
+            onCreateSlotForDate={handleCreateSlotForDate}
           />
         </CardContent>
       </Card>
 
       {instructorId ? (
         <>
-          <AdminQuickActions
-            instructors={instructors.map(({ id, name }) => ({ id, name }))}
-            lessonTypes={lessonTypes
-              .filter((lessonType) => lessonType.is_active)
-              .map(({ id, name, kind, default_duration_minutes }) => ({
-                id,
-                name,
-                kind,
-                default_duration_minutes,
-              }))}
-            selectedInstructorId={instructorId}
-            adminEnabled={adminEnabled}
-          />
+          <div id="schedule-quick-actions" className="scroll-mt-4">
+            <AdminQuickActions
+              instructors={instructors.map(({ id, name }) => ({ id, name }))}
+              lessonTypes={lessonTypes
+                .filter((lessonType) => lessonType.is_active)
+                .map(({ id, name, kind, default_duration_minutes }) => ({
+                  id,
+                  name,
+                  kind,
+                  default_duration_minutes,
+                }))}
+              selectedInstructorId={instructorId}
+              adminEnabled={adminEnabled}
+              slotDefaultDate={slotDefaultDate}
+              slotRequestKey={slotRequestKey}
+              activeAction={activeQuickAction}
+              onActiveActionChange={setActiveQuickAction}
+            />
+          </div>
 
           <details className="group rounded-2xl border bg-white shadow-sm">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 sm:px-6">

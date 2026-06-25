@@ -34,6 +34,13 @@ import {
 
 export const dynamic = "force-dynamic";
 
+type AdminSchedulePageProps = {
+  searchParams?: Promise<{
+    create?: string | string[];
+    date?: string | string[];
+  }>;
+};
+
 type Instructor = {
   id: string;
   name: string;
@@ -111,7 +118,21 @@ function formatDateTime(value: string, timezone: string) {
   }).format(new Date(value));
 }
 
-export default async function AdminSchedulePage() {
+function getRoleLabel(role: string) {
+  if (role === "owner") return "Владелец";
+  if (role === "admin") return "Администратор";
+  if (role === "instructor") return "Инструктор";
+  return role;
+}
+
+export default async function AdminSchedulePage({
+  searchParams,
+}: AdminSchedulePageProps) {
+  const params = (await searchParams) ?? {};
+  const createParam = Array.isArray(params.create)
+    ? params.create[0]
+    : params.create;
+  const dateParam = Array.isArray(params.date) ? params.date[0] : params.date;
   const membership = await requireActiveOrganizationMember();
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
@@ -235,7 +256,7 @@ export default async function AdminSchedulePage() {
 
             <div className="min-w-0 rounded-full border bg-zinc-50 px-3 py-2 text-right text-[11px] leading-4 text-zinc-500 sm:text-xs">
               <span className="block font-semibold text-zinc-900">
-                {membership.role}
+                {getRoleLabel(membership.role)}
               </span>
               <span className="block max-w-[150px] truncate sm:max-w-[240px]">
                 {membership.user.email}
@@ -274,7 +295,7 @@ export default async function AdminSchedulePage() {
               render={<Link href="/schedule" />}
             >
               <ExternalLink />
-              Публичный календарь
+              Календарь
             </Button>
             <Button
               variant="outline"
@@ -350,6 +371,8 @@ export default async function AdminSchedulePage() {
           initialInstructorId={initialInstructorId}
           canSelectInstructor={membership.isOwnerOrAdmin}
           adminEnabled={adminEnabled}
+          initialOpenSlotForm={createParam === "slot"}
+          initialSlotDate={dateParam}
         />
 
         <details className="group rounded-2xl border bg-white shadow-sm">

@@ -2,7 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { verifyBookingAccessCode } from "@/lib/booking-access-code";
+import {
+  normalizeBookingAccessCode,
+  verifyBookingAccessCode,
+} from "@/lib/booking-access-code";
 import { createClient } from "@/lib/supabase/server";
 
 export type BookingActionState = {
@@ -79,7 +82,7 @@ export async function bookSlotAction(
     const adminSupabase = createAdminClient();
     const { data: settings, error: settingsError } = await adminSupabase
       .from("instructor_settings")
-      .select("booking_access_code_hash")
+      .select("booking_access_code, booking_access_code_hash")
       .eq("instructor_id", slot.instructor_id)
       .maybeSingle();
 
@@ -92,12 +95,22 @@ export async function bookSlotAction(
       };
     }
 
-    if (
-      settings?.booking_access_code_hash &&
-      !verifyBookingAccessCode(
+    const hasPlainAccessCode = Boolean(settings?.booking_access_code);
+    const isPlainAccessCodeValid =
+      hasPlainAccessCode &&
+      normalizeBookingAccessCode(accessCode) ===
+        normalizeBookingAccessCode(settings?.booking_access_code ?? "");
+    const isHashAccessCodeValid =
+      Boolean(settings?.booking_access_code_hash) &&
+      verifyBookingAccessCode(
         accessCode,
-        settings.booking_access_code_hash,
-      )
+        settings?.booking_access_code_hash ?? "",
+      );
+
+    if (
+      (hasPlainAccessCode || settings?.booking_access_code_hash) &&
+      !isPlainAccessCodeValid &&
+      !isHashAccessCodeValid
     ) {
       return {
         status: "error",

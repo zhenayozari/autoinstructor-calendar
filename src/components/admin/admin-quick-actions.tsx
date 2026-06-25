@@ -81,13 +81,24 @@ export function AdminQuickActions({
   lessonTypes,
   selectedInstructorId,
   adminEnabled,
+  slotDefaultDate,
+  slotRequestKey,
+  activeAction,
+  onActiveActionChange,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
   selectedInstructorId: string;
   adminEnabled: boolean;
+  slotDefaultDate?: string | null;
+  slotRequestKey?: number;
+  activeAction?: ActionType | null;
+  onActiveActionChange?: (action: ActionType | null) => void;
 }) {
-  const [activeAction, setActiveAction] = useState<ActionType | null>(null);
+  const [localActiveAction, setLocalActiveAction] =
+    useState<ActionType | null>(null);
+  const currentActiveAction = activeAction ?? localActiveAction;
+  const setCurrentActiveAction = onActiveActionChange ?? setLocalActiveAction;
   const orderedInstructors = useMemo(
     () => [
       ...instructors.filter(
@@ -113,7 +124,7 @@ export function AdminQuickActions({
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
           {actions.map((action) => {
             const Icon = action.icon;
-            const isActive = activeAction === action.id;
+            const isActive = currentActiveAction === action.id;
 
             return (
               <Button
@@ -122,8 +133,8 @@ export function AdminQuickActions({
                 variant={isActive ? "default" : "outline"}
                 className="h-auto min-h-12 justify-start px-3 py-2 text-left"
                 onClick={() =>
-                  setActiveAction((current) =>
-                    current === action.id ? null : action.id,
+                  setCurrentActiveAction(
+                    currentActiveAction === action.id ? null : action.id,
                   )
                 }
               >
@@ -141,11 +152,13 @@ export function AdminQuickActions({
           })}
         </div>
 
-        {activeAction && (
+        {currentActiveAction && (
           <div className="rounded-2xl border-2 border-zinc-300 bg-zinc-50/80 p-4 shadow-sm sm:p-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
-                <h3 className="font-semibold">{titles[activeAction]}</h3>
+                <h3 className="font-semibold">
+                  {titles[currentActiveAction]}
+                </h3>
                 <p className="text-muted-foreground mt-0.5 text-xs">
                   Форма относится к выбранному инструктору.
                 </p>
@@ -155,34 +168,36 @@ export function AdminQuickActions({
                 variant="ghost"
                 size="icon"
                 aria-label="Закрыть форму"
-                onClick={() => setActiveAction(null)}
+                onClick={() => setCurrentActiveAction(null)}
               >
                 <X />
               </Button>
             </div>
 
-            <div key={`${activeAction}-${selectedInstructorId}`}>
-              {activeAction === "slot" && (
+            <div key={`${currentActiveAction}-${selectedInstructorId}`}>
+              {currentActiveAction === "slot" && (
                 <SlotForm
+                  key={`${selectedInstructorId}-${slotDefaultDate ?? "empty"}-${slotRequestKey ?? 0}`}
                   instructors={orderedInstructors}
                   lessonTypes={lessonTypes}
                   adminEnabled={adminEnabled}
+                  defaultDate={slotDefaultDate ?? undefined}
                 />
               )}
-              {activeAction === "day" && (
+              {currentActiveAction === "day" && (
                 <QuickCreateDayForm
                   instructors={orderedInstructors}
                   lessonTypes={lessonTypes}
                   adminEnabled={adminEnabled}
                 />
               )}
-              {activeAction === "copy-day" && (
+              {currentActiveAction === "copy-day" && (
                 <CopyDayForm
                   instructors={orderedInstructors}
                   adminEnabled={adminEnabled}
                 />
               )}
-              {activeAction === "copy-week" && (
+              {currentActiveAction === "copy-week" && (
                 <CopyWeekForm
                   instructors={orderedInstructors}
                   adminEnabled={adminEnabled}

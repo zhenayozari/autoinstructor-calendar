@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { LogIn } from "lucide-react";
+import { useActionState, useState } from "react";
+import { Eye, EyeOff, LogIn } from "lucide-react";
 import {
   loginAction,
   type LoginActionState,
@@ -16,6 +16,7 @@ const INITIAL_STATE: LoginActionState = {
 };
 
 export function LoginForm() {
+  const [showPassword, setShowPassword] = useState(false);
   const [state, formAction, isPending] = useActionState(
     loginAction,
     INITIAL_STATE,
@@ -38,13 +39,28 @@ export function LoginForm() {
 
       <div className="space-y-2">
         <Label htmlFor="password">Пароль</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          required
-        />
+        <div className="relative">
+          <Input
+            id="password"
+            name="password"
+            type={showPassword ? "text" : "password"}
+            autoComplete="current-password"
+            className="pr-11"
+            required
+          />
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground absolute inset-y-0 right-0 grid w-11 place-items-center"
+            aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+            onClick={() => setShowPassword((current) => !current)}
+          >
+            {showPassword ? (
+              <EyeOff className="size-4" />
+            ) : (
+              <Eye className="size-4" />
+            )}
+          </button>
+        </div>
       </div>
 
       {state.status === "error" && (

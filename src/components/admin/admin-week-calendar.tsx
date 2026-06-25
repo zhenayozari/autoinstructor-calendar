@@ -491,6 +491,7 @@ export function AdminWeekCalendar({
   onInstructorChange,
   canSelectInstructor,
   adminEnabled,
+  onCreateSlotForDate,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
@@ -504,6 +505,7 @@ export function AdminWeekCalendar({
   onInstructorChange: (value: string) => void;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  onCreateSlotForDate?: (date: string) => void;
 }) {
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const weekStart = getWeekStart(weekDate);
@@ -612,11 +614,22 @@ export function AdminWeekCalendar({
     };
   }
 
-  function renderEmptyDay() {
+  function renderEmptyDay(date?: string) {
     return (
       <div className="rounded-xl border border-dashed bg-white px-3 py-4 text-center">
         <CalendarPlus className="mx-auto size-5 text-zinc-400" />
         <p className="mt-2 text-sm font-medium">Слотов нет</p>
+        {date && onCreateSlotForDate && (
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-3 h-9 w-full"
+            onClick={() => onCreateSlotForDate(date)}
+          >
+            <CalendarPlus />
+            Добавить слот
+          </Button>
+        )}
       </div>
     );
   }
@@ -718,16 +731,32 @@ export function AdminWeekCalendar({
                       : "День не создан"}
                   </p>
                 </div>
-                <div className="text-right text-[11px] leading-4 text-zinc-500">
-                  <p>{daySlots.length} слотов</p>
-                  <p>
-                    <span className="text-amber-700">
-                      {occupiedCount} занято
-                    </span>
-                    {" · "}
-                    <span className="text-emerald-700">{freeCount} свободно</span>
-                    {blockedCount > 0 && ` · ${blockedCount} блок`}
-                  </p>
+                <div className="flex items-start gap-2">
+                  <div className="text-right text-[11px] leading-4 text-zinc-500">
+                    <p>{daySlots.length} слотов</p>
+                    <p>
+                      <span className="text-amber-700">
+                        {occupiedCount} занято
+                      </span>
+                      {" · "}
+                      <span className="text-emerald-700">
+                        {freeCount} свободно
+                      </span>
+                      {blockedCount > 0 && ` · ${blockedCount} блок`}
+                    </p>
+                  </div>
+                  {onCreateSlotForDate && (
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="outline"
+                      className="shrink-0 rounded-full bg-white"
+                      aria-label={`Добавить слот на ${formatDayTitle(date)}`}
+                      onClick={() => onCreateSlotForDate(date)}
+                    >
+                      <CalendarPlus />
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -750,7 +779,7 @@ export function AdminWeekCalendar({
                   })}
                 </div>
               ) : (
-                renderEmptyDay()
+                renderEmptyDay(date)
               )}
             </section>
           );

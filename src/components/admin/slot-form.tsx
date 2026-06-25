@@ -41,10 +41,12 @@ export function SlotForm({
   instructors,
   lessonTypes,
   adminEnabled,
+  defaultDate,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
   adminEnabled: boolean;
+  defaultDate?: string;
 }) {
   const [state, formAction, isPending] = useActionState(
     createSlotAction,
@@ -82,7 +84,13 @@ export function SlotForm({
 
         <div className="space-y-2">
           <Label htmlFor="date">Дата</Label>
-          <Input id="date" name="date" type="date" required />
+          <Input
+            id="date"
+            name="date"
+            type="date"
+            required
+            defaultValue={defaultDate}
+          />
         </div>
 
         <div className="space-y-2">

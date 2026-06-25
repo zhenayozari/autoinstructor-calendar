@@ -135,6 +135,13 @@ function getStatusClassName(slot: DashboardSlot) {
   return "bg-emerald-100 text-emerald-800";
 }
 
+function getRoleLabel(role: string) {
+  if (role === "owner") return "Владелец";
+  if (role === "admin") return "Администратор";
+  if (role === "instructor") return "Инструктор";
+  return role;
+}
+
 function SlotRow({
   slot,
   timezone,
@@ -338,7 +345,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     .slice(0, 5);
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-3 py-4 sm:px-6 sm:py-8">
+    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-3 sm:space-y-6">
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-start justify-between gap-3">
@@ -353,7 +360,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
 
             <div className="min-w-0 rounded-full border bg-zinc-50 px-3 py-2 text-right text-[11px] leading-4 text-zinc-500 sm:text-xs">
               <span className="block font-semibold text-zinc-900">
-                {membership.role}
+                {getRoleLabel(membership.role)}
               </span>
               <span className="block max-w-[150px] truncate sm:max-w-[240px]">
                 {membership.user.email}
@@ -404,7 +411,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 render={<Link href="/schedule" />}
               >
                 <ExternalLink />
-                Публичный календарь
+                Календарь
               </Button>
               <Button
                 variant="outline"
@@ -500,7 +507,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="hidden sm:block">
                 <CardHeader className="pb-3">
                   <CardTitle>Быстрые действия</CardTitle>
                   <CardDescription>
@@ -510,7 +517,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 <CardContent className="grid gap-2">
                   <Button
                     nativeButton={false}
-                    render={<Link href="/admin/schedule" />}
+                    render={
+                      <Link href="/admin/schedule?create=slot#schedule-quick-actions" />
+                    }
                     className="h-11 justify-start"
                   >
                     <CalendarPlus />
@@ -548,7 +557,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
             </section>
 
             <section className="grid gap-4 lg:grid-cols-2">
-              <Card>
+              <Card className="border-l-4 border-l-emerald-400 bg-emerald-50/30">
                 <CardHeader className="pb-3">
                   <CardTitle>Сегодня · {formatDate(today)}</CardTitle>
                   <CardDescription>
@@ -572,7 +581,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="border-l-4 border-l-blue-400 bg-blue-50/30">
                 <CardHeader className="pb-3">
                   <CardTitle>Завтра · {formatDate(tomorrow)}</CardTitle>
                   <CardDescription>
@@ -606,7 +615,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               </Card>
             </section>
 
-            <Card>
+            <Card className="border-l-4 border-l-amber-400 bg-amber-50/30">
               <CardHeader className="pb-3">
                 <CardTitle>Ближайшие записи</CardTitle>
                 <CardDescription>
@@ -631,6 +640,40 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           </>
         )}
       </div>
+
+      <nav
+        aria-label="Быстрые действия"
+        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-4 gap-1 rounded-2xl border bg-white/95 p-1.5 shadow-2xl shadow-zinc-950/15 backdrop-blur sm:hidden"
+      >
+        <Link
+          href="/admin/schedule?create=slot#schedule-quick-actions"
+          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
+        >
+          <CalendarPlus className="size-4" />
+          <span>Слот</span>
+        </Link>
+        <Link
+          href="/admin/schedule"
+          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
+        >
+          <CalendarDays className="size-4" />
+          <span>Неделя</span>
+        </Link>
+        <Link
+          href="/admin/bookings"
+          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
+        >
+          <ClipboardList className="size-4" />
+          <span>Записи</span>
+        </Link>
+        <Link
+          href="/admin/settings"
+          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
+        >
+          <KeyRound className="size-4" />
+          <span>Код</span>
+        </Link>
+      </nav>
     </main>
   );
 }

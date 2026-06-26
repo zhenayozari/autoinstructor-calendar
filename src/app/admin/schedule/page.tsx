@@ -21,6 +21,7 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
 import { AdminScheduleWorkspace } from "@/components/admin/admin-schedule-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -237,8 +238,15 @@ export default async function AdminSchedulePage({
   }).format(new Date());
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-3 py-4 sm:px-6 sm:py-8">
+    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-5">
+        <AdminMobileNav
+          role={membership.role}
+          email={membership.user.email}
+          instructorName={linkedInstructor?.public_name ?? linkedInstructor?.name}
+          showTeam={membership.isOwnerOrAdmin}
+        />
+
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -265,7 +273,7 @@ export default async function AdminSchedulePage({
           </div>
         </header>
 
-        <details className="group rounded-2xl border bg-white shadow-sm">
+        <details className="group hidden rounded-2xl border bg-white shadow-sm sm:block">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 sm:px-5">
             <div className="min-w-0">
               <p className="font-semibold">Навигация</p>

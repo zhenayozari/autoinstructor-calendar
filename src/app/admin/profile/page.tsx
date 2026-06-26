@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft, UserRoundPen } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
 import { ProfileForm } from "@/components/admin/profile-form";
 import { Button } from "@/components/ui/button";
 import {
@@ -88,8 +89,15 @@ export default async function InstructorProfilePage({
     ) ?? null;
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-4 py-8 sm:px-6">
+    <main className="min-h-screen bg-zinc-100 px-4 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl space-y-6">
+        <AdminMobileNav
+          role={membership.role}
+          email={membership.user.email}
+          instructorName={profile?.public_name ?? profile?.name}
+          showTeam={membership.isOwnerOrAdmin}
+        />
+
         <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>
             <p className="text-muted-foreground text-sm font-medium">

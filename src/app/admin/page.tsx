@@ -20,6 +20,7 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { getVisibleSlotNote } from "@/lib/slot-notes";
+import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -347,6 +348,13 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   return (
     <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-3 sm:space-y-6">
+        <AdminMobileNav
+          role={membership.role}
+          email={membership.user.email}
+          instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
+          showTeam={membership.isOwnerOrAdmin}
+        />
+
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -369,7 +377,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           </div>
         </header>
 
-        <details className="group rounded-2xl border bg-white shadow-sm">
+        <details className="group hidden rounded-2xl border bg-white shadow-sm sm:block">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 sm:px-5">
             <div className="min-w-0">
               <p className="font-semibold">Навигация и инструктор</p>
@@ -641,39 +649,6 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         )}
       </div>
 
-      <nav
-        aria-label="Быстрые действия"
-        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-4 gap-1 rounded-2xl border bg-white/95 p-1.5 shadow-2xl shadow-zinc-950/15 backdrop-blur sm:hidden"
-      >
-        <Link
-          href="/admin/schedule?create=slot#schedule-quick-actions"
-          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
-        >
-          <CalendarPlus className="size-4" />
-          <span>Слот</span>
-        </Link>
-        <Link
-          href="/admin/schedule"
-          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
-        >
-          <CalendarDays className="size-4" />
-          <span>Неделя</span>
-        </Link>
-        <Link
-          href="/admin/bookings"
-          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
-        >
-          <ClipboardList className="size-4" />
-          <span>Записи</span>
-        </Link>
-        <Link
-          href="/admin/settings"
-          className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold text-zinc-700 active:bg-zinc-100"
-        >
-          <KeyRound className="size-4" />
-          <span>Код</span>
-        </Link>
-      </nav>
     </main>
   );
 }

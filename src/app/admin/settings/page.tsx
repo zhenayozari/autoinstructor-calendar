@@ -16,6 +16,7 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { AccessCodeForm } from "@/components/admin/access-code-form";
+import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
 import { Button } from "@/components/ui/button";
 
@@ -121,10 +122,21 @@ export default async function AdminSettingsPage() {
   const accessCodeHistory = (accessCodeHistoryData ??
     []) as AccessCodeHistoryItem[];
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
+  const selectedInstructor =
+    instructors.find((instructor) => instructor.id === initialInstructorId) ??
+    instructors[0] ??
+    null;
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-3 py-4 sm:px-6 sm:py-8">
+    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-6">
+        <AdminMobileNav
+          role={membership.role}
+          email={membership.user.email}
+          instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
+          showTeam={membership.isOwnerOrAdmin}
+        />
+
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-6">
           <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
             <div>
@@ -143,7 +155,7 @@ export default async function AdminSettingsPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+            <div className="hidden grid-cols-2 gap-2 sm:flex sm:flex-wrap">
               <Button
                 variant="outline"
                 className="h-10"

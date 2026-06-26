@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOrganizationManager } from "@/lib/organization-access";
+import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
 import { CreateTeamMemberForm } from "@/components/admin/create-team-member-form";
 import { CreateProfileAccessForm } from "@/components/admin/create-profile-access-form";
 import { CleanupDemoProfilesAction } from "@/components/admin/cleanup-demo-profiles-action";
@@ -158,8 +159,10 @@ export default async function TeamPage() {
   ];
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-4 py-8 sm:px-6">
+    <main className="min-h-screen bg-zinc-100 px-4 pb-24 pt-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-6">
+        <AdminMobileNav role={manager.role} showTeam />
+
         <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>
             <p className="text-muted-foreground text-sm font-medium">

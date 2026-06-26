@@ -125,7 +125,7 @@ export function AdminScheduleWorkspace({
             </div>
             <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600">
               {selectedInstructor
-                ? `${selectedInstructor.public_name ?? selectedInstructor.name} / ${selectedInstructor.slug}`
+                ? (selectedInstructor.public_name ?? selectedInstructor.name)
                 : "Инструктор не выбран"}
             </div>
           </div>

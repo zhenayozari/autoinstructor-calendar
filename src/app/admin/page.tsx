@@ -9,6 +9,7 @@ import {
   LogOut,
   Settings,
   UserRound,
+  UserRoundCheck,
   UserRoundPen,
   UsersRound,
 } from "lucide-react";
@@ -443,6 +444,15 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 variant="outline"
                 className="h-10"
                 nativeButton={false}
+                render={<Link href="/admin/students" />}
+              >
+                <UserRoundCheck />
+                Ученики
+              </Button>
+              <Button
+                variant="outline"
+                className="h-10"
+                nativeButton={false}
                 render={<Link href="/admin/settings" />}
               >
                 <Settings />
@@ -550,6 +560,15 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   >
                     <ClipboardList />
                     Список записей
+                  </Button>
+                  <Button
+                    variant="outline"
+                    nativeButton={false}
+                    render={<Link href="/admin/students" />}
+                    className="h-11 justify-start"
+                  >
+                    <UserRoundCheck />
+                    Ученики и доступы
                   </Button>
                   <Button
                     variant="outline"

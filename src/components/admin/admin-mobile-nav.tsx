@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Settings,
+  UserRoundCheck,
   UserRoundPen,
   UsersRound,
 } from "lucide-react";
@@ -56,38 +57,69 @@ export function AdminMobileNav({
                 )}
               </div>
               <div className="grid gap-1 py-2 text-sm font-semibold">
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin"
+                >
                   <Home className="size-4" />
                   Главная
                 </Link>
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/schedule">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/schedule"
+                >
                   <ExternalLink className="size-4" />
                   Как видит ученик
                 </Link>
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin/schedule">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/schedule"
+                >
                   <CalendarDays className="size-4" />
                   Расписание
                 </Link>
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin/bookings">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/bookings"
+                >
                   <ClipboardList className="size-4" />
                   Записи
                 </Link>
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin/settings">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/students"
+                >
+                  <UserRoundCheck className="size-4" />
+                  Ученики
+                </Link>
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/settings"
+                >
                   <Settings className="size-4" />
                   Настройки
                 </Link>
-                <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin/profile">
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/profile"
+                >
                   <UserRoundPen className="size-4" />
                   Профиль
                 </Link>
                 {showTeam && (
-                  <Link className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50" href="/admin/team">
+                  <Link
+                    className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                    href="/admin/team"
+                  >
                     <UsersRound className="size-4" />
                     Команда
                   </Link>
                 )}
                 <form action={logoutAction}>
-                  <button className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-zinc-50" type="submit">
+                  <button
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-zinc-50"
+                    type="submit"
+                  >
                     <LogOut className="size-4" />
                     Выйти
                   </button>

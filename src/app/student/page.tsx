@@ -3,6 +3,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
 import { studentLogoutAction } from "@/app/student/actions";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { StudentBookingButton } from "@/components/student/student-booking-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -59,6 +60,10 @@ function addDays(date: Date, days: number) {
   const result = new Date(date);
   result.setUTCDate(result.getUTCDate() + days);
   return result;
+}
+
+function addDaysToDateValue(value: string, days: number) {
+  return formatDateValue(addDays(parseDate(value), days));
 }
 
 function getCurrentDate(timezone: string) {
@@ -152,6 +157,11 @@ function getWeekHref(date?: string) {
 
 function SlotCard({ slot }: { slot: ScheduleSlot }) {
   const transmission = getTransmissionLabel(slot.transmission);
+  const dateLabel = formatDayLabel(slot.date);
+  const timeLabel = `${formatTime(slot.start_time, slot.timezone)} — ${formatTime(
+    slot.end_time,
+    slot.timezone,
+  )}`;
 
   return (
     <article
@@ -160,11 +170,7 @@ function SlotCard({ slot }: { slot: ScheduleSlot }) {
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xl font-bold tabular-nums text-zinc-950">
-            {formatTime(slot.start_time, slot.timezone)}
-            <span className="mx-1.5 text-zinc-300">—</span>
-            {formatTime(slot.end_time, slot.timezone)}
-          </p>
+          <p className="text-xl font-bold tabular-nums text-zinc-950">{timeLabel}</p>
           <div className="mt-2 flex min-w-0 items-center gap-2">
             <span
               className="size-2.5 shrink-0 rounded-full border border-black/10"
@@ -189,8 +195,16 @@ function SlotCard({ slot }: { slot: ScheduleSlot }) {
         </span>
       </div>
 
-      <div className="mt-4 rounded-xl bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
-        Запись из кабинета ученика подключим следующим этапом.
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs text-zinc-500">
+          Нажмите, чтобы занять этот слот.
+        </p>
+        <StudentBookingButton
+          slotId={slot.id}
+          lessonName={slot.lesson_type_name}
+          dateLabel={dateLabel}
+          timeLabel={timeLabel}
+        />
       </div>
     </article>
   );
@@ -202,6 +216,83 @@ function EmptyDay() {
       На этот день свободных занятий нет.
     </div>
   );
+}
+
+async function getUsedCounts(accessId: string, visibleWeekStart: string) {
+  const supabase = createAdminClient();
+  const { data: totalBookingData, error: totalBookingError } = await supabase
+    .from("bookings")
+    .select("id, slot_id")
+    .eq("student_access_id", accessId)
+    .eq("status", "confirmed");
+
+  if (totalBookingError) {
+    throw new Error(totalBookingError.message);
+  }
+
+  const totalUsed = totalBookingData?.length ?? 0;
+  const slotIds = (totalBookingData ?? []).map((booking) => booking.slot_id);
+
+  if (slotIds.length === 0) {
+    return { totalUsed, weekUsed: 0 };
+  }
+
+  const { data: slots, error: slotsError } = await supabase
+    .from("slots")
+    .select("id, schedule_day_id")
+    .in("id", slotIds);
+
+  if (slotsError) {
+    throw new Error(slotsError.message);
+  }
+
+  const dayIds = [...new Set((slots ?? []).map((slot) => slot.schedule_day_id))];
+
+  if (dayIds.length === 0) {
+    return { totalUsed, weekUsed: 0 };
+  }
+
+  const weekEnd = addDaysToDateValue(visibleWeekStart, 6);
+  const { data: days, error: daysError } = await supabase
+    .from("schedule_days")
+    .select("id")
+    .in("id", dayIds)
+    .gte("date", visibleWeekStart)
+    .lte("date", weekEnd);
+
+  if (daysError) {
+    throw new Error(daysError.message);
+  }
+
+  const weekDayIds = new Set((days ?? []).map((day) => day.id));
+  const weekSlotIds = new Set(
+    (slots ?? [])
+      .filter((slot) => weekDayIds.has(slot.schedule_day_id))
+      .map((slot) => slot.id),
+  );
+  const weekUsed = (totalBookingData ?? []).filter((booking) =>
+    weekSlotIds.has(booking.slot_id),
+  ).length;
+
+  return { totalUsed, weekUsed };
+}
+
+function formatLimit(used: number, limit: number | null) {
+  if (limit === null) {
+    return `${used} · без лимита`;
+  }
+
+  return `${used} из ${limit}`;
+}
+
+function formatRemaining(used: number, limit: number | null) {
+  if (limit === null) {
+    return "Можно записываться без общего ограничения";
+  }
+
+  const remaining = Math.max(limit - used, 0);
+
+  return `Осталось: ${remaining}`;
 }
 
 export default async function StudentPage({ searchParams }: StudentPageProps) {
@@ -217,6 +308,7 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   const timezone = currentInstructor?.timezone ?? DEFAULT_TIMEZONE;
   const weekStart = getWeekStart(params.week, timezone);
   const weekEnd = addDays(weekStart, 6);
+  const visibleWeekStart = formatDateValue(weekStart);
   const previousWeek = formatDateValue(addDays(weekStart, -7));
   const nextWeek = formatDateValue(addDays(weekStart, 7));
 
@@ -229,10 +321,11 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
           .in("lesson_type_id", access.lessonTypeIds)
           .eq("status", "available")
           .eq("is_booked", false)
-          .gte("date", formatDateValue(weekStart))
+          .gte("date", visibleWeekStart)
           .lte("date", formatDateValue(weekEnd))
           .order("start_time", { ascending: true })
       : { data: [], error: null };
+  const usage = await getUsedCounts(access.id, visibleWeekStart);
   const slots = (slotsData ?? []) as ScheduleSlot[];
   const days = createCalendarDays(weekStart, slots);
   const instructorName =
@@ -265,15 +358,21 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
 
         <section className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <p className="text-sm text-zinc-500">Лимит всего занятий</p>
+            <p className="text-sm text-zinc-500">Использовано всего</p>
             <p className="mt-1 text-2xl font-semibold">
-              {access.totalLessonLimit ?? "Без лимита"}
+              {formatLimit(usage.totalUsed, access.totalLessonLimit)}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {formatRemaining(usage.totalUsed, access.totalLessonLimit)}
             </p>
           </div>
           <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <p className="text-sm text-zinc-500">Лимит в неделю</p>
+            <p className="text-sm text-zinc-500">Использовано на этой неделе</p>
             <p className="mt-1 text-2xl font-semibold">
-              {access.weeklyLessonLimit ?? "Без лимита"}
+              {formatLimit(usage.weekUsed, access.weeklyLessonLimit)}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {formatRemaining(usage.weekUsed, access.weeklyLessonLimit)}
             </p>
           </div>
         </section>

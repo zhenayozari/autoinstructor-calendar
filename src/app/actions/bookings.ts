@@ -51,7 +51,7 @@ export async function bookSlotAction(
   const supabase = await createClient();
   const { data: slot, error: slotError } = await supabase
     .from("public_schedule_slots")
-    .select("id, instructor_id, status, is_booked")
+    .select("id, instructor_id, lesson_type_id, status, is_booked")
     .eq("id", slotId)
     .maybeSingle();
 
@@ -126,9 +126,26 @@ export async function bookSlotAction(
     };
   }
 
-  const { error } = await createAdminClient().from("bookings").insert({
+  const adminSupabase = createAdminClient();
+  const { data: lessonType, error: lessonTypeError } = await adminSupabase
+    .from("lesson_types")
+    .select("default_price_amount")
+    .eq("id", slot.lesson_type_id)
+    .maybeSingle();
+
+  if (lessonTypeError) {
+    console.error("bookSlotAction lesson type lookup:", lessonTypeError);
+
+    return {
+      status: "error",
+      message: "Не удалось проверить тип занятия. Попробуйте ещё раз",
+    };
+  }
+
+  const { error } = await adminSupabase.from("bookings").insert({
     slot_id: slotId,
     student_label: studentLabel,
+    price_amount: lessonType?.default_price_amount ?? null,
   });
 
   if (error) {

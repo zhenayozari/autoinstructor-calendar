@@ -180,11 +180,22 @@ export async function studentBookSlotAction(
       }
     }
 
+    const { data: lessonType, error: lessonTypeError } = await supabase
+      .from("lesson_types")
+      .select("default_price_amount")
+      .eq("id", slot.lesson_type_id)
+      .maybeSingle();
+
+    if (lessonTypeError) {
+      throw new Error(lessonTypeError.message);
+    }
+
     const { error } = await supabase.from("bookings").insert({
       slot_id: slot.id,
       student_access_id: access.id,
       student_label: access.displayLabel,
       status: "confirmed",
+      price_amount: lessonType?.default_price_amount ?? null,
     });
 
     if (error) {

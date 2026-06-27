@@ -51,6 +51,7 @@ type LessonType = {
   color: string;
   kind: "driving" | "theory";
   default_duration_minutes: number;
+  default_price_amount: number | null;
   tags: string[];
   sort_order: number;
   is_active: boolean;
@@ -109,7 +110,7 @@ export default async function AdminSettingsPage() {
       ? supabase
           .from("lesson_types")
           .select(
-            "id, code, name, description, color, kind, default_duration_minutes, tags, sort_order, is_active",
+            "id, code, name, description, color, kind, default_duration_minutes, default_price_amount, tags, sort_order, is_active",
           )
           .order("sort_order")
           .order("name")

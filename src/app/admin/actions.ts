@@ -193,6 +193,29 @@ function readInteger(
   return value;
 }
 
+function readOptionalInteger(
+  formData: FormData,
+  field: string,
+  minimum: number,
+  maximum: number,
+) {
+  const rawValue = readOptionalString(formData, field);
+
+  if (rawValue === null) {
+    return null;
+  }
+
+  const value = Number(rawValue);
+
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `Поле «${field}» должно быть целым числом от ${minimum} до ${maximum}`,
+    );
+  }
+
+  return value;
+}
+
 function formatTimeRange(start: Date, end: Date, timezone: string) {
   const formatter = new Intl.DateTimeFormat("ru-RU", {
     hour: "2-digit",
@@ -1274,6 +1297,12 @@ export async function createLessonTypeAction(
       15,
       480,
     );
+    const defaultPriceAmount = readOptionalInteger(
+      formData,
+      "default_price_amount",
+      0,
+      10_000_000,
+    );
     const description = readOptionalString(formData, "description");
     const isActive = formData.get("is_active") === "on";
 
@@ -1307,6 +1336,7 @@ export async function createLessonTypeAction(
       kind: persistence.kind,
       requires_vehicle: persistence.requires_vehicle,
       default_duration_minutes: durationMinutes,
+      default_price_amount: defaultPriceAmount,
       tags: persistence.tags,
       sort_order: (lastType?.sort_order ?? 0) + 10,
       is_active: isActive,
@@ -1357,6 +1387,12 @@ export async function updateLessonTypeAction(
       15,
       480,
     );
+    const defaultPriceAmount = readOptionalInteger(
+      formData,
+      "default_price_amount",
+      0,
+      10_000_000,
+    );
     const description = readOptionalString(formData, "description");
     const isActive = formData.get("is_active") === "on";
 
@@ -1379,6 +1415,7 @@ export async function updateLessonTypeAction(
         kind: persistence.kind,
         requires_vehicle: persistence.requires_vehicle,
         default_duration_minutes: durationMinutes,
+        default_price_amount: defaultPriceAmount,
         tags: persistence.tags,
         is_active: isActive,
       })

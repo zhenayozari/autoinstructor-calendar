@@ -78,6 +78,7 @@ type Booking = {
   id: string;
   slot_id: string;
   student_label: string;
+  price_amount: number | null;
   created_at: string;
 };
 
@@ -157,6 +158,14 @@ function formatDateTime(value: string, timezone: string) {
     minute: "2-digit",
     timeZone: timezone,
   }).format(new Date(value));
+}
+
+function formatPrice(value: number | null) {
+  if (value === null) {
+    return "Не указана";
+  }
+
+  return `${value.toLocaleString("ru-RU")} ₽`;
 }
 
 function getTransmissionLabel(transmission: ScheduleDay["transmission"]) {
@@ -246,6 +255,12 @@ function BookingCard({
           <p className="mt-1 flex items-center gap-2 font-semibold text-amber-950">
             <UserRound className="size-4" />
             {item.student_label}
+          </p>
+        </div>
+        <div className="rounded-xl bg-emerald-50 px-3 py-2">
+          <p className="text-xs font-medium text-emerald-700">Сумма</p>
+          <p className="mt-1 font-semibold text-emerald-950">
+            {formatPrice(item.price_amount)}
           </p>
         </div>
         <div className="rounded-xl bg-zinc-50 px-3 py-2">
@@ -347,7 +362,7 @@ export default async function AdminBookingsPage({
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, created_at")
+          .select("id, slot_id, student_label, price_amount, created_at")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };

@@ -30,6 +30,7 @@ type LessonType = {
   color: string;
   kind: "driving" | "theory";
   default_duration_minutes: number;
+  default_price_amount: number | null;
   tags: string[];
   sort_order: number;
   is_active: boolean;
@@ -147,6 +148,22 @@ function LessonTypeFields({
           step={5}
           defaultValue={lessonType?.default_duration_minutes ?? 90}
           required
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-price`}>
+          Сумма по умолчанию, ₽
+        </Label>
+        <Input
+          id={`${idPrefix}-price`}
+          name="default_price_amount"
+          type="number"
+          min={0}
+          max={10000000}
+          step={1}
+          defaultValue={lessonType?.default_price_amount ?? ""}
+          placeholder="Например: 1500"
         />
       </div>
 
@@ -281,6 +298,9 @@ export function LessonTypesSettings({
                             {lessonType.code} ·{" "}
                             {categoryLabels[category]} ·{" "}
                             {lessonType.default_duration_minutes} мин.
+                            {lessonType.default_price_amount !== null
+                              ? ` · ${lessonType.default_price_amount.toLocaleString("ru-RU")} ₽`
+                              : ""}
                           </p>
                         </div>
                       </div>

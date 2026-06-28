@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  BarChart3,
   CalendarDays,
   CalendarPlus,
   ClipboardList,
@@ -84,6 +85,13 @@ export function AdminMobileNav({
                 >
                   <ClipboardList className="size-4" />
                   Записи
+                </Link>
+                <Link
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"
+                  href="/admin/reports"
+                >
+                  <BarChart3 className="size-4" />
+                  Итоги
                 </Link>
                 <Link
                   className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-zinc-50"

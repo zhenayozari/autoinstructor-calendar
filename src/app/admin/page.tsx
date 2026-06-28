@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  BarChart3,
   CalendarDays,
   CalendarPlus,
   ChevronDown,
@@ -444,6 +445,15 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 variant="outline"
                 className="h-10"
                 nativeButton={false}
+                render={<Link href="/admin/reports" />}
+              >
+                <BarChart3 />
+                Итоги
+              </Button>
+              <Button
+                variant="outline"
+                className="h-10"
+                nativeButton={false}
                 render={<Link href="/admin/students" />}
               >
                 <UserRoundCheck />
@@ -560,6 +570,15 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   >
                     <ClipboardList />
                     Список записей
+                  </Button>
+                  <Button
+                    variant="outline"
+                    nativeButton={false}
+                    render={<Link href="/admin/reports" />}
+                    className="h-11 justify-start"
+                  >
+                    <BarChart3 />
+                    Итоги и деньги
                   </Button>
                   <Button
                     variant="outline"

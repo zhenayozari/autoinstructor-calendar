@@ -440,7 +440,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 <CardHeader className="pb-3">
                   <CardTitle>Кто следующий?</CardTitle>
                   <CardDescription>
-                    Самое важное для быстрого взгляда с телефона.
+                    {nextSlot?.scheduleDay
+                      ? `Следующая запись: ${formatDate(nextSlot.scheduleDay.date)}.`
+                      : "Самое важное для быстрого взгляда с телефона."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>

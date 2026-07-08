@@ -13,6 +13,12 @@ export type SlotActionState = {
   message: string;
 };
 
+export type BulkSlotDeleteActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+  deletedCount: number;
+};
+
 export type AccessCodeActionState = {
   status: "idle" | "success" | "error";
   message: string;
@@ -42,12 +48,18 @@ export type LessonTypeActionState = {
   message: string;
 };
 
+export type BookingPaymentActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
 const INITIAL_STATE: SlotActionState = {
   status: "idle",
   message: "",
 };
 
 type LessonTypeCategory = "driving" | "theory" | "gift";
+type SlotLocationType = "in_car" | "online" | "classroom" | "other";
 
 function readRequiredString(formData: FormData, field: string) {
   const value = formData.get(field);
@@ -67,6 +79,48 @@ function readOptionalString(formData: FormData, field: string) {
   }
 
   return value.trim();
+}
+
+function readLocationType(formData: FormData): SlotLocationType {
+  const value = readRequiredString(formData, "location_type");
+
+  if (
+    value !== "in_car" &&
+    value !== "online" &&
+    value !== "classroom" &&
+    value !== "other"
+  ) {
+    throw new Error("Выберите корректный формат занятия");
+  }
+
+  return value;
+}
+
+async function validateOptionalSchoolId(
+  schoolId: string | null,
+  organizationId: string,
+) {
+  if (!schoolId) {
+    return null;
+  }
+
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("schools")
+    .select("id")
+    .eq("id", schoolId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Автошкола не найдена");
+  }
+
+  return schoolId;
 }
 
 function readOptionalNote(formData: FormData) {
@@ -124,6 +178,18 @@ function getErrorMessage(error: unknown) {
   }
 
   return "Не удалось выполнить операцию";
+}
+
+function isMissingColumnError(error: { code?: string; message?: string } | null) {
+  const message = error?.message?.toLowerCase() ?? "";
+
+  return (
+    error?.code === "42703" ||
+    error?.code === "PGRST204" ||
+    message.includes("does not exist") ||
+    message.includes("could not find") ||
+    message.includes("schema cache")
+  );
 }
 
 function requireLessonTypeCategory(value: string): LessonTypeCategory {
@@ -1049,12 +1115,17 @@ export async function createSlotAction(
 
   try {
     const instructorId = readRequiredString(formData, "instructor_id");
-    await requireInstructorAccess(instructorId);
+    const membership = await requireInstructorAccess(instructorId);
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     const date = readRequiredString(formData, "date");
     const startTime = readRequiredString(formData, "start_time");
-    const locationType = readRequiredString(formData, "location_type");
+    const locationType = readLocationType(formData);
     const note = readOptionalNote(formData);
+    const publishDay = formData.get("publish_day") === "on";
+    const schoolId = await validateOptionalSchoolId(
+      readOptionalString(formData, "school_id"),
+      membership.organizationId,
+    );
     const requestedTransmission = formData.get("transmission");
     const transmission =
       requestedTransmission === "automatic" || requestedTransmission === "manual"
@@ -1092,7 +1163,7 @@ export async function createSlotAction(
 
     const scheduleDayResult = await supabase
       .from("schedule_days")
-      .select("id, transmission")
+      .select("id, transmission, published_at")
       .eq("instructor_id", instructorId)
       .eq("date", date)
       .maybeSingle();
@@ -1109,9 +1180,9 @@ export async function createSlotAction(
           instructor_id: instructorId,
           date,
           transmission: lessonType.kind === "driving" ? transmission : null,
-          published_at: new Date().toISOString(),
+          published_at: publishDay ? new Date().toISOString() : null,
         })
-        .select("id, transmission")
+        .select("id, transmission, published_at")
         .single();
 
       if (error) {
@@ -1119,21 +1190,36 @@ export async function createSlotAction(
       }
 
       scheduleDay = data;
-    } else if (lessonType.kind === "driving") {
-      if (scheduleDay.transmission && scheduleDay.transmission !== transmission) {
-        throw new Error(
-          `На выбранную дату уже установлена ${
-            scheduleDay.transmission === "automatic" ? "АКПП" : "МКПП"
-          }`,
-        );
+    } else {
+      const dayUpdates: {
+        published_at?: string;
+        transmission?: "automatic" | "manual";
+      } = {};
+
+      if (publishDay && !scheduleDay.published_at) {
+        dayUpdates.published_at = new Date().toISOString();
       }
 
-      if (!scheduleDay.transmission) {
+      if (lessonType.kind === "driving") {
+        if (scheduleDay.transmission && scheduleDay.transmission !== transmission) {
+          throw new Error(
+            `На выбранную дату уже установлена ${
+              scheduleDay.transmission === "automatic" ? "АКПП" : "МКПП"
+            }`,
+          );
+        }
+
+        if (!scheduleDay.transmission && transmission) {
+          dayUpdates.transmission = transmission;
+        }
+      }
+
+      if (Object.keys(dayUpdates).length > 0) {
         const { data, error } = await supabase
           .from("schedule_days")
-          .update({ transmission })
+          .update(dayUpdates)
           .eq("id", scheduleDay.id)
-          .select("id, transmission")
+          .select("id, transmission, published_at")
           .single();
 
         if (error) {
@@ -1152,6 +1238,7 @@ export async function createSlotAction(
       instructor_id: instructorId,
       schedule_day_id: scheduleDay.id,
       lesson_type_id: lessonTypeId,
+      school_id: schoolId,
       start_time: startsAt.toISOString(),
       end_time: endsAt.toISOString(),
       location_type: locationType,
@@ -1179,6 +1266,197 @@ export async function createSlotAction(
     };
   } catch (error) {
     console.error("createSlotAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function updateSlotAction(
+  previousState: SlotActionState = INITIAL_STATE,
+  formData: FormData,
+): Promise<SlotActionState> {
+  void previousState;
+
+  try {
+    const slotId = readRequiredString(formData, "slot_id");
+    const lessonTypeId = readRequiredString(formData, "lesson_type_id");
+    const date = readRequiredString(formData, "date");
+    const startTime = readRequiredString(formData, "start_time");
+    const locationType = readLocationType(formData);
+    const note = readOptionalNote(formData);
+    const supabase = createAdminClient();
+
+    const { data: slot, error: slotLookupError } = await supabase
+      .from("slots")
+      .select(
+        "id, instructor_id, schedule_day_id, lesson_type_id, school_id, location_type, status",
+      )
+      .eq("id", slotId)
+      .neq("status", "cancelled")
+      .maybeSingle();
+
+    if (slotLookupError || !slot) {
+      throw new Error("Слот не найден");
+    }
+
+    const membership = await requireInstructorAccess(slot.instructor_id);
+    const schoolId = await validateOptionalSchoolId(
+      readOptionalString(formData, "school_id"),
+      membership.organizationId,
+    );
+
+    const [
+      { data: instructor, error: instructorError },
+      { data: currentDay, error: currentDayError },
+      { data: nextLessonType, error: nextLessonTypeError },
+      { count: confirmedBookingsCount, error: bookingCountError },
+    ] = await Promise.all([
+      supabase
+        .from("instructors")
+        .select("id, timezone")
+        .eq("id", slot.instructor_id)
+        .eq("is_active", true)
+        .single(),
+      supabase
+        .from("schedule_days")
+        .select("id, date, transmission, published_at")
+        .eq("id", slot.schedule_day_id)
+        .eq("instructor_id", slot.instructor_id)
+        .single(),
+      supabase
+        .from("lesson_types")
+        .select("id, kind, default_duration_minutes")
+        .eq("id", lessonTypeId)
+        .eq("is_active", true)
+        .single(),
+      supabase
+        .from("bookings")
+        .select("id", { count: "exact", head: true })
+        .eq("slot_id", slotId)
+        .eq("status", "confirmed"),
+    ]);
+
+    if (instructorError || !instructor) {
+      throw new Error("Инструктор не найден или отключён");
+    }
+
+    if (currentDayError || !currentDay) {
+      throw new Error("День текущего слота не найден");
+    }
+
+    if (nextLessonTypeError || !nextLessonType) {
+      throw new Error("Новый тип занятия не найден или отключён");
+    }
+
+    if (bookingCountError) {
+      throw new Error(bookingCountError.message);
+    }
+
+    const { data: existingTargetDay, error: targetDayLookupError } =
+      await supabase
+        .from("schedule_days")
+        .select("id, transmission, published_at")
+        .eq("instructor_id", slot.instructor_id)
+        .eq("date", date)
+        .maybeSingle();
+
+    if (targetDayLookupError) {
+      throw new Error(targetDayLookupError.message);
+    }
+
+    let targetDay = existingTargetDay;
+    const needsTransmission = nextLessonType.kind === "driving";
+    const targetTransmission = targetDay?.transmission ?? currentDay.transmission;
+
+    if (needsTransmission && !targetTransmission) {
+      throw new Error(
+        "Для вождения нужна коробка передач дня. Создайте слот в день, где уже указана АКПП или МКПП.",
+      );
+    }
+
+    if (!targetDay) {
+      const { data, error } = await supabase
+        .from("schedule_days")
+        .insert({
+          instructor_id: slot.instructor_id,
+          date,
+          transmission: needsTransmission ? targetTransmission : null,
+          published_at: currentDay.published_at ?? null,
+        })
+        .select("id, transmission, published_at")
+        .single();
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      targetDay = data;
+    } else if (needsTransmission) {
+      if (!targetDay.transmission && targetTransmission) {
+        const { data, error } = await supabase
+          .from("schedule_days")
+          .update({ transmission: targetTransmission })
+          .eq("id", targetDay.id)
+          .eq("instructor_id", slot.instructor_id)
+          .select("id, transmission, published_at")
+          .single();
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        targetDay = data;
+      }
+    }
+
+    const startsAt = getUtcDate(date, startTime, instructor.timezone);
+    const endsAt = new Date(
+      startsAt.getTime() + nextLessonType.default_duration_minutes * 60_000,
+    );
+
+    const { error: updateError } = await supabase
+      .from("slots")
+      .update({
+        schedule_day_id: targetDay.id,
+        lesson_type_id: lessonTypeId,
+        school_id: schoolId,
+        location_type: locationType,
+        start_time: startsAt.toISOString(),
+        end_time: endsAt.toISOString(),
+        note,
+      })
+      .eq("id", slotId)
+      .eq("instructor_id", slot.instructor_id);
+
+    if (updateError) {
+      if (updateError.code === "23P01") {
+        throw new Error("У инструктора уже есть занятие в это время");
+      }
+
+      throw new Error(updateError.message);
+    }
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/admin/bookings");
+    revalidatePath("/admin/reports");
+    revalidatePath("/admin/students");
+    revalidatePath("/");
+    revalidatePath("/schedule");
+    revalidatePath("/student");
+
+    return {
+      status: "success",
+      message:
+        (confirmedBookingsCount ?? 0) > 0
+          ? "Слот обновлён. Не забудьте предупредить ученика."
+          : "Слот обновлён",
+    };
+  } catch (error) {
+    console.error("updateSlotAction:", error);
 
     return {
       status: "error",
@@ -1223,6 +1501,88 @@ export async function deleteSlotAction(formData: FormData) {
   } catch (error) {
     console.error("deleteSlotAction:", error);
     throw error;
+  }
+}
+
+export async function deleteSelectedSlotsAction(
+  previousState: BulkSlotDeleteActionState,
+  formData: FormData,
+): Promise<BulkSlotDeleteActionState> {
+  void previousState;
+  await requireActiveOrganizationMember();
+  const slotIds = [
+    ...new Set(
+      formData
+        .getAll("slot_id")
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (slotIds.length === 0) {
+    return {
+      status: "error",
+      message: "Выберите хотя бы один слот",
+      deletedCount: 0,
+    };
+  }
+
+  try {
+    const supabase = createAdminClient();
+    const { data: selectedSlots, error: lookupError } = await supabase
+      .from("slots")
+      .select("id, instructor_id")
+      .in("id", slotIds)
+      .neq("status", "cancelled");
+
+    if (lookupError) {
+      throw new Error(lookupError.message);
+    }
+
+    if (!selectedSlots || selectedSlots.length === 0) {
+      throw new Error("Выбранные слоты не найдены");
+    }
+
+    const instructorIds = [
+      ...new Set(selectedSlots.map((slot) => slot.instructor_id)),
+    ];
+
+    for (const selectedInstructorId of instructorIds) {
+      await requireInstructorAccess(selectedInstructorId);
+    }
+
+    const manageableSlotIds = selectedSlots.map((slot) => slot.id);
+    const { error } = await supabase
+      .from("slots")
+      .delete()
+      .in("id", manageableSlotIds);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/admin/bookings");
+    revalidatePath("/admin/reports");
+    revalidatePath("/admin/students");
+    revalidatePath("/");
+    revalidatePath("/schedule");
+
+    return {
+      status: "success",
+      message: `Удалено слотов: ${manageableSlotIds.length}`,
+      deletedCount: manageableSlotIds.length,
+    };
+  } catch (error) {
+    console.error("deleteSelectedSlotsAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+      deletedCount: 0,
+    };
   }
 }
 
@@ -1328,7 +1688,7 @@ export async function createLessonTypeAction(
       throw new Error(lastTypeError.message);
     }
 
-    const { error } = await supabase.from("lesson_types").insert({
+    const lessonTypePayload = {
       code: makeCustomLessonTypeCode(),
       name,
       description,
@@ -1340,10 +1700,24 @@ export async function createLessonTypeAction(
       tags: persistence.tags,
       sort_order: (lastType?.sort_order ?? 0) + 10,
       is_active: isActive,
+    };
+    const { error } = await supabase.from("lesson_types").insert({
+      ...lessonTypePayload,
+      default_price_amount: defaultPriceAmount,
     });
 
     if (error) {
-      throw new Error(error.message);
+      if (!isMissingColumnError(error)) {
+        throw new Error(error.message);
+      }
+
+      const { error: fallbackError } = await supabase
+        .from("lesson_types")
+        .insert(lessonTypePayload);
+
+      if (fallbackError) {
+        throw new Error(fallbackError.message);
+      }
     }
 
     revalidatePath("/admin");
@@ -1406,23 +1780,37 @@ export async function updateLessonTypeAction(
 
     const persistence = getLessonTypePersistence(category);
     const supabase = createAdminClient();
+    const lessonTypePayload = {
+      name,
+      description,
+      color,
+      kind: persistence.kind,
+      requires_vehicle: persistence.requires_vehicle,
+      default_duration_minutes: durationMinutes,
+      tags: persistence.tags,
+      is_active: isActive,
+    };
     const { error } = await supabase
       .from("lesson_types")
       .update({
-        name,
-        description,
-        color,
-        kind: persistence.kind,
-        requires_vehicle: persistence.requires_vehicle,
-        default_duration_minutes: durationMinutes,
+        ...lessonTypePayload,
         default_price_amount: defaultPriceAmount,
-        tags: persistence.tags,
-        is_active: isActive,
       })
       .eq("id", lessonTypeId);
 
     if (error) {
-      throw new Error(error.message);
+      if (!isMissingColumnError(error)) {
+        throw new Error(error.message);
+      }
+
+      const { error: fallbackError } = await supabase
+        .from("lesson_types")
+        .update(lessonTypePayload)
+        .eq("id", lessonTypeId);
+
+      if (fallbackError) {
+        throw new Error(fallbackError.message);
+      }
     }
 
     revalidatePath("/admin");
@@ -1471,6 +1859,75 @@ export async function toggleLessonTypeActiveAction(formData: FormData) {
   } catch (error) {
     console.error("toggleLessonTypeActiveAction:", error);
     throw error;
+  }
+}
+
+export async function deleteLessonTypeAction(
+  previousState: LessonTypeActionState,
+  formData: FormData,
+): Promise<LessonTypeActionState> {
+  void previousState;
+
+  try {
+    await requireLessonTypeManager();
+    const lessonTypeId = readRequiredString(formData, "lesson_type_id");
+    const supabase = createAdminClient();
+    const { count, error: slotCountError } = await supabase
+      .from("slots")
+      .select("id", { count: "exact", head: true })
+      .eq("lesson_type_id", lessonTypeId);
+
+    if (slotCountError) {
+      throw new Error(slotCountError.message);
+    }
+
+    if ((count ?? 0) > 0) {
+      return {
+        status: "error",
+        message:
+          "Этот тип уже используется в расписании. Чтобы не потерять историю, его можно скрыть или сначала удалить связанные слоты.",
+      };
+    }
+
+    const { error: accessLinksDeleteError } = await supabase
+      .from("student_access_lesson_types")
+      .delete()
+      .eq("lesson_type_id", lessonTypeId);
+
+    if (accessLinksDeleteError) {
+      throw new Error(accessLinksDeleteError.message);
+    }
+
+    const { error } = await supabase
+      .from("lesson_types")
+      .delete()
+      .eq("id", lessonTypeId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/settings");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/admin/bookings");
+    revalidatePath("/admin/reports");
+    revalidatePath("/admin/students");
+    revalidatePath("/");
+    revalidatePath("/schedule");
+    revalidatePath("/instructors");
+
+    return {
+      status: "success",
+      message: "Тип занятия удалён навсегда",
+    };
+  } catch (error) {
+    console.error("deleteLessonTypeAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
   }
 }
 
@@ -1538,6 +1995,226 @@ export async function moveLessonTypeAction(formData: FormData) {
     revalidatePath("/instructors");
   } catch (error) {
     console.error("moveLessonTypeAction:", error);
+    throw error;
+  }
+}
+
+export async function togglePaymentAction(formData: FormData) {
+  await requireActiveOrganizationMember();
+  const bookingId = readRequiredString(formData, "booking_id");
+  const isPaid = formData.get("is_paid") === "true";
+
+  try {
+    const supabase = createAdminClient();
+    const { data: booking, error: bookingLookupError } = await supabase
+      .from("bookings")
+      .select("slot_id, price_amount")
+      .eq("id", bookingId)
+      .maybeSingle();
+
+    if (bookingLookupError || !booking) {
+      throw new Error("Запись не найдена");
+    }
+
+    const { data: slot, error: slotLookupError } = await supabase
+      .from("slots")
+      .select("instructor_id")
+      .eq("id", booking.slot_id)
+      .maybeSingle();
+
+    if (slotLookupError || !slot) {
+      throw new Error("Слот записи не найден");
+    }
+
+    await requireInstructorAccess(slot.instructor_id);
+
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        is_paid: isPaid,
+        paid_at: isPaid ? new Date().toISOString() : null,
+        paid_amount: isPaid ? (booking.price_amount ?? 0) : 0,
+      })
+      .eq("id", bookingId)
+      .eq("status", "confirmed");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/admin/reports");
+  } catch (error) {
+    console.error("togglePaymentAction:", error);
+    throw error;
+  }
+}
+
+export async function updateBookingPaymentAction(
+  previousState: BookingPaymentActionState,
+  formData: FormData,
+): Promise<BookingPaymentActionState> {
+  void previousState;
+  await requireActiveOrganizationMember();
+  const bookingId = readRequiredString(formData, "booking_id");
+
+  try {
+    const priceAmount = readOptionalInteger(
+      formData,
+      "price_amount",
+      0,
+      10_000_000,
+    );
+    const paidAmount = readOptionalInteger(
+      formData,
+      "paid_amount",
+      0,
+      10_000_000,
+    ) ?? 0;
+    const paymentNote = readOptionalString(formData, "payment_note");
+
+    if (paymentNote && paymentNote.length > 500) {
+      throw new Error("Комментарий по оплате должен быть не длиннее 500 символов");
+    }
+
+    const isPaid = priceAmount !== null && paidAmount >= priceAmount;
+    const { supabase } = await requireManageableBooking(bookingId);
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        price_amount: priceAmount,
+        paid_amount: paidAmount,
+        is_paid: isPaid,
+        paid_at: isPaid ? new Date().toISOString() : null,
+        payment_note: paymentNote,
+      })
+      .eq("id", bookingId)
+      .eq("status", "confirmed");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidateAdminCrmPaths();
+    revalidatePath("/admin/bookings");
+    revalidatePath("/student");
+
+    return {
+      status: "success",
+      message: isPaid ? "Оплата закрыта" : "Оплата сохранена",
+    };
+  } catch (error) {
+    console.error("updateBookingPaymentAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+type BookingLessonState = "scheduled" | "completed" | "no_show";
+
+function readBookingLessonState(formData: FormData): BookingLessonState {
+  const value = readRequiredString(formData, "lesson_state");
+
+  if (value === "scheduled" || value === "completed" || value === "no_show") {
+    return value;
+  }
+
+  throw new Error("РќРµРёР·РІРµСЃС‚РЅС‹Р№ СЃС‚Р°С‚СѓСЃ Р·Р°РЅСЏС‚РёСЏ");
+}
+
+async function requireManageableBooking(bookingId: string) {
+  const supabase = createAdminClient();
+  const { data: booking, error: bookingLookupError } = await supabase
+    .from("bookings")
+    .select("id, slot_id")
+    .eq("id", bookingId)
+    .eq("status", "confirmed")
+    .maybeSingle();
+
+  if (bookingLookupError || !booking) {
+    throw new Error("Р—Р°РїРёСЃСЊ РЅРµ РЅР°Р№РґРµРЅР°");
+  }
+
+  const { data: slot, error: slotLookupError } = await supabase
+    .from("slots")
+    .select("instructor_id")
+    .eq("id", booking.slot_id)
+    .maybeSingle();
+
+  if (slotLookupError || !slot) {
+    throw new Error("РЎР»РѕС‚ Р·Р°РїРёСЃРё РЅРµ РЅР°Р№РґРµРЅ");
+  }
+
+  await requireInstructorAccess(slot.instructor_id);
+
+  return { supabase, booking };
+}
+
+function revalidateAdminCrmPaths() {
+  revalidatePath("/admin");
+  revalidatePath("/admin/schedule");
+  revalidatePath("/admin/students");
+  revalidatePath("/admin/reports");
+}
+
+export async function updateBookingLessonStateAction(formData: FormData) {
+  await requireActiveOrganizationMember();
+  const bookingId = readRequiredString(formData, "booking_id");
+  const lessonState = readBookingLessonState(formData);
+
+  try {
+    const { supabase } = await requireManageableBooking(bookingId);
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        lesson_state: lessonState,
+        completed_at:
+          lessonState === "completed" ? new Date().toISOString() : null,
+      })
+      .eq("id", bookingId)
+      .eq("status", "confirmed");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidateAdminCrmPaths();
+  } catch (error) {
+    console.error("updateBookingLessonStateAction:", error);
+    throw error;
+  }
+}
+
+export async function saveBookingInstructorNoteAction(formData: FormData) {
+  await requireActiveOrganizationMember();
+  const bookingId = readRequiredString(formData, "booking_id");
+  const note = readOptionalString(formData, "instructor_note");
+
+  if (note && note.length > 1000) {
+    throw new Error("Р—Р°РјРµС‚РєР° РґРѕР»Р¶РЅР° СЃРѕРґРµСЂР¶Р°С‚СЊ РЅРµ Р±РѕР»РµРµ 1000 СЃРёРјРІРѕР»РѕРІ");
+  }
+
+  try {
+    const { supabase } = await requireManageableBooking(bookingId);
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        instructor_note: note,
+      })
+      .eq("id", bookingId)
+      .eq("status", "confirmed");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidateAdminCrmPaths();
+  } catch (error) {
+    console.error("saveBookingInstructorNoteAction:", error);
     throw error;
   }
 }

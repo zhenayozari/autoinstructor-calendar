@@ -6,47 +6,20 @@ import {
   saveBookingAccessCodeAction,
   type AccessCodeActionState,
 } from "@/app/admin/actions";
+import { formatUpdatedAt, selectClassName } from "@/lib/formatters";
+import type {
+  AccessCodeHistoryItem,
+  Instructor,
+  InstructorSetting,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-type Instructor = {
-  id: string;
-  name: string;
-  timezone: string;
-};
-
-type InstructorSetting = {
-  instructor_id: string;
-  booking_access_code: string | null;
-  booking_access_code_updated_at: string | null;
-};
-
-type AccessCodeHistoryItem = {
-  id: string;
-  instructor_id: string;
-  access_code: string;
-  created_at: string;
-};
 
 const INITIAL_STATE: AccessCodeActionState = {
   status: "idle",
   message: "",
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
-
-function formatUpdatedAt(value: string, timezone: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: timezone,
-  }).format(new Date(value));
-}
 
 export function AccessCodeForm({
   instructors,
@@ -112,7 +85,8 @@ export function AccessCodeForm({
 
       <form action={formAction} className="space-y-4 border-t px-4 py-5 sm:px-6">
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
+          <input type="hidden" name="instructor_id" value={instructorId} />
+          <div className="hidden">
             <Label htmlFor="access-code-instructor">Инструктор</Label>
             <select
               id="access-code-instructor"

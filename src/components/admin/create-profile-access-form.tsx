@@ -6,6 +6,7 @@ import {
   createAccessForInstructorAction,
   type MemberActionState,
 } from "@/app/admin/team/actions";
+import { selectClassName } from "@/lib/formatters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,9 +15,6 @@ const INITIAL_STATE: MemberActionState = {
   status: "idle",
   message: "",
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
 
 export function CreateProfileAccessForm({
   instructorId,

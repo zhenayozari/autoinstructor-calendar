@@ -45,6 +45,76 @@ function addDays(value: string, days: number) {
   return formatDateValue(date);
 }
 
+function isMissingColumnError(error: { code?: string; message?: string } | null) {
+  const message = error?.message?.toLowerCase() ?? "";
+
+  return (
+    error?.code === "42703" ||
+    error?.code === "PGRST204" ||
+    message.includes("does not exist") ||
+    message.includes("could not find") ||
+    message.includes("schema cache")
+  );
+}
+
+async function getDefaultPriceAmount(
+  supabase: ReturnType<typeof createAdminClient>,
+  lessonTypeId: string,
+) {
+  const { data, error } = await supabase
+    .from("lesson_types")
+    .select("default_price_amount")
+    .eq("id", lessonTypeId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error)) {
+      return null;
+    }
+
+    throw new Error(error.message);
+  }
+
+  return typeof data?.default_price_amount === "number"
+    ? data.default_price_amount
+    : null;
+}
+
+async function insertStudentBooking({
+  supabase,
+  slotId,
+  accessId,
+  studentLabel,
+  priceAmount,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  slotId: string;
+  accessId: string;
+  studentLabel: string;
+  priceAmount: number | null;
+}) {
+  const payload = {
+    slot_id: slotId,
+    student_access_id: accessId,
+    student_label: studentLabel,
+    status: "confirmed",
+  };
+  const { error } = await supabase.from("bookings").insert({
+    ...payload,
+    price_amount: priceAmount,
+  });
+
+  if (!error || !isMissingColumnError(error)) {
+    return error;
+  }
+
+  const { error: fallbackError } = await supabase
+    .from("bookings")
+    .insert(payload);
+
+  return fallbackError;
+}
+
 async function countConfirmedBookingsForAccess(accessId: string) {
   const supabase = createAdminClient();
   const { count, error } = await supabase
@@ -180,22 +250,16 @@ export async function studentBookSlotAction(
       }
     }
 
-    const { data: lessonType, error: lessonTypeError } = await supabase
-      .from("lesson_types")
-      .select("default_price_amount")
-      .eq("id", slot.lesson_type_id)
-      .maybeSingle();
-
-    if (lessonTypeError) {
-      throw new Error(lessonTypeError.message);
-    }
-
-    const { error } = await supabase.from("bookings").insert({
-      slot_id: slot.id,
-      student_access_id: access.id,
-      student_label: access.displayLabel,
-      status: "confirmed",
-      price_amount: lessonType?.default_price_amount ?? null,
+    const priceAmount = await getDefaultPriceAmount(
+      supabase,
+      slot.lesson_type_id,
+    );
+    const error = await insertStudentBooking({
+      supabase,
+      slotId: slot.id,
+      accessId: access.id,
+      studentLabel: access.displayLabel,
+      priceAmount,
     });
 
     if (error) {

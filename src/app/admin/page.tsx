@@ -3,26 +3,36 @@ import {
   BarChart3,
   CalendarDays,
   CalendarPlus,
-  ChevronDown,
-  ClipboardList,
-  ExternalLink,
+  CheckCircle2,
   KeyRound,
-  LogOut,
-  Settings,
   UserRound,
   UserRoundCheck,
-  UserRoundPen,
-  UsersRound,
 } from "lucide-react";
-import { logoutAction } from "@/app/login/actions";
 import {
   createAdminClient,
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import {
+  formatDate,
+  formatMoney,
+  formatTime,
+  getLocalDate,
+  getTransmissionLabel,
+} from "@/lib/formatters";
+import {
+  buildActiveInstructorsQuery,
+  getSelectedInstructor,
+  getSelectedInstructorId,
+} from "@/lib/queries";
+
+import { createClient } from "@/lib/supabase/server";
 import { getVisibleSlotNote } from "@/lib/slot-notes";
-import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
+import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
+import { LessonStateControls } from "@/components/admin/lesson-state-controls";
+import {
+  BookingPaymentForm,
+} from "@/components/admin/pay-toggle-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +43,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+
 export const dynamic = "force-dynamic";
 
 type AdminPageProps = {
@@ -41,90 +52,12 @@ type AdminPageProps = {
   }>;
 };
 
-type Instructor = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-  timezone: string;
-};
-
-type LessonType = {
-  id: string;
-  name: string;
-  color: string;
-};
-
-type ScheduleDay = {
-  id: string;
-  instructor_id: string;
-  date: string;
-  transmission: "automatic" | "manual" | null;
-};
-
-type Slot = {
-  id: string;
-  instructor_id: string;
-  schedule_day_id: string;
-  lesson_type_id: string;
-  start_time: string;
-  end_time: string;
-  location_type: "in_car" | "online" | "classroom" | "other";
-  status: "available" | "blocked" | "cancelled";
-  note: string | null;
-};
-
-type Booking = {
-  id: string;
-  slot_id: string;
-  student_label: string;
-  created_at: string;
-};
-
 type DashboardSlot = Slot & {
   lessonType: LessonType | null;
   scheduleDay: ScheduleDay | null;
+  school: School | null;
   booking: Booking | null;
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-10 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
-
-function getLocalDate(timezone: string, offsetDays = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    weekday: "short",
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00Z`));
-}
-
-function formatTime(value: string, timezone: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: timezone,
-  }).format(new Date(value));
-}
-
-function getTransmissionLabel(transmission: ScheduleDay["transmission"]) {
-  if (transmission === "automatic") return "АКПП";
-  if (transmission === "manual") return "МКПП";
-  return "Теория";
-}
 
 function getStatusLabel(slot: DashboardSlot) {
   if (slot.status === "blocked") return "Заблокирован";
@@ -138,21 +71,22 @@ function getStatusClassName(slot: DashboardSlot) {
   return "bg-emerald-100 text-emerald-800";
 }
 
-function getRoleLabel(role: string) {
-  if (role === "owner") return "Владелец";
-  if (role === "admin") return "Администратор";
-  if (role === "instructor") return "Инструктор";
-  return role;
+function getDashboardLessonStateLabel(lessonState: Booking["lesson_state"]) {
+  if (lessonState === "completed") return "Проведено";
+  if (lessonState === "no_show") return "Неявка";
+  return "План";
 }
 
 function SlotRow({
   slot,
   timezone,
   compact = false,
+  adminEnabled = false,
 }: {
   slot: DashboardSlot;
   timezone: string;
   compact?: boolean;
+  adminEnabled?: boolean;
 }) {
   const note = getVisibleSlotNote(slot.note);
 
@@ -177,7 +111,14 @@ function SlotRow({
             </p>
           </div>
         </div>
-        <Badge className={getStatusClassName(slot)}>
+        <Badge
+          className={getStatusClassName(slot)}
+          title={
+            slot.booking
+              ? getDashboardLessonStateLabel(slot.booking.lesson_state)
+              : undefined
+          }
+        >
           {getStatusLabel(slot)}
         </Badge>
       </div>
@@ -199,12 +140,60 @@ function SlotRow({
         </span>
       </div>
 
+      {slot.school && (
+        <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-500">
+          <span
+            className="size-2 rounded-full border border-black/10"
+            style={{ backgroundColor: slot.school.color }}
+          />
+          {slot.school.name}
+        </div>
+      )}
+
       {slot.booking && (
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-          <p className="flex items-center gap-2 text-sm font-semibold text-amber-950">
-            <UserRound className="size-4" />
-            {slot.booking.student_label}
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-2 text-sm font-semibold text-amber-950">
+              <UserRound className="size-4" />
+              {slot.booking.student_label}
+            </p>
+          </div>
+          {slot.booking.price_amount !== null && slot.booking.price_amount !== undefined && (
+            <p className="mt-1.5 text-xs font-semibold text-amber-900">
+              К оплате: {formatMoney(slot.booking.price_amount)}
+              {" · "}
+              Получено: {formatMoney(slot.booking.paid_amount ?? 0)}
+            </p>
+          )}
+          {slot.booking.is_paid && slot.booking.paid_at && (
+            <p className="mt-1.5 flex items-center gap-1 text-xs text-emerald-700">
+              <CheckCircle2 className="size-3" />
+              Оплачено {formatTime(slot.booking.paid_at, timezone)}
+            </p>
+          )}
+          <div className="mt-2">
+            <LessonStateControls
+              bookingId={slot.booking.id}
+              lessonState={slot.booking.lesson_state}
+              instructorNote={slot.booking.instructor_note}
+              disabled={!adminEnabled}
+            />
+          </div>
+          <details className="mt-2 rounded-xl border border-amber-200 bg-white/70">
+            <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold text-amber-950">
+              Оплата
+            </summary>
+            <div className="border-t border-amber-100 p-2">
+              <BookingPaymentForm
+                bookingId={slot.booking.id}
+                priceAmount={slot.booking.price_amount ?? null}
+                paidAmount={slot.booking.paid_amount ?? null}
+                paymentNote={slot.booking.payment_note ?? null}
+                isPaid={slot.booking.is_paid}
+                disabled={!adminEnabled}
+              />
+            </div>
+          </details>
         </div>
       )}
 
@@ -231,28 +220,21 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
 
-  let instructorQuery = supabase
-    .from("instructors")
-    .select("id, name, slug, public_name, timezone")
-    .eq("organization_id", membership.organizationId)
-    .eq("is_active", true)
-    .order("name");
-
-  if (membership.isInstructor && membership.instructorId) {
-    instructorQuery = instructorQuery.eq("id", membership.instructorId);
-  }
-
   const { data: instructorData, error: instructorError } =
-    await instructorQuery;
+    await buildActiveInstructorsQuery(
+      supabase,
+      membership,
+      "id, name, slug, public_name, timezone",
+    );
   const instructors = (instructorData ?? []) as Instructor[];
-  const selectedInstructorId =
-    membership.isOwnerOrAdmin && params.instructor
-      ? params.instructor
-      : membership.instructorId;
-  const selectedInstructor =
-    instructors.find((instructor) => instructor.id === selectedInstructorId) ??
-    instructors[0] ??
-    null;
+  const selectedInstructorId = getSelectedInstructorId(
+    membership,
+    params.instructor,
+  );
+  const selectedInstructor = getSelectedInstructor(
+    instructors,
+    selectedInstructorId,
+  );
   const allowedInstructorIds = selectedInstructor
     ? [selectedInstructor.id]
     : [];
@@ -263,6 +245,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const [
     { data: scheduleDayData, error: scheduleDayError },
     { data: lessonTypeData, error: lessonTypeError },
+    { data: schoolData, error: schoolError },
   ] = await Promise.all([
     allowedInstructorIds.length > 0
       ? supabase
@@ -272,6 +255,11 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           .in("date", [today, tomorrow])
       : Promise.resolve({ data: [], error: null }),
     supabase.from("lesson_types").select("id, name, color"),
+    supabase
+      .from("schools")
+      .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+      .eq("organization_id", membership.organizationId)
+      .order("name"),
   ]);
 
   const scheduleDays = (scheduleDayData ?? []) as ScheduleDay[];
@@ -281,7 +269,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
       ? await supabase
           .from("slots")
           .select(
-            "id, instructor_id, schedule_day_id, lesson_type_id, start_time, end_time, location_type, status, note",
+            "id, instructor_id, schedule_day_id, lesson_type_id, school_id, start_time, end_time, location_type, status, note",
           )
           .in("schedule_day_id", scheduleDayIds)
           .neq("status", "cancelled")
@@ -293,18 +281,21 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, created_at")
-          .in("slot_id", slotIds)
-          .eq("status", "confirmed")
-      : { data: [], error: null };
+                .select("id, slot_id, student_label, student_access_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, lesson_state, completed_at, instructor_note")
+                .in("slot_id", slotIds)
+                .eq("status", "confirmed")
+            : { data: [], error: null };
 
+  // Augment bookings with payment fields (select includes them)
   const loadError =
     instructorError ??
     scheduleDayError ??
     lessonTypeError ??
+    schoolError ??
     slotError ??
     bookingError;
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
+  const schools = (schoolData ?? []) as School[];
   const bookings = (bookingData ?? []) as Booking[];
   const lessonTypesById = new Map(
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
@@ -312,6 +303,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const scheduleDaysById = new Map(
     scheduleDays.map((scheduleDay) => [scheduleDay.id, scheduleDay]),
   );
+  const schoolsById = new Map(schools.map((school) => [school.id, school]));
   const bookingsBySlotId = new Map(
     bookings.map((booking) => [booking.slot_id, booking]),
   );
@@ -320,6 +312,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
       ...slot,
       lessonType: lessonTypesById.get(slot.lesson_type_id) ?? null,
       scheduleDay: scheduleDaysById.get(slot.schedule_day_id) ?? null,
+      school: slot.school_id ? schoolsById.get(slot.school_id) ?? null : null,
       booking: bookingsBySlotId.get(slot.id) ?? null,
     }))
     .sort(
@@ -346,170 +339,96 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const nextBookings = dashboardSlots
     .filter((slot) => slot.booking && new Date(slot.end_time) >= now)
     .slice(0, 5);
+  const todayCompletedSlots = todaySlots.filter(
+    (slot) => slot.booking?.lesson_state === "completed",
+  );
+  const todayEarnedAmount = todayCompletedSlots.reduce(
+    (sum, slot) => sum + (slot.booking?.price_amount ?? 0),
+    0,
+  );
+  const todayPaidAmount = todayCompletedSlots
+    .reduce((sum, slot) => sum + (slot.booking?.paid_amount ?? 0), 0);
+  const todayDebtSlots = todayCompletedSlots.filter(
+    (slot) => !slot.booking?.is_paid,
+  );
+  const todayDebtAmount = Math.max(todayEarnedAmount - todayPaidAmount, 0);
 
-  return (
-    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
+      return (
+    <main className="px-3 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-3 sm:space-y-6">
-        <AdminMobileNav
-          role={membership.role}
-          email={membership.user.email}
-          instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
-          showTeam={membership.isOwnerOrAdmin}
-        />
-
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-muted-foreground text-sm font-medium">
-                Рабочий экран
-              </p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-                Сегодня
-              </h1>
-            </div>
-
-            <div className="min-w-0 rounded-full border bg-zinc-50 px-3 py-2 text-right text-[11px] leading-4 text-zinc-500 sm:text-xs">
-              <span className="block font-semibold text-zinc-900">
-                {getRoleLabel(membership.role)}
-              </span>
-              <span className="block max-w-[150px] truncate sm:max-w-[240px]">
-                {membership.user.email}
-              </span>
-            </div>
+          <div>
+            <p className="text-muted-foreground text-sm font-medium">
+              Рабочий экран
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              Сегодня
+            </h1>
           </div>
         </header>
 
-        <details className="group hidden rounded-2xl border bg-white shadow-sm sm:block">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 sm:px-5">
-            <div className="min-w-0">
-              <p className="font-semibold">Навигация и инструктор</p>
-              <p className="text-muted-foreground mt-0.5 truncate text-xs sm:text-sm">
-                {selectedInstructor
-                  ? `${selectedInstructor.public_name ?? selectedInstructor.name} / ${selectedInstructor.slug}`
-                  : "Инструктор не выбран"}
-              </p>
-            </div>
-            <ChevronDown className="text-muted-foreground size-5 shrink-0 transition-transform group-open:rotate-180" />
-          </summary>
 
-          <div className="space-y-4 border-t px-4 py-4 sm:px-5">
-            {membership.isOwnerOrAdmin && instructors.length > 0 && (
-              <form className="flex flex-col gap-3 sm:flex-row">
-                <select
-                  name="instructor"
-                  className={selectClassName}
-                  defaultValue={selectedInstructor?.id}
-                >
-                  {instructors.map((instructor) => (
-                    <option key={instructor.id} value={instructor.id}>
-                      {instructor.public_name ?? instructor.name} /{" "}
-                      {instructor.slug}
-                    </option>
-                  ))}
-                </select>
-                <Button type="submit" className="h-10">
-                  Показать
-                </Button>
-              </form>
-            )}
 
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/schedule" />}
-              >
-                <ExternalLink />
-                Календарь
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/schedule" />}
-              >
-                <CalendarDays />
-                Расписание
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/bookings" />}
-              >
-                <ClipboardList />
-                Записи
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/reports" />}
-              >
-                <BarChart3 />
-                Итоги
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/students" />}
-              >
-                <UserRoundCheck />
-                Ученики
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/settings" />}
-              >
-                <Settings />
-                Настройки
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={
-                  <Link
-                    href={
-                      selectedInstructor
-                        ? `/admin/profile?instructor=${selectedInstructor.id}`
-                        : "/admin/profile"
-                    }
-                  />
-                }
-              >
-                <UserRoundPen />
-                Профиль
-              </Button>
-              {membership.isOwnerOrAdmin && (
-                <Button
-                  variant="outline"
-                  className="h-10"
-                  nativeButton={false}
-                  render={<Link href="/admin/team" />}
-                >
-                  <UsersRound />
-                  Команда
-                </Button>
-              )}
-              <form action={logoutAction}>
-                <Button type="submit" variant="outline" className="h-10 w-full">
-                  <LogOut />
-                  Выйти
-                </Button>
-              </form>
-            </div>
-          </div>
-        </details>
-
-        {loadError && (
+                {loadError && (
           <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
             Не удалось загрузить часть данных: {loadError.message}
           </div>
+        )}
+
+        {selectedInstructor && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span className="font-semibold text-zinc-950">
+                Сегодня: {todaySlots.length}{" "}
+                {todaySlots.length === 1 ? "занятие" : todaySlots.length >= 2 && todaySlots.length <= 4 ? "занятия" : "занятий"}
+              </span>
+              <span className="text-zinc-500">
+                {todaySlots.filter((s) => !s.booking).length} свободных
+              </span>
+              <span className="text-zinc-500">
+                {todaySlots.filter((s) => s.booking).length} записано
+              </span>
+              <span className="text-emerald-600 font-medium">
+                {todaySlots.filter((s) => s.booking?.is_paid).length} оплачено
+              </span>
+            </div>
+            <Button
+              nativeButton={false}
+              render={
+                <Link href="/admin/schedule?create=slot#schedule-quick-actions" />
+              }
+              className="h-9"
+            >
+              <CalendarPlus className="size-4" />
+              Добавить слот
+            </Button>
+          </div>
+        )}
+
+        {selectedInstructor && (
+          <section className="grid gap-2 sm:grid-cols-3">
+            <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
+              <p className="text-xs font-medium text-zinc-500">Проведено сегодня</p>
+              <p className="mt-1 text-xl font-semibold text-zinc-950">
+                {todayCompletedSlots.length}
+              </p>
+            </div>
+            <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
+              <p className="text-xs font-medium text-zinc-500">Заработано / получено</p>
+              <p className="mt-1 text-xl font-semibold text-zinc-950">
+                {formatMoney(todayEarnedAmount)} / {formatMoney(todayPaidAmount)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
+              <p className="text-xs font-medium text-amber-700">Долг сегодня</p>
+              <p className="mt-1 text-xl font-semibold text-amber-950">
+                {formatMoney(todayDebtAmount)}
+              </p>
+              <p className="mt-0.5 text-xs text-amber-700">
+                {todayDebtSlots.length} занятий
+              </p>
+            </div>
+          </section>
         )}
 
         {!selectedInstructor ? (
@@ -525,8 +444,8 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {nextSlot ? (
-                    <SlotRow slot={nextSlot} timezone={timezone} />
+                                    {nextSlot ? (
+                    <SlotRow slot={nextSlot} timezone={timezone} adminEnabled={adminEnabled} />
                   ) : (
                     <EmptyState>
                       На сегодня и завтра ближайших занятий нет.
@@ -562,15 +481,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                     <CalendarDays />
                     Открыть неделю
                   </Button>
-                  <Button
-                    variant="outline"
-                    nativeButton={false}
-                    render={<Link href="/admin/bookings" />}
-                    className="h-11 justify-start"
-                  >
-                    <ClipboardList />
-                    Список записей
-                  </Button>
+                  
                   <Button
                     variant="outline"
                     nativeButton={false}
@@ -612,13 +523,14 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {todaySlots.length > 0 ? (
+                                    {todaySlots.length > 0 ? (
                     todaySlots.map((slot) => (
                       <SlotRow
                         key={slot.id}
                         slot={slot}
                         timezone={timezone}
                         compact
+                        adminEnabled={adminEnabled}
                       />
                     ))
                   ) : (
@@ -635,13 +547,14 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {tomorrowSlots.length > 0 ? (
+                                    {tomorrowSlots.length > 0 ? (
                     tomorrowSlots.slice(0, 5).map((slot) => (
                       <SlotRow
                         key={slot.id}
                         slot={slot}
                         timezone={timezone}
                         compact
+                        adminEnabled={adminEnabled}
                       />
                     ))
                   ) : (
@@ -670,12 +583,13 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               </CardHeader>
               <CardContent className="space-y-2">
                 {nextBookings.length > 0 ? (
-                  nextBookings.map((slot) => (
+                                    nextBookings.map((slot) => (
                     <SlotRow
                       key={slot.id}
                       slot={slot}
                       timezone={timezone}
                       compact
+                      adminEnabled={adminEnabled}
                     />
                   ))
                 ) : (
@@ -686,7 +600,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           </>
         )}
       </div>
-
     </main>
   );
 }
+

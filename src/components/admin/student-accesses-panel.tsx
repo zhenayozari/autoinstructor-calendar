@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, useActionState } from "react";
+import { useState, useActionState } from "react";
 import {
+  Archive,
   Check,
   Copy,
   KeyRound,
@@ -12,55 +13,66 @@ import {
   RefreshCw,
 } from "lucide-react";
 import {
+  approveStudentRegistrationRequestAction,
+  archiveStudentAccessAction,
   createStudentAccessAction,
+  rejectStudentRegistrationRequestAction,
   toggleStudentAccessAction,
   updateStudentAccessAction,
   type StudentAccessActionState,
 } from "@/app/admin/students/actions";
+import { formatLocalDateTime, formatMoney, selectClassName } from "@/lib/formatters";
+import type {
+  Instructor,
+  LessonType,
+  School,
+  StudentAccess,
+  StudentRegistrationRequest,
+} from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-type Instructor = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-};
-
-type LessonType = {
-  id: string;
-  code: string;
-  name: string;
-  color: string;
-  kind: "driving" | "theory";
-  tags: string[];
-};
-
-type StudentAccess = {
-  id: string;
-  instructor_id: string;
-  display_label: string;
-  login: string;
-  total_lesson_limit: number | null;
-  weekly_lesson_limit: number | null;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  lesson_type_ids: string[];
-};
 
 const INITIAL_STATE: StudentAccessActionState = {
   status: "idle",
   message: "",
 };
 
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-10 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
+export type StudentAccessCrmSummary = {
+  plannedCount: number;
+  completedCount: number;
+  noShowCount: number;
+  paidCount: number;
+  unpaidCompletedCount: number;
+  debtAmount: number;
+  lastLessons: {
+    id: string;
+    startsAt: string;
+    lessonTypeName: string;
+    lessonState: "scheduled" | "completed" | "no_show";
+    isPaid: boolean;
+    priceAmount: number | null;
+    paidAmount: number;
+  }[];
+};
+
+export type StudentAccessCrm = StudentAccess & {
+  school?: School | null;
+  crm?: StudentAccessCrmSummary;
+};
 
 function getInstructorLabel(instructor: Instructor) {
   return instructor.public_name ?? instructor.name;
+}
+
+function getRequestDisplayName(request: StudentRegistrationRequest) {
+  const label = [request.last_name, request.first_name]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  return label || request.login;
 }
 
 function makeLogin() {
@@ -71,14 +83,28 @@ function makePin() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+function getActiveLessonTypes(lessonTypes: LessonType[]) {
+  return lessonTypes.filter((lessonType) => lessonType.is_active !== false);
+}
+
+function getEditableLessonTypes(
+  lessonTypes: LessonType[],
+  selectedIds: string[],
+) {
+  return lessonTypes.filter(
+    (lessonType) =>
+      lessonType.is_active !== false || selectedIds.includes(lessonType.id),
+  );
+}
+
+function getActiveSchools(schools: School[]) {
+  return schools.filter((school) => school.is_active !== false);
+}
+
+function getEditableSchools(schools: School[], selectedId: string | null) {
+  return schools.filter(
+    (school) => school.is_active !== false || school.id === selectedId,
+  );
 }
 
 function StateMessage({ state }: { state: StudentAccessActionState }) {
@@ -124,7 +150,10 @@ function LessonTypeCheckboxes({
             className="size-3 shrink-0 rounded-full border border-black/10"
             style={{ backgroundColor: lessonType.color }}
           />
-          <span className="min-w-0 truncate">{lessonType.name}</span>
+          <span className="min-w-0 truncate">
+            {lessonType.name}
+            {lessonType.is_active === false ? " · скрыт" : ""}
+          </span>
         </label>
       ))}
     </div>
@@ -164,7 +193,7 @@ function CopyAccessButton({
       disabled={!login}
     >
       {copied ? <Check /> : <Copy />}
-      {copied ? "Скопировано" : "Скопировать доступ"}
+      {copied ? "Скопировано" : "Скопировать логин и PIN"}
     </Button>
   );
 }
@@ -172,11 +201,13 @@ function CopyAccessButton({
 function CreateStudentAccessForm({
   instructors,
   lessonTypes,
+  schools,
   selectedInstructorId,
   canSelectInstructor,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
+  schools: School[];
   selectedInstructorId: string;
   canSelectInstructor: boolean;
 }) {
@@ -187,11 +218,13 @@ function CreateStudentAccessForm({
   const [label, setLabel] = useState("");
   const [login, setLogin] = useState(makeLogin());
   const [secret, setSecret] = useState(makePin());
+  const activeLessonTypes = getActiveLessonTypes(lessonTypes);
+  const activeSchools = getActiveSchools(schools);
 
   return (
-    <details className="rounded-2xl border border-zinc-300 bg-white shadow-sm open:border-zinc-500 open:shadow-md" open>
+    <details className="rounded-2xl border border-zinc-300 bg-white shadow-sm open:border-zinc-500 open:shadow-md">
       <summary className="cursor-pointer list-none px-4 py-4 font-semibold sm:px-5">
-        + Создать учебный доступ
+        + Добавить ученика
       </summary>
 
       <form action={formAction} className="space-y-5 border-t px-4 py-5 sm:px-5">
@@ -218,7 +251,7 @@ function CreateStudentAccessForm({
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="student-access-label">Метка ученика</Label>
+            <Label htmlFor="student-access-label">Имя или метка ученика</Label>
             <Input
               id="student-access-label"
               name="display_label"
@@ -227,6 +260,17 @@ function CreateStudentAccessForm({
               placeholder="Например: Маша, ГД-07, Ученик 12"
               maxLength={80}
               required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="student-access-phone">Телефон</Label>
+            <Input
+              id="student-access-phone"
+              name="student_phone"
+              type="tel"
+              placeholder="+7 999 123-45-67"
+              maxLength={40}
             />
           </div>
 
@@ -276,59 +320,90 @@ function CreateStudentAccessForm({
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="student-access-total-limit">
-              Лимит всего занятий
-            </Label>
-            <Input
-              id="student-access-total-limit"
-              name="total_lesson_limit"
-              type="number"
-              min={1}
-              max={500}
-              placeholder="Например: 10"
-            />
-          </div>
+        </div>
 
+        <div className="rounded-xl border bg-zinc-50 px-3 py-4">
           <div className="space-y-2">
-            <Label htmlFor="student-access-weekly-limit">
-              Лимит в неделю
-            </Label>
-            <Input
-              id="student-access-weekly-limit"
-              name="weekly_lesson_limit"
-              type="number"
-              min={1}
-              max={50}
-              placeholder="Например: 2"
-            />
+            <Label htmlFor="student-access-school">Автошкола / источник</Label>
+            <select
+              id="student-access-school"
+              name="school_id"
+              className={selectClassName}
+              defaultValue=""
+            >
+              <option value="">Частный ученик / без автошколы</option>
+              {activeSchools.map((school) => (
+                <option key={school.id} value={school.id}>
+                  {school.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
-        <div className="space-y-2">
-          <Label>Какие слоты показывать ученику</Label>
-          <LessonTypeCheckboxes lessonTypes={lessonTypes} />
-          <p className="text-muted-foreground text-xs">
-            Можно выбрать автошколу, допы, подарочные занятия или теорию.
-          </p>
-        </div>
+        <details className="rounded-xl border bg-zinc-50">
+          <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
+            Типы занятий
+          </summary>
+          <div className="space-y-2 border-t px-3 py-4">
+            <LessonTypeCheckboxes lessonTypes={activeLessonTypes} />
+            <p className="text-muted-foreground text-xs">
+              Ученик увидит только выбранные типы слотов.
+            </p>
+          </div>
+        </details>
 
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <input
-            type="checkbox"
-            name="is_active"
-            defaultChecked
-            className="size-4"
-          />
-          Доступ активен
-        </label>
+        <details className="rounded-xl border bg-zinc-50">
+          <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
+            Дополнительно
+          </summary>
+          <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="student-access-total-limit">
+                Лимит всего занятий
+              </Label>
+              <Input
+                id="student-access-total-limit"
+                name="total_lesson_limit"
+                type="number"
+                min={1}
+                max={500}
+                placeholder="Например: 10"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="student-access-weekly-limit">
+                Лимит в неделю
+              </Label>
+              <Input
+                id="student-access-weekly-limit"
+                name="weekly_lesson_limit"
+                type="number"
+                min={1}
+                max={50}
+                placeholder="Например: 2"
+              />
+            </div>
+
+            <label className="flex items-center gap-2 text-sm font-medium md:col-span-2">
+              <input
+                type="checkbox"
+                name="is_active"
+                defaultChecked
+                className="size-4"
+              />
+              Доступ активен
+            </label>
+          </div>
+        </details>
 
         <StateMessage state={state} />
 
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="submit" disabled={isPending}>
             <Plus />
-            {isPending ? "Создаём…" : "Создать доступ"}
+            {isPending ? "Добавляем…" : "Добавить ученика"}
           </Button>
           <CopyAccessButton label={label} login={login} secret={secret} />
         </div>
@@ -339,24 +414,29 @@ function CreateStudentAccessForm({
 
 function StudentAccessCard({
   access,
-  instructor,
   lessonTypes,
+  schools,
 }: {
-  access: StudentAccess;
-  instructor: Instructor | undefined;
+  access: StudentAccessCrm;
   lessonTypes: LessonType[];
+  schools: School[];
 }) {
   const [updateState, updateAction, isUpdatePending] = useActionState(
     updateStudentAccessAction,
     INITIAL_STATE,
   );
-  const [toggleState, toggleAction, isTogglePending] = useActionState(
+  const [, toggleAction, isTogglePending] = useActionState(
     toggleStudentAccessAction,
     INITIAL_STATE,
   );
   const allowedTypes = lessonTypes.filter((lessonType) =>
     access.lesson_type_ids.includes(lessonType.id),
   );
+  const editableLessonTypes = getEditableLessonTypes(
+    lessonTypes,
+    access.lesson_type_ids,
+  );
+  const editableSchools = getEditableSchools(schools, access.school_id);
 
   return (
     <details className="rounded-2xl border border-zinc-200 bg-white shadow-sm transition open:border-zinc-500 open:bg-zinc-50/70 open:shadow-md">
@@ -369,8 +449,26 @@ function StudentAccessCard({
             </div>
             <p className="text-muted-foreground mt-1 text-xs">
               Логин: <span className="font-semibold">{access.login}</span>
-              {instructor ? ` · ${getInstructorLabel(instructor)}` : ""}
             </p>
+            {access.student_phone && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                Телефон:{" "}
+                <span className="font-semibold">{access.student_phone}</span>
+              </p>
+            )}
+            <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+              <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold text-zinc-700">
+                План {access.crm?.plannedCount ?? 0}
+              </span>
+              <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
+                Проведено {access.crm?.completedCount ?? 0}
+              </span>
+              {(access.crm?.debtAmount ?? 0) > 0 && (
+                <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
+                  Долг {formatMoney(access.crm?.debtAmount ?? 0)}
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge
@@ -423,9 +521,84 @@ function StudentAccessCard({
           </div>
           <div className="rounded-xl bg-white px-3 py-2">
             <p className="text-xs text-zinc-500">Создан</p>
-            <p className="font-semibold">{formatDate(access.created_at)}</p>
+            <p className="font-semibold">{formatLocalDateTime(access.created_at)}</p>
           </div>
         </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">Источник</p>
+            <p className="truncate font-semibold">
+              {access.school?.name ?? "Частный ученик"}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">План / проведено</p>
+            <p className="font-semibold">
+              {access.crm?.plannedCount ?? 0} / {access.crm?.completedCount ?? 0}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">Оплачено</p>
+            <p className="font-semibold">
+              {access.crm?.paidCount ?? 0} занятий
+            </p>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-xs text-amber-700">Долг</p>
+            <p className="font-semibold text-amber-950">
+              {formatMoney(access.crm?.debtAmount ?? 0)}
+            </p>
+          </div>
+        </div>
+
+        {access.crm && access.crm.lastLessons.length > 0 && (
+          <div>
+            <p className="text-sm font-semibold">История занятий</p>
+            <div className="mt-2 divide-y rounded-xl border bg-white">
+              {access.crm.lastLessons.map((lesson) => (
+                <div
+                  key={lesson.id}
+                  className="flex flex-col gap-1 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{lesson.lessonTypeName}</p>
+                    <p className="text-xs text-zinc-500">
+                      {formatLocalDateTime(lesson.startsAt)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold">
+                      {lesson.lessonState === "completed"
+                        ? "Проведено"
+                        : lesson.lessonState === "no_show"
+                          ? "Неявка"
+                          : "План"}
+                    </span>
+                    {lesson.priceAmount !== null && (
+                      <>
+                        <span className="font-semibold">
+                          {formatMoney(lesson.paidAmount)} /{" "}
+                          {formatMoney(lesson.priceAmount)}
+                        </span>
+                        {lesson.paidAmount >= lesson.priceAmount ? (
+                          <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
+                            Долга нет
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
+                            Долг{" "}
+                            {formatMoney(lesson.priceAmount - lesson.paidAmount)}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div>
           <p className="text-sm font-semibold">Разрешённые типы</p>
@@ -475,6 +648,55 @@ function StudentAccessCard({
               />
             </div>
             <div className="space-y-2">
+              <Label htmlFor={`login-${access.id}`}>Логин</Label>
+              <Input
+                id={`login-${access.id}`}
+                name="login"
+                defaultValue={access.login}
+                placeholder="masha-01"
+                required
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor={`phone-${access.id}`}>Телефон</Label>
+              <Input
+                id={`phone-${access.id}`}
+                name="student_phone"
+                type="tel"
+                defaultValue={access.student_phone ?? ""}
+                placeholder="+7 999 123-45-67"
+                maxLength={40}
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor={`school-${access.id}`}>Автошкола / источник</Label>
+              <select
+                id={`school-${access.id}`}
+                name="school_id"
+                className={selectClassName}
+                defaultValue={access.school_id ?? ""}
+              >
+                <option value="">Частный ученик / без автошколы</option>
+                {editableSchools.map((school) => (
+                  <option key={school.id} value={school.id}>
+                    {school.name}
+                    {school.is_active === false ? " · скрыт" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Какие слоты показывать ученику</Label>
+            <LessonTypeCheckboxes
+              lessonTypes={editableLessonTypes}
+              selectedIds={access.lesson_type_ids}
+            />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
               <Label htmlFor={`total-limit-${access.id}`}>
                 Лимит всего занятий
               </Label>
@@ -502,14 +724,6 @@ function StudentAccessCard({
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label>Какие слоты показывать ученику</Label>
-            <LessonTypeCheckboxes
-              lessonTypes={lessonTypes}
-              selectedIds={access.lesson_type_ids}
-            />
-          </div>
-
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
               type="checkbox"
@@ -521,7 +735,6 @@ function StudentAccessCard({
           </label>
 
           <StateMessage state={updateState} />
-          <StateMessage state={toggleState} />
 
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button type="submit" variant="outline" disabled={isUpdatePending}>
@@ -531,35 +744,330 @@ function StudentAccessCard({
             <CopyAccessButton label={access.display_label} login={access.login} />
           </div>
         </form>
+
+        <div className="border-t pt-4">
+          <ArchiveStudentAccessForm accessId={access.id} />
+        </div>
       </div>
     </details>
+  );
+}
+
+function ArchiveStudentAccessForm({ accessId }: { accessId: string }) {
+  const [state, formAction, isPending] = useActionState(
+    archiveStudentAccessAction,
+    INITIAL_STATE,
+  );
+
+  return (
+    <form action={formAction} className="space-y-2">
+      <input type="hidden" name="student_access_id" value={accessId} />
+      <StateMessage state={state} />
+      <Button
+        type="submit"
+        variant="outline"
+        className="text-zinc-500 hover:border-zinc-400 hover:text-zinc-700"
+        disabled={isPending}
+      >
+        <Archive className="size-4" />
+        {isPending ? "Перемещаем…" : "В архив"}
+      </Button>
+    </form>
+  );
+}
+
+function StudentRegistrationRequestCard({
+  request,
+  lessonTypes,
+  schools,
+}: {
+  request: StudentRegistrationRequest;
+  lessonTypes: LessonType[];
+  schools: School[];
+}) {
+  const [approveState, approveAction, isApprovePending] = useActionState(
+    approveStudentRegistrationRequestAction,
+    INITIAL_STATE,
+  );
+  const [rejectState, rejectAction, isRejectPending] = useActionState(
+    rejectStudentRegistrationRequestAction,
+    INITIAL_STATE,
+  );
+  const displayName = getRequestDisplayName(request);
+  const activeLessonTypes = getActiveLessonTypes(lessonTypes);
+  const activeSchools = getActiveSchools(schools);
+
+  return (
+    <details className="rounded-2xl border border-amber-200 bg-amber-50/70 shadow-sm open:border-amber-400 open:shadow-md">
+      <summary className="cursor-pointer list-none px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <KeyRound className="size-4 text-amber-700" />
+              <p className="truncate font-semibold">{displayName}</p>
+            </div>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Логин: <span className="font-semibold">{request.login}</span>
+              {" · "}
+              Заявка: {formatLocalDateTime(request.created_at)}
+            </p>
+            {request.student_phone && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                Телефон:{" "}
+                <span className="font-semibold">{request.student_phone}</span>
+              </p>
+            )}
+            {request.school_text && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                Автошкола из заявки:{" "}
+                <span className="font-semibold">{request.school_text}</span>
+              </p>
+            )}
+          </div>
+          <Badge className="shrink-0 bg-amber-100 text-amber-800">
+            Подтвердите ученика
+          </Badge>
+        </div>
+      </summary>
+
+      <div className="space-y-4 border-t border-amber-200 px-4 py-5 sm:px-5">
+        <form action={approveAction} className="space-y-4">
+          <input type="hidden" name="request_id" value={request.id} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor={`request-label-${request.id}`}>
+                Имя или метка ученика
+              </Label>
+              <Input
+                id={`request-label-${request.id}`}
+                name="display_label"
+                defaultValue={displayName}
+                maxLength={80}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`request-phone-${request.id}`}>Телефон</Label>
+              <Input
+                id={`request-phone-${request.id}`}
+                name="student_phone"
+                type="tel"
+                defaultValue={request.student_phone ?? ""}
+                placeholder="+7 999 123-45-67"
+                maxLength={40}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`request-login-${request.id}`}>Логин</Label>
+              <Input
+                id={`request-login-${request.id}`}
+                name="login"
+                defaultValue={request.login}
+                placeholder="masha-01"
+                required
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor={`request-school-${request.id}`}>
+                Автошкола / источник
+              </Label>
+              <select
+                id={`request-school-${request.id}`}
+                name="school_id"
+                className={selectClassName}
+                defaultValue=""
+              >
+                <option value="">Частный ученик / без автошколы</option>
+                {activeSchools.map((school) => (
+                  <option key={school.id} value={school.id}>
+                    {school.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <details className="rounded-xl border bg-white">
+            <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
+              Типы занятий
+            </summary>
+            <div className="space-y-2 border-t px-3 py-4">
+              <LessonTypeCheckboxes lessonTypes={activeLessonTypes} />
+            </div>
+          </details>
+
+          <details className="rounded-xl border bg-white">
+            <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
+              Дополнительно
+            </summary>
+            <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor={`request-total-limit-${request.id}`}>
+                  Лимит всего занятий
+                </Label>
+                <Input
+                  id={`request-total-limit-${request.id}`}
+                  name="total_lesson_limit"
+                  type="number"
+                  min={1}
+                  max={500}
+                  placeholder="Например: 10"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={`request-weekly-limit-${request.id}`}>
+                  Лимит в неделю
+                </Label>
+                <Input
+                  id={`request-weekly-limit-${request.id}`}
+                  name="weekly_lesson_limit"
+                  type="number"
+                  min={1}
+                  max={50}
+                  placeholder="Например: 2"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm font-medium md:col-span-2">
+                <input
+                  type="checkbox"
+                  name="is_active"
+                  defaultChecked
+                  className="size-4"
+                />
+                Доступ активен
+              </label>
+            </div>
+          </details>
+
+          <StateMessage state={approveState} />
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button type="submit" disabled={isApprovePending}>
+              <Check />
+              {isApprovePending ? "Подтверждаем…" : "Подтвердить ученика"}
+            </Button>
+          </div>
+        </form>
+
+        <form action={rejectAction} className="border-t border-amber-200 pt-4">
+          <input type="hidden" name="request_id" value={request.id} />
+          <StateMessage state={rejectState} />
+          <Button
+            type="submit"
+            variant="outline"
+            className="mt-2 text-zinc-500 hover:border-zinc-400 hover:text-zinc-700"
+            disabled={isRejectPending}
+          >
+            <Archive />
+            {isRejectPending ? "Отклоняем…" : "Отклонить заявку"}
+          </Button>
+        </form>
+      </div>
+    </details>
+  );
+}
+
+function ArchivedAccessCard({
+  access,
+  lessonTypes,
+}: {
+  access: StudentAccessCrm;
+  lessonTypes: LessonType[];
+}) {
+  const allowedTypes = lessonTypes.filter((lt) =>
+    access.lesson_type_ids.includes(lt.id),
+  );
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-4 sm:px-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Archive className="size-4 text-zinc-400" />
+            <p className="truncate font-semibold text-zinc-600">
+              {access.display_label}
+            </p>
+          </div>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Логин: <span className="font-semibold">{access.login}</span>
+            {access.archived_at
+              ? ` · В архиве с ${formatLocalDateTime(access.archived_at)}`
+              : ""}
+          </p>
+          {access.student_phone && (
+            <p className="text-muted-foreground mt-1 text-xs">
+              Телефон:{" "}
+              <span className="font-semibold">{access.student_phone}</span>
+            </p>
+          )}
+        </div>
+        <Badge className="shrink-0 bg-zinc-200 text-zinc-600">Архив</Badge>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-3 text-sm text-zinc-500">
+        <span>
+          Лимит всего:{" "}
+          <span className="font-medium text-zinc-700">
+            {access.total_lesson_limit ?? "—"}
+          </span>
+        </span>
+        <span>
+          В неделю:{" "}
+          <span className="font-medium text-zinc-700">
+            {access.weekly_lesson_limit ?? "—"}
+          </span>
+        </span>
+      </div>
+
+      {allowedTypes.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {allowedTypes.map((lt) => (
+            <span
+              key={lt.id}
+              className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-xs font-medium text-zinc-600"
+            >
+              <span
+                className="size-2 rounded-full border border-black/10"
+                style={{ backgroundColor: lt.color }}
+              />
+              {lt.name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 export function StudentAccessesPanel({
   instructors,
   lessonTypes,
+  schools,
   accesses,
+  archivedAccesses = [],
+  pendingRequests = [],
   selectedInstructorId,
   canSelectInstructor,
   adminEnabled,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
-  accesses: StudentAccess[];
+  schools: School[];
+  accesses: StudentAccessCrm[];
+  archivedAccesses?: StudentAccessCrm[];
+  pendingRequests?: StudentRegistrationRequest[];
   selectedInstructorId: string;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
 }) {
-  const instructorsById = useMemo(
-    () => new Map(instructors.map((instructor) => [instructor.id, instructor])),
-    [instructors],
+  const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
+    pendingRequests.length > 0 ? "pending" : "active",
   );
 
   if (!adminEnabled) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
-        Для управления учебными доступами нужен серверный ключ{" "}
+        Для управления учениками нужен серверный ключ{" "}
         <code className="font-semibold">SUPABASE_SECRET_KEY</code>.
       </div>
     );
@@ -567,37 +1075,112 @@ export function StudentAccessesPanel({
 
   return (
     <div className="space-y-4">
-      <CreateStudentAccessForm
-        instructors={instructors}
-        lessonTypes={lessonTypes}
-        selectedInstructorId={selectedInstructorId}
-        canSelectInstructor={canSelectInstructor}
-      />
+      {tab === "active" && (
+        <CreateStudentAccessForm
+          instructors={instructors}
+          lessonTypes={lessonTypes}
+          schools={schools}
+          selectedInstructorId={selectedInstructorId}
+          canSelectInstructor={canSelectInstructor}
+        />
+      )}
 
       <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold">Учебные доступы</h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Это не регистрация учеников, а контролируемый доступ к нужным слотам.
-          </p>
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold">Ученики</h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Активные ученики, прогресс, оплата и архив.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-1 rounded-xl border bg-zinc-100 p-1">
+            <button
+              type="button"
+              onClick={() => setTab("active")}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === "active"
+                  ? "bg-white text-zinc-950 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-700"
+              }`}
+            >
+              Активные · {accesses.length}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("pending")}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === "pending"
+                  ? "bg-white text-zinc-950 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-700"
+              }`}
+            >
+              Заявки · {pendingRequests.length}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("archive")}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === "archive"
+                  ? "bg-white text-zinc-950 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-700"
+              }`}
+            >
+              Архив · {archivedAccesses.length}
+            </button>
+          </div>
         </div>
 
-        {accesses.length === 0 ? (
-          <div className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm text-zinc-500">
-            Пока нет учебных доступов. Создайте первый доступ и передайте ученику
-            ссылку, логин и PIN.
-          </div>
+        {tab === "active" ? (
+          accesses.length === 0 ? (
+            <div className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm text-zinc-500">
+              Пока нет учеников. Добавьте первого ученика и передайте ему ссылку,
+              логин и PIN.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {accesses.map((access) => (
+                <StudentAccessCard
+                  key={access.id}
+                  access={access}
+                  lessonTypes={lessonTypes}
+                  schools={schools}
+                />
+              ))}
+            </div>
+          )
+        ) : tab === "pending" ? (
+          pendingRequests.length === 0 ? (
+            <div className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm text-zinc-500">
+              Новых заявок пока нет.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingRequests.map((request) => (
+                <StudentRegistrationRequestCard
+                  key={request.id}
+                  request={request}
+                  lessonTypes={lessonTypes}
+                  schools={schools}
+                />
+              ))}
+            </div>
+          )
         ) : (
-          <div className="space-y-3">
-            {accesses.map((access) => (
-              <StudentAccessCard
-                key={access.id}
-                access={access}
-                instructor={instructorsById.get(access.instructor_id)}
-                lessonTypes={lessonTypes}
-              />
-            ))}
-          </div>
+          archivedAccesses.length === 0 ? (
+            <div className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm text-zinc-500">
+              Архив пуст. Архивированные ученики появятся здесь.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {archivedAccesses.map((access) => (
+                <ArchivedAccessCard
+                  key={access.id}
+                  access={access}
+                  lessonTypes={lessonTypes}
+                />
+              ))}
+            </div>
+          )
         )}
       </section>
     </div>

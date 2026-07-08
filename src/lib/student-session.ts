@@ -11,6 +11,7 @@ export type CurrentStudentAccess = {
   id: string;
   organizationId: string;
   instructorId: string;
+  schoolId: string | null;
   displayLabel: string;
   login: string;
   totalLessonLimit: number | null;
@@ -85,7 +86,7 @@ export async function getCurrentStudentAccess() {
   const { data: access, error } = await supabase
     .from("student_accesses")
     .select(
-      "id, organization_id, instructor_id, display_label, login, total_lesson_limit, weekly_lesson_limit, is_active",
+      "id, organization_id, instructor_id, school_id, display_label, login, total_lesson_limit, weekly_lesson_limit, is_active",
     )
     .eq("id", accessId)
     .maybeSingle();
@@ -107,6 +108,7 @@ export async function getCurrentStudentAccess() {
     id: access.id,
     organizationId: access.organization_id,
     instructorId: access.instructor_id,
+    schoolId: access.school_id,
     displayLabel: access.display_label,
     login: access.login,
     totalLessonLimit: access.total_lesson_limit,

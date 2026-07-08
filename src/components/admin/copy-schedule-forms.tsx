@@ -7,15 +7,12 @@ import {
   copyWeekAction,
   type CopyScheduleActionState,
 } from "@/app/admin/actions";
+import { selectClassName } from "@/lib/formatters";
+import type { Instructor } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PublicationOptions } from "@/components/admin/publication-options";
-
-type Instructor = {
-  id: string;
-  name: string;
-};
 
 const INITIAL_STATE: CopyScheduleActionState = {
   status: "idle",
@@ -23,9 +20,6 @@ const INITIAL_STATE: CopyScheduleActionState = {
   createdCount: 0,
   conflicts: [],
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
 
 function ActionResult({ state }: { state: CopyScheduleActionState }) {
   if (!state.message) {

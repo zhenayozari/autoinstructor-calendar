@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { useEffect, useState } from "react";
 import { AdminQuickActions } from "@/components/admin/admin-quick-actions";
 import { AdminWeekCalendar } from "@/components/admin/admin-week-calendar";
-import { SchedulePublicationPanel } from "@/components/admin/schedule-publication-panel";
+import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
+
 import {
   Card,
   CardContent,
@@ -13,56 +13,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-type Instructor = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-  timezone: string;
-};
-
-type LessonType = {
-  id: string;
-  name: string;
-  color: string;
-  kind: "driving" | "theory";
-  default_duration_minutes: number;
-  is_active: boolean;
-};
-
-type ScheduleDay = {
-  id: string;
-  instructor_id: string;
-  date: string;
-  transmission: "automatic" | "manual" | null;
-  published_at: string | null;
-  slot_count: number;
-};
-
-type Slot = {
-  id: string;
-  instructor_id: string;
-  schedule_day_id: string;
-  lesson_type_id: string;
-  start_time: string;
-  end_time: string;
-  location_type: "in_car" | "online" | "classroom" | "other";
-  status: "available" | "blocked" | "cancelled";
-  note: string | null;
-};
-
-type Booking = {
-  id: string;
-  slot_id: string;
-  student_label: string;
-  created_at: string;
-};
-
 type QuickActionType = "slot" | "day" | "copy-day" | "copy-week";
 
 export function AdminScheduleWorkspace({
   instructors,
   lessonTypes,
+  schools,
   scheduleDays,
   slots,
   bookings,
@@ -75,6 +31,7 @@ export function AdminScheduleWorkspace({
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
+  schools: School[];
   scheduleDays: ScheduleDay[];
   slots: Slot[];
   bookings: Booking[];
@@ -95,9 +52,18 @@ export function AdminScheduleWorkspace({
   );
   const [activeQuickAction, setActiveQuickAction] =
     useState<QuickActionType | null>(initialOpenSlotForm ? "slot" : null);
-  const selectedInstructor = instructors.find(
-    (instructor) => instructor.id === instructorId,
-  );
+
+  useEffect(() => {
+    if (!initialOpenSlotForm) return;
+
+    const timeout = window.setTimeout(() => {
+      document
+        .getElementById("schedule-quick-actions")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+
+    return () => window.clearTimeout(timeout);
+  }, [initialOpenSlotForm]);
 
   function handleCreateSlotForDate(date: string) {
     setSlotDefaultDate(date);
@@ -115,29 +81,18 @@ export function AdminScheduleWorkspace({
     <div className="space-y-4 sm:space-y-5">
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <CardTitle>Недельный календарь</CardTitle>
-              <CardDescription>
-                Сначала обзор недели и записей. Действия со слотами открываются
-                в отдельной панели.
-              </CardDescription>
-            </div>
-            <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600">
-              {selectedInstructor
-                ? (selectedInstructor.public_name ?? selectedInstructor.name)
-                : "Инструктор не выбран"}
-            </div>
+          <div>
+            <CardTitle>Недельный календарь</CardTitle>
+            <CardDescription>
+              Основной обзор: дни недели, занятые занятия и свободные окна.
+            </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
           <AdminWeekCalendar
             instructors={instructors}
-            lessonTypes={lessonTypes.map(({ id, name, color }) => ({
-              id,
-              name,
-              color,
-            }))}
+            lessonTypes={lessonTypes}
+            schools={schools}
             scheduleDays={scheduleDays}
             slots={slots}
             bookings={bookings}
@@ -157,48 +112,25 @@ export function AdminScheduleWorkspace({
         <>
           <div id="schedule-quick-actions" className="scroll-mt-4">
             <AdminQuickActions
-              instructors={instructors.map(({ id, name }) => ({ id, name }))}
-              lessonTypes={lessonTypes
-                .filter((lessonType) => lessonType.is_active)
-                .map(({ id, name, kind, default_duration_minutes }) => ({
-                  id,
-                  name,
-                  kind,
-                  default_duration_minutes,
-                }))}
+              instructors={instructors}
+              lessonTypes={lessonTypes.filter((lessonType) => lessonType.is_active)}
+              schools={schools}
+              scheduleDays={scheduleDays}
+              slots={slots}
+              bookings={bookings}
               selectedInstructorId={instructorId}
               adminEnabled={adminEnabled}
               slotDefaultDate={slotDefaultDate}
+              slotFallbackDate={defaultWeekDate}
               slotRequestKey={slotRequestKey}
               activeAction={activeQuickAction}
               onActiveActionChange={setActiveQuickAction}
             />
           </div>
-
-          <details className="group rounded-2xl border bg-white shadow-sm">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 sm:px-6">
-              <div>
-                <p className="font-semibold">Публикация расписания</p>
-                <p className="text-muted-foreground mt-0.5 text-sm">
-                  Открыть, скрыть или запланировать публикацию дней недели.
-                </p>
-              </div>
-              <ChevronDown className="text-muted-foreground size-5 shrink-0 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="border-t p-4 sm:p-6">
-              <SchedulePublicationPanel
-                instructors={instructors}
-                scheduleDays={scheduleDays}
-                instructorId={instructorId}
-                weekDate={weekDate}
-              />
-            </div>
-          </details>
         </>
       ) : (
         <div className="rounded-2xl border border-dashed bg-white px-5 py-10 text-center text-sm text-zinc-600">
-          Выберите инструктора в календаре, чтобы открыть создание, копирование
-          и публикацию расписания.
+          Расписание пока не привязано к вашему профилю.
         </div>
       )}
     </div>

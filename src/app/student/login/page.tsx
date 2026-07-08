@@ -42,6 +42,14 @@ export default async function StudentLoginPage() {
           </CardHeader>
           <CardContent>
             <StudentLoginForm />
+            <div className="mt-4 text-center text-sm">
+              <Link
+                href="/student/register"
+                className="font-semibold text-zinc-500 hover:text-zinc-950"
+              >
+                Нет доступа? Отправить заявку
+              </Link>
+            </div>
           </CardContent>
         </Card>
       </div>

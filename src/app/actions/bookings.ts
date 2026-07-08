@@ -13,6 +13,72 @@ export type BookingActionState = {
   message: string;
 };
 
+function isMissingColumnError(error: { code?: string; message?: string } | null) {
+  const message = error?.message?.toLowerCase() ?? "";
+
+  return (
+    error?.code === "42703" ||
+    error?.code === "PGRST204" ||
+    message.includes("does not exist") ||
+    message.includes("could not find") ||
+    message.includes("schema cache")
+  );
+}
+
+async function getDefaultPriceAmount(
+  supabase: ReturnType<typeof createAdminClient>,
+  lessonTypeId: string,
+) {
+  const { data, error } = await supabase
+    .from("lesson_types")
+    .select("default_price_amount")
+    .eq("id", lessonTypeId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error)) {
+      return null;
+    }
+
+    throw new Error(error.message);
+  }
+
+  return typeof data?.default_price_amount === "number"
+    ? data.default_price_amount
+    : null;
+}
+
+async function insertPublicBooking({
+  supabase,
+  slotId,
+  studentLabel,
+  priceAmount,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  slotId: string;
+  studentLabel: string;
+  priceAmount: number | null;
+}) {
+  const payload = {
+    slot_id: slotId,
+    student_label: studentLabel,
+  };
+  const { error } = await supabase.from("bookings").insert({
+    ...payload,
+    price_amount: priceAmount,
+  });
+
+  if (!error || !isMissingColumnError(error)) {
+    return error;
+  }
+
+  const { error: fallbackError } = await supabase
+    .from("bookings")
+    .insert(payload);
+
+  return fallbackError;
+}
+
 export async function bookSlotAction(
   previousState: BookingActionState,
   formData: FormData,
@@ -127,25 +193,25 @@ export async function bookSlotAction(
   }
 
   const adminSupabase = createAdminClient();
-  const { data: lessonType, error: lessonTypeError } = await adminSupabase
-    .from("lesson_types")
-    .select("default_price_amount")
-    .eq("id", slot.lesson_type_id)
-    .maybeSingle();
-
-  if (lessonTypeError) {
-    console.error("bookSlotAction lesson type lookup:", lessonTypeError);
-
+  let priceAmount: number | null = null;
+  try {
+    priceAmount = await getDefaultPriceAmount(
+      adminSupabase,
+      slot.lesson_type_id,
+    );
+  } catch (error) {
+    console.error("bookSlotAction lesson type lookup:", error);
     return {
       status: "error",
       message: "Не удалось проверить тип занятия. Попробуйте ещё раз",
     };
   }
 
-  const { error } = await adminSupabase.from("bookings").insert({
-    slot_id: slotId,
-    student_label: studentLabel,
-    price_amount: lessonType?.default_price_amount ?? null,
+  const error = await insertPublicBooking({
+    supabase: adminSupabase,
+    slotId,
+    studentLabel,
+    priceAmount,
   });
 
   if (error) {

@@ -1,14 +1,25 @@
 "use client";
 
 import { useActionState } from "react";
-import { ArrowDown, ArrowUp, Pencil, Plus, Power, PowerOff } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Pencil,
+  Plus,
+  Power,
+  PowerOff,
+  Trash2,
+} from "lucide-react";
 import {
   createLessonTypeAction,
+  deleteLessonTypeAction,
   moveLessonTypeAction,
   toggleLessonTypeActiveAction,
   updateLessonTypeAction,
   type LessonTypeActionState,
 } from "@/app/admin/actions";
+import { formatMoney, selectClassName } from "@/lib/formatters";
+import type { LessonType } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,21 +31,21 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 
-type LessonType = {
-  id: string;
-  code: string;
-  name: string;
-  description: string | null;
-  color: string;
-  kind: "driving" | "theory";
-  default_duration_minutes: number;
-  default_price_amount: number | null;
-  tags: string[];
-  sort_order: number;
-  is_active: boolean;
-};
+type EditableLessonType = LessonType &
+  Required<
+    Pick<
+      LessonType,
+      | "code"
+      | "description"
+      | "kind"
+      | "default_duration_minutes"
+      | "default_price_amount"
+      | "tags"
+      | "sort_order"
+      | "is_active"
+    >
+  >;
 
 type LessonTypeCategory = "driving" | "theory" | "gift";
 
@@ -43,16 +54,13 @@ const INITIAL_STATE: LessonTypeActionState = {
   message: "",
 };
 
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
-
 const categoryLabels: Record<LessonTypeCategory, string> = {
   driving: "Вождение",
   theory: "Теория",
   gift: "Подарочное",
 };
 
-function getLessonTypeCategory(lessonType: LessonType): LessonTypeCategory {
+function getLessonTypeCategory(lessonType: EditableLessonType): LessonTypeCategory {
   if (lessonType.kind === "theory") {
     return "theory";
   }
@@ -86,7 +94,7 @@ function LessonTypeFields({
   lessonType,
   idPrefix,
 }: {
-  lessonType?: LessonType;
+  lessonType?: EditableLessonType;
   idPrefix: string;
 }) {
   const category = lessonType ? getLessonTypeCategory(lessonType) : "driving";
@@ -103,7 +111,7 @@ function LessonTypeFields({
           id={`${idPrefix}-name`}
           name="name"
           defaultValue={lessonType?.name ?? ""}
-          placeholder="Например: Новая автошкола"
+          placeholder="Например: Вождение, Доп занятие, Теория"
           maxLength={120}
           required
         />
@@ -152,9 +160,7 @@ function LessonTypeFields({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-price`}>
-          Сумма по умолчанию, ₽
-        </Label>
+        <Label htmlFor={`${idPrefix}-price`}>Цена типа, ₽</Label>
         <Input
           id={`${idPrefix}-price`}
           name="default_price_amount"
@@ -167,17 +173,6 @@ function LessonTypeFields({
         />
       </div>
 
-      <div className="space-y-2 md:col-span-2">
-        <Label htmlFor={`${idPrefix}-description`}>Описание</Label>
-        <Textarea
-          id={`${idPrefix}-description`}
-          name="description"
-          defaultValue={lessonType?.description ?? ""}
-          placeholder="Необязательное описание для админки"
-          maxLength={1000}
-        />
-      </div>
-
       <label className="flex items-center gap-2 text-sm font-medium md:col-span-2">
         <input
           type="checkbox"
@@ -185,7 +180,7 @@ function LessonTypeFields({
           defaultChecked={lessonType?.is_active ?? true}
           className="size-4"
         />
-        Активен и доступен в формах расписания
+        Показывать в расписании и учениках
       </label>
     </div>
   );
@@ -213,7 +208,7 @@ function EditLessonTypeForm({
   lessonType,
   enabled,
 }: {
-  lessonType: LessonType;
+  lessonType: EditableLessonType;
   enabled: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
@@ -236,20 +231,71 @@ function EditLessonTypeForm({
   );
 }
 
+function DeleteLessonTypeForm({
+  lessonType,
+  enabled,
+}: {
+  lessonType: EditableLessonType;
+  enabled: boolean;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    deleteLessonTypeAction,
+    INITIAL_STATE,
+  );
+
+  return (
+    <form
+      action={formAction}
+      className="flex flex-col items-start gap-1"
+      onSubmit={(event) => {
+        if (
+          !window.confirm(
+            `Удалить тип занятия «${lessonType.name}» навсегда? Если он уже есть в расписании, система не даст стереть историю.`,
+          )
+        ) {
+          event.preventDefault();
+        }
+      }}
+    >
+      <input type="hidden" name="lesson_type_id" value={lessonType.id} />
+      <Button
+        type="submit"
+        variant="destructive"
+        size="sm"
+        disabled={!enabled || isPending}
+      >
+        <Trash2 />
+        {isPending ? "Удаляем…" : "Удалить"}
+      </Button>
+      {state.message && (
+        <span
+          className={
+            state.status === "success"
+              ? "text-xs font-medium text-emerald-700"
+              : "text-xs font-medium text-red-700"
+          }
+        >
+          {state.message}
+        </span>
+      )}
+    </form>
+  );
+}
+
 export function LessonTypesSettings({
   lessonTypes,
   enabled,
 }: {
-  lessonTypes: LessonType[];
+  lessonTypes: EditableLessonType[];
   enabled: boolean;
 }) {
   return (
     <Card id="lesson-types-settings">
       <CardHeader className="pb-3">
-        <CardTitle>Настройки → Типы занятий</CardTitle>
+        <CardTitle>Типы занятий и цены</CardTitle>
         <CardDescription>
-          Управляемый справочник для автошкол, дополнительных занятий, подарков
-          и теории. Активные типы появляются в формах создания расписания.
+          Тип занятия отвечает на вопрос, что именно проводится: вождение,
+          теория, доп занятие, подарок или другой формат.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -260,7 +306,7 @@ export function LessonTypesSettings({
           </div>
         )}
 
-        <details className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md" open>
+        <details className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md">
           <summary className="cursor-pointer font-semibold">
             + Добавить тип занятия
           </summary>
@@ -299,7 +345,7 @@ export function LessonTypesSettings({
                             {categoryLabels[category]} ·{" "}
                             {lessonType.default_duration_minutes} мин.
                             {lessonType.default_price_amount !== null
-                              ? ` · ${lessonType.default_price_amount.toLocaleString("ru-RU")} ₽`
+                              ? ` · ${formatMoney(lessonType.default_price_amount)}`
                               : ""}
                           </p>
                         </div>
@@ -313,7 +359,7 @@ export function LessonTypesSettings({
                               : "bg-zinc-200 text-zinc-700"
                           }
                         >
-                          {lessonType.is_active ? "Активен" : "Отключён"}
+                          {lessonType.is_active ? "Показывается" : "Скрыт"}
                         </Badge>
 
                         <form action={moveLessonTypeAction}>
@@ -370,9 +416,13 @@ export function LessonTypesSettings({
                             disabled={!enabled}
                           >
                             {lessonType.is_active ? <PowerOff /> : <Power />}
-                            {lessonType.is_active ? "Отключить" : "Включить"}
+                            {lessonType.is_active ? "Скрыть" : "Показать"}
                           </Button>
                         </form>
+                        <DeleteLessonTypeForm
+                          lessonType={lessonType}
+                          enabled={enabled}
+                        />
                       </div>
                     </div>
                   </summary>

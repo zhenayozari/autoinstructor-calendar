@@ -10,7 +10,8 @@
     "import:sheet-demo": "tsx scripts/import-instructor-sheet-demo.ts",
     "import:excel-demo": "tsx scripts/import-excel-schedule-demo.ts",
     "migrate:excel-to-main:dry": "tsx scripts/migrate-excel-schedule-to-main.ts",
-    "migrate:excel-to-main": "tsx scripts/migrate-excel-schedule-to-main.ts --apply"
+    "migrate:excel-to-main": "tsx scripts/migrate-excel-schedule-to-main.ts --apply",
+    "seed:catalog": "tsx scripts/seed-instructor-catalog.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

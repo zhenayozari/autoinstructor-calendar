@@ -6,23 +6,16 @@ import {
   quickCreateDayAction,
   type QuickCreateDayActionState,
 } from "@/app/admin/actions";
+import { selectClassName } from "@/lib/formatters";
+import type { Instructor, LessonType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PublicationOptions } from "@/components/admin/publication-options";
 
-type Instructor = {
-  id: string;
-  name: string;
-};
 
-type LessonType = {
-  id: string;
-  name: string;
-  kind: "driving" | "theory";
-  default_duration_minutes: number;
-};
 
 const INITIAL_STATE: QuickCreateDayActionState = {
   status: "idle",
@@ -30,9 +23,6 @@ const INITIAL_STATE: QuickCreateDayActionState = {
   createdCount: 0,
   conflicts: [],
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
 
 export function QuickCreateDayForm({
   instructors,
@@ -59,7 +49,8 @@ export function QuickCreateDayForm({
   return (
     <form action={formAction} className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="space-y-2">
+        <input type="hidden" name="instructor_id" value={instructors[0]?.id ?? ""} />
+        <div className="hidden">
           <Label htmlFor="quick-instructor-id">Инструктор</Label>
           <select
             id="quick-instructor-id"

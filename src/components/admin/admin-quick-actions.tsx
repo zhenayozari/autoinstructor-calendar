@@ -14,6 +14,7 @@ import {
 } from "@/components/admin/copy-schedule-forms";
 import { QuickCreateDayForm } from "@/components/admin/quick-create-day-form";
 import { SlotForm } from "@/components/admin/slot-form";
+import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -22,18 +23,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-
-type Instructor = {
-  id: string;
-  name: string;
-};
-
-type LessonType = {
-  id: string;
-  name: string;
-  kind: "driving" | "theory";
-  default_duration_minutes: number;
-};
 
 type ActionType = "slot" | "day" | "copy-day" | "copy-week";
 
@@ -79,18 +68,28 @@ const titles: Record<ActionType, string> = {
 export function AdminQuickActions({
   instructors,
   lessonTypes,
+  schools,
+  scheduleDays,
+  slots,
+  bookings,
   selectedInstructorId,
   adminEnabled,
   slotDefaultDate,
+  slotFallbackDate,
   slotRequestKey,
   activeAction,
   onActiveActionChange,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
+  schools: School[];
+  scheduleDays?: ScheduleDay[];
+  slots?: Slot[];
+  bookings?: Booking[];
   selectedInstructorId: string;
   adminEnabled: boolean;
   slotDefaultDate?: string | null;
+  slotFallbackDate?: string;
   slotRequestKey?: number;
   activeAction?: ActionType | null;
   onActiveActionChange?: (action: ActionType | null) => void;
@@ -100,24 +99,19 @@ export function AdminQuickActions({
   const currentActiveAction = activeAction ?? localActiveAction;
   const setCurrentActiveAction = onActiveActionChange ?? setLocalActiveAction;
   const orderedInstructors = useMemo(
-    () => [
-      ...instructors.filter(
+    () =>
+      instructors.filter(
         (instructor) => instructor.id === selectedInstructorId,
       ),
-      ...instructors.filter(
-        (instructor) => instructor.id !== selectedInstructorId,
-      ),
-    ],
     [instructors, selectedInstructorId],
   );
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle>Создание расписания</CardTitle>
+        <CardTitle>Добавить в расписание</CardTitle>
         <CardDescription>
-          Выберите действие. На экране одновременно открывается только одна
-          форма.
+          Один слот для точечной правки или шаблоны для быстрого заполнения.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -160,7 +154,7 @@ export function AdminQuickActions({
                   {titles[currentActiveAction]}
                 </h3>
                 <p className="text-muted-foreground mt-0.5 text-xs">
-                  Форма относится к выбранному инструктору.
+                  Заполните поля и сохраните изменения.
                 </p>
               </div>
               <Button
@@ -180,8 +174,13 @@ export function AdminQuickActions({
                   key={`${selectedInstructorId}-${slotDefaultDate ?? "empty"}-${slotRequestKey ?? 0}`}
                   instructors={orderedInstructors}
                   lessonTypes={lessonTypes}
+                  schools={schools}
+                  scheduleDays={scheduleDays}
+                  slots={slots}
+                  bookings={bookings}
                   adminEnabled={adminEnabled}
                   defaultDate={slotDefaultDate ?? undefined}
+                  fallbackDate={slotFallbackDate}
                 />
               )}
               {currentActiveAction === "day" && (

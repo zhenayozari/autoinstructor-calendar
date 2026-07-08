@@ -79,6 +79,14 @@ function validateSecret(secret: string) {
   }
 }
 
+function validateStudentPhone(phone: string | null) {
+  if (phone && phone.length > 40) {
+    throw new Error("Телефон должен быть не длиннее 40 символов");
+  }
+
+  return phone;
+}
+
 async function validateLessonTypes(lessonTypeIds: string[]) {
   if (lessonTypeIds.length === 0) {
     throw new Error("Выберите хотя бы один разрешённый тип занятия");
@@ -89,7 +97,6 @@ async function validateLessonTypes(lessonTypeIds: string[]) {
   const { data, error } = await supabase
     .from("lesson_types")
     .select("id")
-    .eq("is_active", true)
     .in("id", uniqueIds);
 
   if (error) {
@@ -97,10 +104,37 @@ async function validateLessonTypes(lessonTypeIds: string[]) {
   }
 
   if ((data ?? []).length !== uniqueIds.length) {
-    throw new Error("Один из выбранных типов занятий не найден или отключён");
+    throw new Error("Один из выбранных типов занятий не найден");
   }
 
   return uniqueIds;
+}
+
+async function validateSchoolId(
+  schoolId: string | null,
+  organizationId: string,
+) {
+  if (!schoolId) {
+    return null;
+  }
+
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("schools")
+    .select("id")
+    .eq("id", schoolId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Автошкола не найдена");
+  }
+
+  return schoolId;
 }
 
 async function getManageableAccess(accessId: string) {
@@ -108,7 +142,7 @@ async function getManageableAccess(accessId: string) {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_accesses")
-    .select("id, instructor_id, organization_id")
+    .select("id, instructor_id, organization_id, login")
     .eq("id", accessId)
     .eq("organization_id", membership.organizationId)
     .maybeSingle();
@@ -125,6 +159,45 @@ async function getManageableAccess(accessId: string) {
       id: string;
       instructor_id: string;
       organization_id: string;
+      login: string;
+    },
+  };
+}
+
+async function getManageableRegistrationRequest(requestId: string) {
+  const membership = await requireActiveOrganizationMember();
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("student_registration_requests")
+    .select(
+      "id, organization_id, instructor_id, first_name, last_name, student_phone, login, password_hash, status",
+    )
+    .eq("id", requestId)
+    .eq("organization_id", membership.organizationId)
+    .maybeSingle();
+
+  if (error || !data) {
+    throw new Error("Заявка не найдена");
+  }
+
+  await requireInstructorAccess(data.instructor_id);
+
+  if (data.status !== "pending") {
+    throw new Error("Эта заявка уже обработана");
+  }
+
+  return {
+    membership,
+    request: data as {
+      id: string;
+      organization_id: string;
+      instructor_id: string;
+      first_name: string | null;
+      last_name: string | null;
+      student_phone: string | null;
+      login: string;
+      password_hash: string;
+      status: "pending" | "approved" | "rejected";
     },
   };
 }
@@ -139,6 +212,9 @@ export async function createStudentAccessAction(
     const instructorId = readRequiredString(formData, "instructor_id");
     const membership = await requireInstructorAccess(instructorId);
     const displayLabel = readRequiredString(formData, "display_label");
+    const studentPhone = validateStudentPhone(
+      readOptionalString(formData, "student_phone"),
+    );
     const login = normalizeLogin(readRequiredString(formData, "login"));
     const secret = readRequiredString(formData, "secret");
     const totalLessonLimit = readOptionalLimit(
@@ -150,6 +226,10 @@ export async function createStudentAccessAction(
       formData,
       "weekly_lesson_limit",
       50,
+    );
+    const schoolId = await validateSchoolId(
+      readOptionalString(formData, "school_id"),
+      membership.organizationId,
     );
     const isActive = formData.get("is_active") === "on";
     const lessonTypeIds = await validateLessonTypes(
@@ -170,10 +250,12 @@ export async function createStudentAccessAction(
         organization_id: membership.organizationId,
         instructor_id: instructorId,
         display_label: displayLabel,
+        student_phone: studentPhone,
         login,
         password_hash: hashStudentAccessSecret(secret),
         total_lesson_limit: totalLessonLimit,
         weekly_lesson_limit: weeklyLessonLimit,
+        school_id: schoolId,
         is_active: isActive,
       })
       .select("id")
@@ -184,7 +266,7 @@ export async function createStudentAccessAction(
         throw new Error("Такой логин уже используется");
       }
 
-      throw new Error(error?.message ?? "Не удалось создать учебный доступ");
+      throw new Error(error?.message ?? "Не удалось добавить ученика");
     }
 
     const { error: lessonTypesError } = await supabase
@@ -205,10 +287,172 @@ export async function createStudentAccessAction(
 
     return {
       status: "success",
-      message: "Учебный доступ создан. Скопируйте данные и передайте ученику.",
+      message: "Ученик добавлен. Скопируйте логин и PIN и передайте ученику.",
     };
   } catch (error) {
     console.error("createStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function approveStudentRegistrationRequestAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const requestId = readRequiredString(formData, "request_id");
+    const { request } = await getManageableRegistrationRequest(requestId);
+    const displayLabel = readRequiredString(formData, "display_label");
+    const login = normalizeLogin(readRequiredString(formData, "login"));
+    const studentPhone = validateStudentPhone(
+      readOptionalString(formData, "student_phone"),
+    );
+    const totalLessonLimit = readOptionalLimit(
+      formData,
+      "total_lesson_limit",
+      500,
+    );
+    const weeklyLessonLimit = readOptionalLimit(
+      formData,
+      "weekly_lesson_limit",
+      50,
+    );
+    const schoolId = await validateSchoolId(
+      readOptionalString(formData, "school_id"),
+      request.organization_id,
+    );
+    const isActive = formData.get("is_active") === "on";
+    const lessonTypeIds = await validateLessonTypes(
+      readLessonTypeIds(formData),
+    );
+
+    if (displayLabel.length > 80) {
+      throw new Error("Метка ученика должна быть не длиннее 80 символов");
+    }
+
+    validateLogin(login);
+
+    const supabase = createAdminClient();
+    const { data: existingAccess, error: accessCheckError } = await supabase
+      .from("student_accesses")
+      .select("id")
+      .eq("organization_id", request.organization_id)
+      .eq("login", login)
+      .maybeSingle();
+
+    if (accessCheckError) {
+      throw new Error(accessCheckError.message);
+    }
+
+    if (existingAccess) {
+      throw new Error("Такой логин уже используется активным учеником");
+    }
+
+    const { data: access, error } = await supabase
+      .from("student_accesses")
+      .insert({
+        organization_id: request.organization_id,
+        instructor_id: request.instructor_id,
+        display_label: displayLabel,
+        student_phone: studentPhone,
+        login,
+        password_hash: request.password_hash,
+        total_lesson_limit: totalLessonLimit,
+        weekly_lesson_limit: weeklyLessonLimit,
+        school_id: schoolId,
+        is_active: isActive,
+      })
+      .select("id")
+      .single();
+
+    if (error || !access) {
+      if (error?.code === "23505") {
+        throw new Error("Такой логин уже используется");
+      }
+
+      throw new Error(error?.message ?? "Не удалось подтвердить ученика");
+    }
+
+    const { error: lessonTypesError } = await supabase
+      .from("student_access_lesson_types")
+      .insert(
+        lessonTypeIds.map((lessonTypeId) => ({
+          student_access_id: access.id,
+          lesson_type_id: lessonTypeId,
+        })),
+      );
+
+    if (lessonTypesError) {
+      await supabase.from("student_accesses").delete().eq("id", access.id);
+      throw new Error(lessonTypesError.message);
+    }
+
+    const { error: requestError } = await supabase
+      .from("student_registration_requests")
+      .update({
+        status: "approved",
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", request.id)
+      .eq("status", "pending");
+
+    if (requestError) {
+      throw new Error(requestError.message);
+    }
+
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: "Заявка подтверждена. Ученик добавлен в активные.",
+    };
+  } catch (error) {
+    console.error("approveStudentRegistrationRequestAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function rejectStudentRegistrationRequestAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const requestId = readRequiredString(formData, "request_id");
+    const { request } = await getManageableRegistrationRequest(requestId);
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from("student_registration_requests")
+      .update({
+        status: "rejected",
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", request.id)
+      .eq("status", "pending");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: "Заявка отклонена",
+    };
+  } catch (error) {
+    console.error("rejectStudentRegistrationRequestAction:", error);
 
     return {
       status: "error",
@@ -227,6 +471,10 @@ export async function updateStudentAccessAction(
     const accessId = readRequiredString(formData, "student_access_id");
     const { access } = await getManageableAccess(accessId);
     const displayLabel = readRequiredString(formData, "display_label");
+    const login = normalizeLogin(readRequiredString(formData, "login"));
+    const studentPhone = validateStudentPhone(
+      readOptionalString(formData, "student_phone"),
+    );
     const totalLessonLimit = readOptionalLimit(
       formData,
       "total_lesson_limit",
@@ -236,6 +484,10 @@ export async function updateStudentAccessAction(
       formData,
       "weekly_lesson_limit",
       50,
+    );
+    const schoolId = await validateSchoolId(
+      readOptionalString(formData, "school_id"),
+      access.organization_id,
     );
     const isActive = formData.get("is_active") === "on";
     const newSecret = readOptionalString(formData, "new_secret");
@@ -247,16 +499,24 @@ export async function updateStudentAccessAction(
       throw new Error("Метка ученика должна быть не длиннее 80 символов");
     }
 
+    validateLogin(login);
+
     const updates: {
       display_label: string;
+      login: string;
+      student_phone: string | null;
       total_lesson_limit: number | null;
       weekly_lesson_limit: number | null;
+      school_id: string | null;
       is_active: boolean;
       password_hash?: string;
     } = {
       display_label: displayLabel,
+      login,
+      student_phone: studentPhone,
       total_lesson_limit: totalLessonLimit,
       weekly_lesson_limit: weeklyLessonLimit,
+      school_id: schoolId,
       is_active: isActive,
     };
 
@@ -273,6 +533,10 @@ export async function updateStudentAccessAction(
       .eq("instructor_id", access.instructor_id);
 
     if (error) {
+      if (error.code === "23505") {
+        throw new Error("Такой логин уже используется");
+      }
+
       throw new Error(error.message);
     }
 
@@ -308,6 +572,46 @@ export async function updateStudentAccessAction(
     };
   } catch (error) {
     console.error("updateStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function archiveStudentAccessAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    const { access } = await getManageableAccess(accessId);
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from("student_accesses")
+      .update({
+        is_archived: true,
+        archived_at: new Date().toISOString(),
+        is_active: false,
+      })
+      .eq("id", access.id)
+      .eq("instructor_id", access.instructor_id);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: "Ученик перемещён в архив",
+    };
+  } catch (error) {
+    console.error("archiveStudentAccessAction:", error);
 
     return {
       status: "error",

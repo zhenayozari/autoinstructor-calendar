@@ -1,30 +1,28 @@
 import Link from "next/link";
-import {
-  CalendarDays,
-  ClipboardList,
-  Home,
-  LogOut,
-  Settings,
-  UserRoundPen,
-  UsersRound,
-} from "lucide-react";
-import { logoutAction } from "@/app/login/actions";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import {
+  buildActiveInstructorsQuery,
+  getSelectedInstructor,
+  getSelectedInstructorId,
+} from "@/lib/queries";
 import {
   createAdminClient,
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
-import { StudentAccessesPanel } from "@/components/admin/student-accesses-panel";
-import { Button } from "@/components/ui/button";
+import type {
+  Booking,
+  Instructor,
+  LessonType,
+  School,
+  Slot,
+  StudentRegistrationRequest,
+} from "@/lib/types";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  StudentAccessesPanel,
+  type StudentAccessCrm,
+  type StudentAccessCrmSummary,
+} from "@/components/admin/student-accesses-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -34,30 +32,18 @@ type AdminStudentsPageProps = {
   }>;
 };
 
-type Instructor = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-};
-
-type LessonType = {
-  id: string;
-  code: string;
-  name: string;
-  color: string;
-  kind: "driving" | "theory";
-  tags: string[];
-};
-
 type StudentAccessRow = {
   id: string;
   instructor_id: string;
   display_label: string;
+  student_phone: string | null;
   login: string;
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
+  school_id: string | null;
   is_active: boolean;
+  is_archived: boolean;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -67,12 +53,23 @@ type StudentAccessLessonTypeRow = {
   lesson_type_id: string;
 };
 
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-10 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
+type StudentBookingRow = Pick<
+  Booking,
+  | "id"
+  | "slot_id"
+  | "student_access_id"
+  | "price_amount"
+  | "paid_amount"
+  | "is_paid"
+  | "lesson_state"
+> & {
+  student_access_id: string;
+};
 
-function getInstructorLabel(instructor: Instructor) {
-  return instructor.public_name ?? instructor.name;
-}
+type StudentSlotRow = Pick<
+  Slot,
+  "id" | "lesson_type_id" | "start_time" | "end_time" | "school_id"
+>;
 
 export default async function AdminStudentsPage({
   searchParams,
@@ -82,48 +79,60 @@ export default async function AdminStudentsPage({
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
 
-  let instructorQuery = supabase
-    .from("instructors")
-    .select("id, name, slug, public_name")
-    .eq("organization_id", membership.organizationId)
-    .eq("is_active", true)
-    .order("name");
-
-  if (membership.isInstructor && membership.instructorId) {
-    instructorQuery = instructorQuery.eq("id", membership.instructorId);
-  }
-
   const { data: instructorData, error: instructorError } =
-    await instructorQuery;
+    await buildActiveInstructorsQuery(
+      supabase,
+      membership,
+      "id, name, slug, public_name",
+    );
   const instructors = (instructorData ?? []) as Instructor[];
-  const selectedInstructorId =
-    membership.isOwnerOrAdmin && params.instructor
-      ? params.instructor
-      : membership.instructorId;
-  const selectedInstructor =
-    instructors.find((instructor) => instructor.id === selectedInstructorId) ??
-    instructors[0] ??
-    null;
+  const selectedInstructorId = getSelectedInstructorId(
+    membership,
+    params.instructor,
+  );
+  const selectedInstructor = getSelectedInstructor(
+    instructors,
+    selectedInstructorId,
+  );
   const selectedInstructorIds = selectedInstructor ? [selectedInstructor.id] : [];
 
   const [
     { data: lessonTypeData, error: lessonTypeError },
+    { data: schoolData, error: schoolError },
     { data: accessData, error: accessError },
+    { data: requestData, error: requestError },
   ] = await Promise.all([
     supabase
       .from("lesson_types")
-      .select("id, code, name, color, kind, tags")
-      .eq("is_active", true)
+      .select(
+        "id, code, name, color, kind, tags, sort_order, is_active, default_duration_minutes, default_price_amount, requires_vehicle",
+      )
       .order("sort_order")
+      .order("name"),
+    supabase
+      .from("schools")
+      .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+      .eq("organization_id", membership.organizationId)
       .order("name"),
     adminEnabled && selectedInstructorIds.length > 0
       ? supabase
           .from("student_accesses")
           .select(
-            "id, instructor_id, display_label, login, total_lesson_limit, weekly_lesson_limit, is_active, created_at, updated_at",
+            "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
           )
           .eq("organization_id", membership.organizationId)
           .in("instructor_id", selectedInstructorIds)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
+    adminEnabled && selectedInstructorIds.length > 0
+      ? supabase
+          .from("student_registration_requests")
+          .select(
+            "id, organization_id, instructor_id, first_name, last_name, student_phone, school_text, login, status, reviewed_at, created_at, updated_at",
+          )
+          .eq("organization_id", membership.organizationId)
+          .in("instructor_id", selectedInstructorIds)
+          .eq("status", "pending")
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [], error: null }),
   ]);
@@ -140,6 +149,27 @@ export default async function AdminStudentsPage({
 
   const accessLessonTypes = (accessLessonTypeData ??
     []) as StudentAccessLessonTypeRow[];
+  const { data: bookingData, error: bookingError } =
+    adminEnabled && accessIds.length > 0
+      ? await supabase
+          .from("bookings")
+          .select(
+            "id, slot_id, student_access_id, price_amount, paid_amount, is_paid, lesson_state",
+          )
+          .in("student_access_id", accessIds)
+          .eq("status", "confirmed")
+      : { data: [], error: null };
+  const studentBookings = (bookingData ?? []) as StudentBookingRow[];
+  const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
+  const { data: slotData, error: slotError } =
+    adminEnabled && bookedSlotIds.length > 0
+      ? await supabase
+          .from("slots")
+          .select("id, lesson_type_id, start_time, end_time, school_id")
+          .in("id", bookedSlotIds)
+          .order("start_time", { ascending: false })
+      : { data: [], error: null };
+  const studentSlots = (slotData ?? []) as StudentSlotRow[];
   const lessonTypeIdsByAccessId = new Map<string, string[]>();
 
   for (const item of accessLessonTypes) {
@@ -149,152 +179,141 @@ export default async function AdminStudentsPage({
   }
 
   const loadError =
-    instructorError ?? lessonTypeError ?? accessError ?? accessLessonTypeError;
+    instructorError ??
+    lessonTypeError ??
+    schoolError ??
+    accessError ??
+    requestError ??
+    accessLessonTypeError ??
+    bookingError ??
+    slotError;
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
-  const panelAccesses = accesses.map((access) => ({
-    ...access,
-    lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
-  }));
+  const schools = (schoolData ?? []) as School[];
+  const pendingRequests = (requestData ?? []) as StudentRegistrationRequest[];
+  const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  const lessonTypesById = new Map(
+    lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
+  );
+  const slotsById = new Map(studentSlots.map((slot) => [slot.id, slot]));
+  const bookingsByAccessId = new Map<string, StudentBookingRow[]>();
+
+  for (const booking of studentBookings) {
+    const items = bookingsByAccessId.get(booking.student_access_id) ?? [];
+    items.push(booking);
+    bookingsByAccessId.set(booking.student_access_id, items);
+  }
+
+  const panelAccesses: StudentAccessCrm[] = accesses.map((access) => {
+    const accessBookings = bookingsByAccessId.get(access.id) ?? [];
+    const lessons = accessBookings
+      .map((booking) => {
+        const slot = slotsById.get(booking.slot_id);
+        if (!slot) return null;
+
+        return {
+          booking,
+          slot,
+          lessonType: lessonTypesById.get(slot.lesson_type_id),
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          booking: StudentBookingRow;
+          slot: StudentSlotRow;
+          lessonType: LessonType | undefined;
+        } => Boolean(item),
+      )
+      .sort(
+        (first, second) =>
+          new Date(second.slot.start_time).getTime() -
+          new Date(first.slot.start_time).getTime(),
+      );
+    const plannedCount = lessons.filter(
+      ({ booking }) => booking.lesson_state === "scheduled",
+    ).length;
+    const completedLessons = lessons.filter(
+      ({ booking }) => booking.lesson_state === "completed",
+    );
+    const noShowCount = lessons.filter(
+      ({ booking }) => booking.lesson_state === "no_show",
+    ).length;
+    const paidCount = completedLessons.filter(
+      ({ booking }) => booking.is_paid,
+    ).length;
+    const unpaidCompletedLessons = completedLessons.filter(
+      ({ booking }) => !booking.is_paid,
+    );
+    const crm: StudentAccessCrmSummary = {
+      plannedCount,
+      completedCount: completedLessons.length,
+      noShowCount,
+      paidCount,
+      unpaidCompletedCount: unpaidCompletedLessons.length,
+      debtAmount: unpaidCompletedLessons.reduce(
+        (sum, { booking }) =>
+          sum + Math.max((booking.price_amount ?? 0) - (booking.paid_amount ?? 0), 0),
+        0,
+      ),
+      lastLessons: lessons.slice(0, 5).map(({ booking, slot, lessonType }) => ({
+        id: booking.id,
+        startsAt: slot.start_time,
+        lessonTypeName: lessonType?.name ?? "Занятие",
+        lessonState: booking.lesson_state,
+        isPaid: booking.is_paid,
+        priceAmount: booking.price_amount ?? null,
+        paidAmount: booking.paid_amount ?? 0,
+      })),
+    };
+
+    return {
+      ...access,
+      school: access.school_id ? schoolsById.get(access.school_id) ?? null : null,
+      crm,
+      lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
+    };
+  });
+  const activeAccesses = panelAccesses.filter((a) => !a.is_archived);
+  const archivedAccesses = panelAccesses.filter((a) => a.is_archived);
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
+    <main className="px-3 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-6">
-        <AdminMobileNav
-          role={membership.role}
-          email={membership.user.email}
-          instructorName={selectedInstructor ? getInstructorLabel(selectedInstructor) : null}
-          showTeam={membership.isOwnerOrAdmin}
-        />
 
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-            <div>
-              <p className="text-muted-foreground text-sm font-medium">
-                Доступы учеников
-              </p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-                Ученики
-              </h1>
-              <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-                Создавайте короткие доступы без телефонов и email: ученик
-                получает ссылку, логин и PIN, а дальше видит только разрешённые
-                типы занятий.
-              </p>
-            </div>
-
-            <div className="hidden grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin" />}
-              >
-                <Home />
-                Главная
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/schedule" />}
-              >
-                <CalendarDays />
-                Расписание
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/bookings" />}
-              >
-                <ClipboardList />
-                Записи
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/settings" />}
-              >
-                <Settings />
-                Настройки
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={
-                  <Link
-                    href={
-                      selectedInstructor
-                        ? `/admin/profile?instructor=${selectedInstructor.id}`
-                        : "/admin/profile"
-                    }
-                  />
-                }
-              >
-                <UserRoundPen />
-                Профиль
-              </Button>
-              {membership.isOwnerOrAdmin && (
-                <Button
-                  variant="outline"
-                  className="h-10"
-                  nativeButton={false}
-                  render={<Link href="/admin/team" />}
-                >
-                  <UsersRound />
-                  Команда
-                </Button>
-              )}
-              <form action={logoutAction}>
-                <Button type="submit" variant="outline" className="h-10 w-full">
-                  <LogOut />
-                  Выйти
-                </Button>
-              </form>
-            </div>
+          <div>
+            <p className="text-muted-foreground text-sm font-medium">
+              Мини-CRM
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              Ученики
+            </h1>
+            <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
+              Активные ученики, доступы для записи, прогресс занятий и долги в
+              одном рабочем списке.
+            </p>
+            <Link
+              href="/student/register"
+              className="mt-4 inline-flex h-10 items-center justify-center rounded-lg border px-3 text-sm font-medium transition hover:bg-zinc-50"
+            >
+              Страница регистрации ученика
+            </Link>
           </div>
         </header>
 
-        {membership.isOwnerOrAdmin && instructors.length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle>Инструктор</CardTitle>
-              <CardDescription>
-                Выберите, для чьего расписания создавать доступы учеников.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form className="flex flex-col gap-3 sm:flex-row">
-                <select
-                  name="instructor"
-                  className={selectClassName}
-                  defaultValue={selectedInstructor?.id}
-                >
-                  {instructors.map((instructor) => (
-                    <option key={instructor.id} value={instructor.id}>
-                      {getInstructorLabel(instructor)} / {instructor.slug}
-                    </option>
-                  ))}
-                </select>
-                <Button type="submit" className="h-10">
-                  Показать
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card className="border-blue-200 bg-blue-50/60">
-          <CardHeader className="pb-2">
-            <CardTitle>Как это работает</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3 text-sm text-blue-950 md:grid-cols-3">
+        <details className="group rounded-2xl border border-blue-200 bg-blue-50/60">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-semibold text-blue-950 sm:px-5">
+            Как это работает
+            <span className="text-sm font-medium text-blue-800 transition group-open:rotate-180">
+              ↓
+            </span>
+          </summary>
+          <div className="grid gap-3 border-t border-blue-100 px-4 py-4 text-sm text-blue-950 md:grid-cols-3 sm:px-5">
             <div className="rounded-xl bg-white/70 p-3">
-              <p className="font-semibold">1. Создаёте доступ</p>
+              <p className="font-semibold">1. Добавляете ученика</p>
               <p className="mt-1 text-blue-900/80">
-                Указываете метку ученика, лимиты и разрешённые типы занятий.
+                Указываете имя, логин, PIN и типы занятий, которые ему доступны.
               </p>
             </div>
             <div className="rounded-xl bg-white/70 p-3">
@@ -304,17 +323,17 @@ export default async function AdminStudentsPage({
               </p>
             </div>
             <div className="rounded-xl bg-white/70 p-3">
-              <p className="font-semibold">3. Следующий этап</p>
+              <p className="font-semibold">3. Ведёте прогресс</p>
               <p className="mt-1 text-blue-900/80">
-                Подключим личный вход ученика и автоматическую проверку лимитов.
+                В карточке видно план, проведённые занятия, оплату и долг.
               </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </details>
 
         {loadError && (
           <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить учебные доступы: {loadError.message}
+            Не удалось загрузить учеников: {loadError.message}
           </div>
         )}
 
@@ -322,14 +341,17 @@ export default async function AdminStudentsPage({
           <StudentAccessesPanel
             instructors={instructors}
             lessonTypes={lessonTypes}
-            accesses={panelAccesses}
+            schools={schools}
+            accesses={activeAccesses}
+            archivedAccesses={archivedAccesses}
+            pendingRequests={pendingRequests}
             selectedInstructorId={selectedInstructor.id}
-            canSelectInstructor={membership.isOwnerOrAdmin}
+            canSelectInstructor={false}
             adminEnabled={adminEnabled}
           />
         ) : (
           <div className="rounded-2xl border border-dashed bg-white px-4 py-10 text-center text-sm text-zinc-500">
-            Нет активного инструктора для создания учебных доступов.
+            Нет профиля для добавления учеников.
           </div>
         )}
       </div>

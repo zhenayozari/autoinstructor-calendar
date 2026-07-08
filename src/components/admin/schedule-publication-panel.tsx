@@ -7,76 +7,21 @@ import {
   updateWeekPublicationAction,
   type PublicationActionState,
 } from "@/app/admin/actions";
+import {
+  formatPrettyDateTime,
+  formatShortDay,
+  getUtcWeekDates,
+  selectClassName,
+} from "@/lib/formatters";
+import type { Instructor, ScheduleDay } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-type Instructor = {
-  id: string;
-  name: string;
-  timezone: string;
-};
-
-type ScheduleDay = {
-  id: string;
-  instructor_id: string;
-  date: string;
-  transmission: "automatic" | "manual" | null;
-  published_at: string | null;
-  slot_count: number;
-};
 
 const INITIAL_STATE: PublicationActionState = {
   status: "idle",
   message: "",
 };
-
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
-
-function parseDate(value: string) {
-  return new Date(`${value}T00:00:00Z`);
-}
-
-function formatDate(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function getWeekStart(value: string) {
-  const date = parseDate(value);
-  const day = date.getUTCDay();
-  date.setUTCDate(date.getUTCDate() + (day === 0 ? -6 : 1 - day));
-  return date;
-}
-
-function getWeekDates(value: string) {
-  const monday = getWeekStart(value);
-
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(monday);
-    date.setUTCDate(monday.getUTCDate() + index);
-    return formatDate(date);
-  });
-}
-
-function formatDay(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    timeZone: "UTC",
-  }).format(parseDate(value));
-}
-
-function formatPublishedAt(value: string, timezone: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: timezone,
-  }).format(new Date(value));
-}
 
 function DayPublicationAction({
   day,
@@ -130,7 +75,7 @@ function DayPublicationAction({
 
       {day.published_at && (
         <p className="text-muted-foreground text-xs">
-          Публикация: {formatPublishedAt(day.published_at, timezone)}
+          Публикация: {formatPrettyDateTime(day.published_at, timezone)}
         </p>
       )}
     </form>
@@ -155,7 +100,7 @@ export function SchedulePublicationPanel({
   const selectedInstructor = instructors.find(
     (instructor) => instructor.id === instructorId,
   );
-  const weekDates = useMemo(() => getWeekDates(weekDate), [weekDate]);
+  const weekDates = useMemo(() => getUtcWeekDates(weekDate), [weekDate]);
   const daysByDate = useMemo(
     () =>
       new Map(
@@ -218,7 +163,7 @@ export function SchedulePublicationPanel({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-semibold capitalize">
-                    {formatDay(date)}
+                    {formatShortDay(date)}
                   </p>
                   <p className="text-muted-foreground text-xs">{date}</p>
                 </div>

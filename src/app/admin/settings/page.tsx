@@ -1,224 +1,138 @@
 import Link from "next/link";
-import {
-  CalendarDays,
-  ClipboardList,
-  Home,
-  LogOut,
-  Settings,
-  UserRoundPen,
-  UsersRound,
-} from "lucide-react";
-import { logoutAction } from "@/app/login/actions";
+import { Settings, UserPlus } from "lucide-react";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createAdminClient,
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { AccessCodeForm } from "@/components/admin/access-code-form";
-import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
+import type {
+  LessonType,
+  School,
+} from "@/lib/types";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
-import { Button } from "@/components/ui/button";
+import { SchoolsSettings } from "@/components/admin/schools-settings";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
 
-type Instructor = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-  timezone: string;
-};
+type EditableLessonType = LessonType &
+  Required<
+    Pick<
+      LessonType,
+      | "code"
+      | "description"
+      | "kind"
+      | "default_duration_minutes"
+      | "default_price_amount"
+      | "tags"
+      | "sort_order"
+      | "is_active"
+    >
+  >;
 
-type InstructorSetting = {
-  instructor_id: string;
-  booking_access_code: string | null;
-  booking_access_code_updated_at: string | null;
-};
+function isMissingColumnError(error: { code?: string; message?: string } | null) {
+  const message = error?.message?.toLowerCase() ?? "";
 
-type AccessCodeHistoryItem = {
-  id: string;
-  instructor_id: string;
-  access_code: string;
-  created_at: string;
-};
+  return (
+    error?.code === "42703" ||
+    error?.code === "PGRST204" ||
+    message.includes("does not exist") ||
+    message.includes("could not find") ||
+    message.includes("schema cache")
+  );
+}
 
-type LessonType = {
-  id: string;
-  code: string;
-  name: string;
-  description: string | null;
-  color: string;
-  kind: "driving" | "theory";
-  default_duration_minutes: number;
-  default_price_amount: number | null;
-  tags: string[];
-  sort_order: number;
-  is_active: boolean;
-};
+async function loadLessonTypes(
+  supabase: SupabaseClient,
+  enabled: boolean,
+): Promise<{ data: EditableLessonType[]; error: { message: string } | null }> {
+  if (!enabled) {
+    return { data: [], error: null };
+  }
+
+  const result = await supabase
+    .from("lesson_types")
+    .select(
+      "id, code, name, description, color, kind, default_duration_minutes, default_price_amount, tags, sort_order, is_active",
+    )
+    .order("sort_order")
+    .order("name");
+
+  if (!result.error) {
+    return {
+      data: (result.data ?? []) as EditableLessonType[],
+      error: null,
+    };
+  }
+
+  if (!isMissingColumnError(result.error)) {
+    return { data: [], error: result.error };
+  }
+
+  const fallback = await supabase
+    .from("lesson_types")
+    .select(
+      "id, code, name, description, color, kind, default_duration_minutes, tags, sort_order, is_active",
+    )
+    .order("sort_order")
+    .order("name");
+
+  return {
+    data: ((fallback.data ?? []) as Array<
+      Omit<EditableLessonType, "default_price_amount">
+    >).map((lessonType) => ({
+      ...lessonType,
+      default_price_amount: null,
+    })),
+    error: fallback.error,
+  };
+}
 
 export default async function AdminSettingsPage() {
   const membership = await requireActiveOrganizationMember();
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
 
-  let instructorQuery = supabase
-    .from("instructors")
-    .select("id, name, slug, public_name, timezone")
-    .eq("organization_id", membership.organizationId)
-    .eq("is_active", true)
-    .order("name");
-
-  if (membership.isInstructor && membership.instructorId) {
-    instructorQuery = instructorQuery.eq("id", membership.instructorId);
-  }
-
-  const { data: instructorData, error: instructorError } =
-    await instructorQuery;
-  const instructors = (instructorData ?? []) as Instructor[];
-  const instructorIds = instructors.map((instructor) => instructor.id);
-  const initialInstructorId =
-    membership.instructorId &&
-    instructors.some(
-      (instructor) => instructor.id === membership.instructorId,
-    )
-      ? membership.instructorId
-      : "";
-
   const [
-    { data: settingsData, error: settingsError },
-    { data: accessCodeHistoryData, error: accessCodeHistoryError },
-    { data: lessonTypeData, error: lessonTypeError },
+    { data: lessonTypes, error: lessonTypeError },
+    { data: schoolData, error: schoolError },
   ] = await Promise.all([
-    adminEnabled && instructorIds.length > 0
+    loadLessonTypes(supabase, membership.isOwnerOrAdmin),
+    membership.isOwnerOrAdmin && adminEnabled
       ? supabase
-          .from("instructor_settings")
-          .select(
-            "instructor_id, booking_access_code, booking_access_code_updated_at",
-          )
-          .in("instructor_id", instructorIds)
-      : Promise.resolve({ data: [], error: null }),
-    adminEnabled && instructorIds.length > 0
-      ? supabase
-          .from("booking_access_code_history")
-          .select("id, instructor_id, access_code, created_at")
-          .in("instructor_id", instructorIds)
-          .order("created_at", { ascending: false })
-          .limit(50)
-      : Promise.resolve({ data: [], error: null }),
-    membership.isOwnerOrAdmin
-      ? supabase
-          .from("lesson_types")
-          .select(
-            "id, code, name, description, color, kind, default_duration_minutes, default_price_amount, tags, sort_order, is_active",
-          )
-          .order("sort_order")
+          .from("schools")
+          .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+          .eq("organization_id", membership.organizationId)
           .order("name")
       : Promise.resolve({ data: [], error: null }),
   ]);
 
   const loadError =
-    instructorError ?? settingsError ?? accessCodeHistoryError ?? lessonTypeError;
-  const settings = (settingsData ?? []) as InstructorSetting[];
-  const accessCodeHistory = (accessCodeHistoryData ??
-    []) as AccessCodeHistoryItem[];
-  const lessonTypes = (lessonTypeData ?? []) as LessonType[];
-  const selectedInstructor =
-    instructors.find((instructor) => instructor.id === initialInstructorId) ??
-    instructors[0] ??
-    null;
-
+    lessonTypeError ?? schoolError;
+  const schools = (schoolData ?? []) as School[];
   return (
-    <main className="min-h-screen bg-zinc-100 px-3 pb-24 pt-4 sm:px-6 sm:py-8">
+    <main className="px-3 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-6">
-        <AdminMobileNav
-          role={membership.role}
-          email={membership.user.email}
-          instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
-          showTeam={membership.isOwnerOrAdmin}
-        />
-
         <header className="rounded-2xl bg-white p-4 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-            <div>
-              <p className="text-muted-foreground text-sm font-medium">
-                Настройки системы
-              </p>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-                Запись и типы занятий
-              </h1>
-              <p className="text-muted-foreground mt-2 text-xs sm:text-sm">
-                Вы вошли как{" "}
-                <span className="font-semibold text-zinc-900">
-                  {membership.role}
-                </span>{" "}
-                · {membership.user.email}
-              </p>
-            </div>
-
-            <div className="hidden grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin" />}
-              >
-                <Home />
-                Главная
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/schedule" />}
-              >
-                <CalendarDays />
-                Расписание
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={<Link href="/admin/bookings" />}
-              >
-                <ClipboardList />
-                Записи
-              </Button>
-              <Button
-                variant="outline"
-                className="h-10"
-                nativeButton={false}
-                render={
-                  <Link
-                    href={
-                      initialInstructorId
-                        ? `/admin/profile?instructor=${initialInstructorId}`
-                        : "/admin/profile"
-                    }
-                  />
-                }
-              >
-                <UserRoundPen />
-                Профиль
-              </Button>
-              {membership.isOwnerOrAdmin && (
-                <Button
-                  variant="outline"
-                  className="h-10"
-                  nativeButton={false}
-                  render={<Link href="/admin/team" />}
-                >
-                  <UsersRound />
-                  Команда
-                </Button>
-              )}
-              <form action={logoutAction}>
-                <Button type="submit" variant="outline" className="h-10 w-full">
-                  <LogOut />
-                  Выйти
-                </Button>
-              </form>
-            </div>
+          <div>
+            <p className="text-muted-foreground text-sm font-medium">
+              Настройки
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              Справочники и цены
+            </h1>
+            <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
+              Здесь задаются источники учеников, типы занятий, цены и ссылка
+              для регистрации.
+            </p>
           </div>
         </header>
 
@@ -228,14 +142,37 @@ export default async function AdminSettingsPage() {
           </div>
         )}
 
-        <AccessCodeForm
-          instructors={instructors}
-          settings={settings}
-          history={accessCodeHistory}
-          enabled={adminEnabled}
-          saltConfigured={Boolean(process.env.BOOKING_CODE_SALT)}
-          initialInstructorId={initialInstructorId}
-        />
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-start gap-3">
+              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-100">
+                <UserPlus className="size-5" />
+              </div>
+              <div>
+                <CardTitle>Регистрация учеников</CardTitle>
+                <CardDescription>
+                  Эту ссылку можно отправлять ученикам. Новые заявки появятся
+                  на странице “Ученики” во вкладке “Заявки”.
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Link
+              href="/student/register"
+              className="inline-flex h-10 items-center justify-center rounded-lg border px-3 text-sm font-medium transition hover:bg-zinc-50"
+            >
+              Открыть страницу регистрации
+            </Link>
+          </CardContent>
+        </Card>
+
+        {membership.isOwnerOrAdmin && (
+          <SchoolsSettings
+            schools={schools}
+            enabled={adminEnabled}
+          />
+        )}
 
         {membership.isOwnerOrAdmin && (
           <LessonTypesSettings
@@ -243,6 +180,18 @@ export default async function AdminSettingsPage() {
             enabled={adminEnabled}
           />
         )}
+
+        <Card className="border-blue-200 bg-blue-50/60">
+          <CardHeader className="pb-2">
+            <CardTitle>Как считаются цены</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm leading-6 text-blue-950">
+            <p>1. Если у занятия указана ручная цена, используется она.</p>
+            <p>2. Если ручной цены нет, берётся цена источника.</p>
+            <p>3. Если источник не выбран, берётся цена типа занятия.</p>
+            <p>4. Если цены нет нигде, занятие попадёт в отчёты как “без цены”.</p>
+          </CardContent>
+        </Card>
 
         {!membership.isOwnerOrAdmin && (
           <div className="rounded-2xl border bg-white px-4 py-5 text-sm text-zinc-600 shadow-sm sm:px-6">
@@ -255,8 +204,7 @@ export default async function AdminSettingsPage() {
                   Типы занятий управляются администратором
                 </p>
                 <p className="mt-1 text-zinc-500">
-                  Инструктор может менять своё кодовое слово, но справочник
-                  типов занятий доступен только owner/admin.
+                  Источники и типы занятий пока доступны только администратору.
                 </p>
               </div>
             </div>

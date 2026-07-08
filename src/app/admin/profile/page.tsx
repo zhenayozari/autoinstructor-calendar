@@ -1,8 +1,8 @@
-import Link from "next/link";
-import { ArrowLeft, UserRoundPen } from "lucide-react";
+import { UserRoundPen } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { formatUpdatedAt, selectClassName } from "@/lib/formatters";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { AdminMobileNav } from "@/components/admin/admin-mobile-nav";
+import type { InstructorProfile } from "@/lib/types";
 import { ProfileForm } from "@/components/admin/profile-form";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,34 +15,9 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type InstructorProfile = {
-  id: string;
-  name: string;
-  slug: string;
-  public_name: string | null;
-  photo_url: string | null;
-  short_bio: string | null;
-  contact_text: string | null;
-  car_description: string | null;
-  experience_text: string | null;
-  public_is_visible: boolean;
-  profile_updated_at: string | null;
-};
-
 type SearchParams = Promise<{
   instructor?: string | string[];
 }>;
-
-function formatUpdatedAt(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Asia/Irkutsk",
-  }).format(new Date(value));
-}
 
 export default async function InstructorProfilePage({
   searchParams,
@@ -54,6 +29,7 @@ export default async function InstructorProfilePage({
   const requestedInstructorId = Array.isArray(params.instructor)
     ? params.instructor[0]
     : params.instructor;
+  void requestedInstructorId;
 
   const supabase = createAdminClient();
   let instructorsQuery = supabase
@@ -74,31 +50,17 @@ export default async function InstructorProfilePage({
     membership.instructorId &&
     instructors.some((instructor) => instructor.id === membership.instructorId)
       ? membership.instructorId
-      : null;
-  const selectedInstructorId = membership.isInstructor
-    ? membership.instructorId
-    : requestedInstructorId &&
-        instructors.some(
-          (instructor) => instructor.id === requestedInstructorId,
-        )
-      ? requestedInstructorId
-      : defaultInstructorId;
+      : instructors[0]?.id ?? null;
+  const selectedInstructorId = defaultInstructorId;
   const profile =
     instructors.find(
       (instructor) => instructor.id === selectedInstructorId,
     ) ?? null;
 
   return (
-    <main className="min-h-screen bg-zinc-100 px-4 pb-24 pt-4 sm:px-6 sm:py-8">
+    <main className="px-4 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl space-y-6">
-        <AdminMobileNav
-          role={membership.role}
-          email={membership.user.email}
-          instructorName={profile?.public_name ?? profile?.name}
-          showTeam={membership.isOwnerOrAdmin}
-        />
-
-        <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <header>
           <div>
             <p className="text-muted-foreground text-sm font-medium">
               Настройки инструктора
@@ -107,17 +69,9 @@ export default async function InstructorProfilePage({
               Публичный профиль
             </h1>
           </div>
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<Link href="/admin" />}
-          >
-            <ArrowLeft />
-            Вернуться в админку
-          </Button>
         </header>
 
-        {membership.isOwnerOrAdmin && (
+        {false && membership.isOwnerOrAdmin && (
           <Card>
             <CardHeader>
               <CardTitle>Выберите профиль</CardTitle>
@@ -130,7 +84,7 @@ export default async function InstructorProfilePage({
                 <select
                   name="instructor"
                   defaultValue={selectedInstructorId ?? ""}
-                  className="border-input bg-background h-10 flex-1 rounded-lg border px-3 text-sm"
+                  className={selectClassName}
                   required
                 >
                   <option value="" disabled>
@@ -161,6 +115,7 @@ export default async function InstructorProfilePage({
                   {profile?.profile_updated_at
                     ? `Последнее обновление: ${formatUpdatedAt(
                         profile.profile_updated_at,
+                        "Asia/Irkutsk",
                       )}`
                     : "Профиль ещё не обновлялся"}
                 </CardDescription>

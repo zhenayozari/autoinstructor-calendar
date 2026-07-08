@@ -11,16 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { InstructorPhoto } from "@/components/instructors/instructor-photo";
-
-type InstructorProfile = {
-  public_name: string | null;
-  photo_url: string | null;
-  short_bio: string | null;
-  contact_text: string | null;
-  car_description: string | null;
-  experience_text: string | null;
-  public_is_visible: boolean;
-};
+import type { InstructorProfile } from "@/lib/types";
 
 const INITIAL_STATE: ProfileActionState = {
   status: "idle",
@@ -32,7 +23,16 @@ export function ProfileForm({
   profile,
 }: {
   instructorId: string;
-  profile: InstructorProfile;
+  profile: Pick<
+    InstructorProfile,
+    | "public_name"
+    | "photo_url"
+    | "short_bio"
+    | "contact_text"
+    | "car_description"
+    | "experience_text"
+    | "public_is_visible"
+  >;
 }) {
   const [state, formAction, isPending] = useActionState(
     saveInstructorProfileAction,

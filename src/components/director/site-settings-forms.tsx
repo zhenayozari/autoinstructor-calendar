@@ -605,6 +605,34 @@ export function OrganizationSiteSettingsForm({
         </div>
       </SiteBlock>
 
+      <SiteBlock
+        title="Оферта и правовая информация"
+        description="Текст в конце сайта: условия, cookies и персональные данные."
+        enabledName="legal_enabled"
+        defaultEnabled={content.legal.enabled}
+      >
+        <div className="grid gap-4 lg:grid-cols-2">
+          <TextInputField
+            name="legal_link_label"
+            label="Текст ссылки внизу сайта"
+            defaultValue={content.legal.linkLabel}
+            maxLength={80}
+          />
+          <TextInputField
+            name="legal_title"
+            label="Заголовок"
+            defaultValue={content.legal.title}
+            maxLength={160}
+          />
+        </div>
+        <TextareaField
+          name="legal_text"
+          label="Текст оферты"
+          defaultValue={content.legal.text}
+          maxLength={4000}
+        />
+      </SiteBlock>
+
       <StateMessage state={state} />
 
       <Button type="submit" disabled={isPending}>

@@ -403,6 +403,24 @@ export async function updateOrganizationSiteSettingsAction(
         DEFAULT_LANDING_CONTENT.contacts.maxUrl,
       ),
     },
+    legal: {
+      enabled: readCheckbox(formData, "legal_enabled"),
+      linkLabel: readTextWithFallback(
+        formData,
+        "legal_link_label",
+        DEFAULT_LANDING_CONTENT.legal.linkLabel,
+      ),
+      title: readTextWithFallback(
+        formData,
+        "legal_title",
+        DEFAULT_LANDING_CONTENT.legal.title,
+      ),
+      text: readTextWithFallback(
+        formData,
+        "legal_text",
+        DEFAULT_LANDING_CONTENT.legal.text,
+      ),
+    },
   };
 
   const { error } = await supabase.from("organization_site_settings").upsert(

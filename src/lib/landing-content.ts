@@ -67,6 +67,12 @@ export type LandingContent = {
     maxLabel: string;
     maxUrl: string;
   };
+  legal: {
+    enabled: boolean;
+    linkLabel: string;
+    title: string;
+    text: string;
+  };
 };
 
 export const DEFAULT_LANDING_CONTENT: LandingContent = {
@@ -190,6 +196,13 @@ export const DEFAULT_LANDING_CONTENT: LandingContent = {
     maxLabel: "Max",
     maxUrl: "#contacts",
   },
+  legal: {
+    enabled: true,
+    linkLabel: "Оферта и условия",
+    title: "Оферта и правовая информация",
+    text:
+      "Сайт является информационной страницей автоинструктора и не является системой сбора заявок.\n\nНа публичной странице сайта не используются формы, cookies для отслеживания посетителей и автоматический сбор персональных данных. Для связи посетитель самостоятельно переходит по номеру телефона или ссылке на мессенджер.\n\nИнформация на сайте носит справочный характер. Условия занятий, стоимость, время и формат согласуются индивидуально с инструктором перед началом обучения.",
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,6 +265,7 @@ export function normalizeLandingContent(value: unknown): LandingContent {
   const process = isRecord(source.process) ? source.process : {};
   const instructors = isRecord(source.instructors) ? source.instructors : {};
   const contacts = isRecord(source.contacts) ? source.contacts : {};
+  const legal = isRecord(source.legal) ? source.legal : {};
 
   return {
     media: {
@@ -383,6 +397,18 @@ export function normalizeLandingContent(value: unknown): LandingContent {
         contacts.maxUrl,
         DEFAULT_LANDING_CONTENT.contacts.maxUrl,
       ),
+    },
+    legal: {
+      enabled: readBoolean(
+        legal.enabled,
+        DEFAULT_LANDING_CONTENT.legal.enabled,
+      ),
+      linkLabel: readString(
+        legal.linkLabel,
+        DEFAULT_LANDING_CONTENT.legal.linkLabel,
+      ),
+      title: readString(legal.title, DEFAULT_LANDING_CONTENT.legal.title),
+      text: readString(legal.text, DEFAULT_LANDING_CONTENT.legal.text),
     },
   };
 }

@@ -569,8 +569,25 @@ export default async function Home() {
           </section>
           )}
 
-          <footer className="py-6 text-center text-xs text-zinc-400">
-            {organization?.name ?? "Автоинструктор"}
+          <footer className="mx-auto max-w-6xl py-6 text-xs text-zinc-500">
+            {content.legal.enabled && (
+              <details className="group rounded-2xl border border-zinc-200/80 bg-white/70 p-4 text-left shadow-sm backdrop-blur">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-zinc-800">
+                  <span>{content.legal.linkLabel}</span>
+                  <span className="text-lime-700 transition group-open:rotate-45">
+                    +
+                  </span>
+                </summary>
+                <div className="mt-4 border-t pt-4">
+                  <h2 className="text-base font-semibold text-zinc-950">
+                    {content.legal.title}
+                  </h2>
+                  <p className="mt-3 whitespace-pre-line text-sm leading-7 text-zinc-600">
+                    {content.legal.text}
+                  </p>
+                </div>
+              </details>
+            )}
           </footer>
         </div>
       </div>

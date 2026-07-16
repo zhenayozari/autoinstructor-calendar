@@ -203,10 +203,14 @@ export async function studentBookSlotAction(
     const { data: slot, error: slotError } = await supabase
       .from("public_schedule_slots")
       .select(
-        "id, instructor_id, lesson_type_id, status, is_booked, date, lesson_type_name",
+        "id, instructor_id, school_id, lesson_type_id, status, is_booked, date, lesson_type_name",
       )
       .eq("id", slotId)
       .maybeSingle();
+
+    if (slotError && isMissingColumnError(slotError)) {
+      throw new Error("Расписание обновляется. Попробуйте обновить страницу позже");
+    }
 
     if (slotError) {
       throw new Error(slotError.message);
@@ -214,6 +218,10 @@ export async function studentBookSlotAction(
 
     if (!slot || slot.instructor_id !== access.instructorId) {
       throw new Error("Этот слот недоступен для вашего доступа");
+    }
+
+    if ((slot.school_id ?? null) !== access.schoolId) {
+      throw new Error("Этот слот относится к другому источнику");
     }
 
     if (slot.status !== "available" || slot.is_booked) {

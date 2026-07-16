@@ -37,6 +37,7 @@ type ScheduleSlot = {
   date: string;
   transmission: "automatic" | "manual" | null;
   lesson_type_id: string;
+  school_id: string | null;
   lesson_type_name: string;
   lesson_type_color: string;
   start_time: string;
@@ -72,6 +73,19 @@ type StudentLesson = {
 const DEFAULT_TIMEZONE = "Asia/Irkutsk";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ANCHOR = "student-schedule";
+
+function isMissingSchoolIdColumnError(error: { code?: string; message?: string } | null) {
+  const message = error?.message?.toLowerCase() ?? "";
+
+  return (
+    error?.code === "42703" ||
+    error?.code === "PGRST204" ||
+    (message.includes("school_id") &&
+      (message.includes("does not exist") ||
+        message.includes("could not find") ||
+        message.includes("schema cache")))
+  );
+}
 
 function parseDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
@@ -618,19 +632,36 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
       : { data: [], error: null };
   const bookedSlots = (bookedSlotData ?? []) as ScheduleSlot[];
 
-  const { data: slotsData, error: slotsError } =
-    access.lessonTypeIds.length > 0
-      ? await supabase
-          .from("public_schedule_slots")
-          .select("*")
-          .eq("instructor_id", access.instructorId)
-          .in("lesson_type_id", access.lessonTypeIds)
-          .eq("status", "available")
-          .eq("is_booked", false)
-          .gte("date", visibleWeekStart)
-          .lte("date", formatDateValue(weekEnd))
-          .order("start_time", { ascending: true })
-      : { data: [], error: null };
+  let slotsData: unknown[] = [];
+  let slotsError: { message: string } | null = null;
+
+  if (access.lessonTypeIds.length > 0) {
+    let availableSlotsQuery = supabase
+      .from("public_schedule_slots")
+      .select("*")
+      .eq("instructor_id", access.instructorId)
+      .in("lesson_type_id", access.lessonTypeIds)
+      .eq("status", "available")
+      .eq("is_booked", false)
+      .gte("date", visibleWeekStart)
+      .lte("date", formatDateValue(weekEnd))
+      .order("start_time", { ascending: true });
+
+    availableSlotsQuery = access.schoolId
+      ? availableSlotsQuery.eq("school_id", access.schoolId)
+      : availableSlotsQuery.is("school_id", null);
+
+    const availableSlotsResult = await availableSlotsQuery;
+
+    if (isMissingSchoolIdColumnError(availableSlotsResult.error)) {
+      slotsData = [];
+      slotsError = null;
+    } else {
+      slotsData = availableSlotsResult.data ?? [];
+      slotsError = availableSlotsResult.error;
+    }
+  }
+
   const usage = await getUsedCounts(access.id, visibleWeekStart);
   const bookedSlotsById = new Map(bookedSlots.map((slot) => [slot.id, slot]));
   const studentLessons = studentBookings

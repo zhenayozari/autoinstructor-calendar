@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { KeyRound } from "lucide-react";
-import { getCurrentStudentAccess } from "@/lib/student-session";
 import { StudentLoginForm } from "@/components/student/student-login-form";
 import {
   Card,
@@ -10,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { getCurrentStudentAccess } from "@/lib/student-session";
 
 export const dynamic = "force-dynamic";
 
@@ -37,19 +37,12 @@ export default async function StudentLoginPage() {
             </div>
             <CardTitle className="text-2xl">Вход ученика</CardTitle>
             <CardDescription>
-              Введите логин и PIN/пароль, которые передал инструктор.
+              Введите логин и ПИН-код/пароль: их мог передать инструктор, или вы
+              придумали их сами при заявке.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <StudentLoginForm />
-            <div className="mt-4 text-center text-sm">
-              <Link
-                href="/student/register"
-                className="font-semibold text-zinc-500 hover:text-zinc-950"
-              >
-                Нет доступа? Отправить заявку
-              </Link>
-            </div>
           </CardContent>
         </Card>
       </div>

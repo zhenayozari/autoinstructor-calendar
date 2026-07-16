@@ -19,8 +19,8 @@ export default function AccessDisabledPage() {
           </div>
           <CardTitle className="text-2xl">Доступ отключён</CardTitle>
           <CardDescription>
-            Ваш аккаунт существует, но доступ к административной панели
-            деактивирован. Обратитесь к owner или admin.
+            Ваш аккаунт существует, но доступ к кабинету сейчас отключён.
+            Обратитесь к руководителю.
           </CardDescription>
         </CardHeader>
         <CardContent>

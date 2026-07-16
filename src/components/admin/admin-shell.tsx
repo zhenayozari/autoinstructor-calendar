@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  BriefcaseBusiness,
   CalendarDays,
-  ExternalLink,
   LogOut,
   Menu,
   Settings,
@@ -37,7 +37,6 @@ const primaryLinks = [
 
 const drawerLinks = [
   { href: "/admin/settings", label: "Настройки", icon: Settings },
-  { href: "/schedule", label: "Календарь ученика", icon: ExternalLink },
   { href: "/admin/profile", label: "Профиль", icon: UserRoundPen },
 ] as const;
 
@@ -146,6 +145,22 @@ export function AdminShell({
                     {label}
                   </Link>
                 ))}
+
+                {role === "owner" && (
+                  <Link
+                    href="/director"
+                    className={cn(
+                      "flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors",
+                      isActivePath(pathname, "/director")
+                        ? "bg-zinc-900 text-white"
+                        : "text-zinc-700 hover:bg-zinc-100",
+                    )}
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    <BriefcaseBusiness className="size-4" />
+                    Кабинет руководителя
+                  </Link>
+                )}
 
                 {showTeam && (
                   <Link

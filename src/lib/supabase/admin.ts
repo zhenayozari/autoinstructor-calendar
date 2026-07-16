@@ -12,7 +12,7 @@ export function createAdminClient() {
 
   if (!secretKey) {
     throw new Error(
-      "Добавьте SUPABASE_SECRET_KEY в .env.local для административных операций",
+      "Добавьте служебный ключ проекта для административных операций",
     );
   }
 

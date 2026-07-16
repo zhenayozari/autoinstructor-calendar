@@ -34,7 +34,7 @@ export function MemberAccessForm({
     <form action={formAction} className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <Label htmlFor="member-email">Email пользователя</Label>
+          <Label htmlFor="member-email">Эл. почта пользователя</Label>
           <Input
             id="member-email"
             name="email"
@@ -45,7 +45,7 @@ export function MemberAccessForm({
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="member-user-id">Auth user ID / UID</Label>
+          <Label htmlFor="member-user-id">Идентификатор пользователя</Label>
           <Input
             id="member-user-id"
             name="user_id"
@@ -65,8 +65,8 @@ export function MemberAccessForm({
               setRole(event.target.value as "admin" | "instructor")
             }
           >
-            {currentRole === "owner" && <option value="admin">Admin</option>}
-            <option value="instructor">Instructor</option>
+            {currentRole === "owner" && <option value="admin">Администратор</option>}
+            <option value="instructor">Инструктор</option>
           </select>
         </div>
 
@@ -91,7 +91,7 @@ export function MemberAccessForm({
             ))}
           </select>
           <p className="text-muted-foreground text-xs">
-            Для instructor профиль обязателен, для admin — необязателен.
+            Для инструктора профиль обязателен, для администратора — необязателен.
           </p>
         </div>
       </div>

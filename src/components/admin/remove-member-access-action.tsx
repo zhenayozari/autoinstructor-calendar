@@ -26,7 +26,7 @@ export function RemoveMemberAccessAction({ memberId }: { memberId: string }) {
         onSubmit={(event) => {
           if (
             !window.confirm(
-              "Удалить связь сотрудника с платформой? Auth-пользователь и профиль инструктора сохранятся.",
+      "Удалить связь сотрудника с платформой? Пользователь и профиль инструктора сохранятся.",
             )
           ) {
             event.preventDefault();

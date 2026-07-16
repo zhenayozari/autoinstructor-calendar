@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { Settings, UserPlus } from "lucide-react";
+import { Settings } from "lucide-react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createAdminClient,
@@ -99,14 +98,15 @@ async function loadLessonTypes(
 export default async function AdminSettingsPage() {
   const membership = await requireActiveOrganizationMember();
   const adminEnabled = hasSupabaseAdminKey();
+  const canManageCatalog = membership.role === "owner";
   const supabase = adminEnabled ? createAdminClient() : await createClient();
 
   const [
     { data: lessonTypes, error: lessonTypeError },
     { data: schoolData, error: schoolError },
   ] = await Promise.all([
-    loadLessonTypes(supabase, membership.isOwnerOrAdmin),
-    membership.isOwnerOrAdmin && adminEnabled
+    loadLessonTypes(supabase, adminEnabled),
+    adminEnabled
       ? supabase
           .from("schools")
           .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
@@ -118,6 +118,13 @@ export default async function AdminSettingsPage() {
   const loadError =
     lessonTypeError ?? schoolError;
   const schools = (schoolData ?? []) as School[];
+  const visibleSchools = canManageCatalog
+    ? schools
+    : schools.filter((school) => school.is_active);
+  const visibleLessonTypes = canManageCatalog
+    ? lessonTypes
+    : lessonTypes.filter((lessonType) => lessonType.is_active);
+
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-6">
@@ -130,8 +137,7 @@ export default async function AdminSettingsPage() {
               Справочники и цены
             </h1>
             <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-              Здесь задаются источники учеников, типы занятий, цены и ссылка
-              для регистрации.
+              Здесь задаются источники учеников, типы занятий и цены.
             </p>
           </div>
         </header>
@@ -142,44 +148,17 @@ export default async function AdminSettingsPage() {
           </div>
         )}
 
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-start gap-3">
-              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-100">
-                <UserPlus className="size-5" />
-              </div>
-              <div>
-                <CardTitle>Регистрация учеников</CardTitle>
-                <CardDescription>
-                  Эту ссылку можно отправлять ученикам. Новые заявки появятся
-                  на странице “Ученики” во вкладке “Заявки”.
-                </CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <Link
-              href="/student/register"
-              className="inline-flex h-10 items-center justify-center rounded-lg border px-3 text-sm font-medium transition hover:bg-zinc-50"
-            >
-              Открыть страницу регистрации
-            </Link>
-          </CardContent>
-        </Card>
+        <SchoolsSettings
+          schools={visibleSchools}
+          adminEnabled={adminEnabled}
+          canManage={canManageCatalog}
+        />
 
-        {membership.isOwnerOrAdmin && (
-          <SchoolsSettings
-            schools={schools}
-            enabled={adminEnabled}
-          />
-        )}
-
-        {membership.isOwnerOrAdmin && (
-          <LessonTypesSettings
-            lessonTypes={lessonTypes}
-            enabled={adminEnabled}
-          />
-        )}
+        <LessonTypesSettings
+          lessonTypes={visibleLessonTypes}
+          adminEnabled={adminEnabled}
+          canManage={canManageCatalog}
+        />
 
         <Card className="border-blue-200 bg-blue-50/60">
           <CardHeader className="pb-2">
@@ -193,7 +172,7 @@ export default async function AdminSettingsPage() {
           </CardContent>
         </Card>
 
-        {!membership.isOwnerOrAdmin && (
+        {!canManageCatalog && (
           <div className="rounded-2xl border bg-white px-4 py-5 text-sm text-zinc-600 shadow-sm sm:px-6">
             <div className="flex items-start gap-3">
               <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-100">
@@ -201,10 +180,12 @@ export default async function AdminSettingsPage() {
               </div>
               <div>
                 <p className="font-semibold text-zinc-950">
-                  Типы занятий управляются администратором
+                  Справочники задаёт руководитель
                 </p>
                 <p className="mt-1 text-zinc-500">
-                  Источники и типы занятий пока доступны только администратору.
+                  Вы можете выбирать эти источники и типы занятий в расписании
+                  и учениках, но менять школьные правила может только
+                  руководитель.
                 </p>
               </div>
             </div>

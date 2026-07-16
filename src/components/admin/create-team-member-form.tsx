@@ -53,13 +53,13 @@ export function CreateTeamMemberForm({
               }
             }}
           >
-            {currentRole === "owner" && <option value="admin">Admin</option>}
-            <option value="instructor">Instructor</option>
+            {currentRole === "owner" && <option value="admin">Администратор</option>}
+            <option value="instructor">Инструктор</option>
           </select>
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="team-member-email">Email для входа</Label>
+          <Label htmlFor="team-member-email">Эл. почта для входа</Label>
           <Input
             id="team-member-email"
             name="email"
@@ -134,7 +134,7 @@ export function CreateTeamMemberForm({
             </div>
 
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="team-member-slug">Slug</Label>
+              <Label htmlFor="team-member-slug">Адрес профиля</Label>
               <Input
                 id="team-member-slug"
                 name="slug"
@@ -143,7 +143,7 @@ export function CreateTeamMemberForm({
                 required
               />
               <p className="text-muted-foreground text-xs">
-                Адрес публичного профиля: /instructors/anna-petrova
+                Короткий адрес публичного профиля. Например: anna-petrova
               </p>
             </div>
           </div>

@@ -457,9 +457,7 @@ export function SlotForm({
 
       {!adminEnabled && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Для создания слотов добавьте серверный ключ{" "}
-          <code className="font-semibold">SUPABASE_SECRET_KEY</code> в{" "}
-          <code className="font-semibold">.env.local</code>.
+          Для создания слотов добавьте служебный ключ проекта в настройки сервера.
         </div>
       )}
 

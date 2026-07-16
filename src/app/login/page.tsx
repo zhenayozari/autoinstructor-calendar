@@ -28,7 +28,7 @@ export default async function LoginPage() {
           </div>
           <CardTitle className="text-2xl">Вход для инструктора</CardTitle>
           <CardDescription>
-            Используйте аккаунт, созданный в Supabase Dashboard.
+            Используйте эл. почту и пароль от кабинета инструктора.
           </CardDescription>
         </CardHeader>
         <CardContent>

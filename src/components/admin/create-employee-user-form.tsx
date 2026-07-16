@@ -39,7 +39,7 @@ export function CreateEmployeeUserForm({
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <Label htmlFor="new-user-email">Email</Label>
+          <Label htmlFor="new-user-email">Эл. почта</Label>
           <Input
             id="new-user-email"
             name="email"
@@ -73,8 +73,8 @@ export function CreateEmployeeUserForm({
               setRole(event.target.value as "admin" | "instructor")
             }
           >
-            {currentRole === "owner" && <option value="admin">Admin</option>}
-            <option value="instructor">Instructor</option>
+            {currentRole === "owner" && <option value="admin">Администратор</option>}
+            <option value="instructor">Инструктор</option>
           </select>
         </div>
 

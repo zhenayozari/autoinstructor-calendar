@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { headers } from "next/headers";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import {
   buildActiveInstructorsQuery,
@@ -16,6 +16,7 @@ import type {
   LessonType,
   School,
   Slot,
+  InstructorSetting,
   StudentRegistrationRequest,
 } from "@/lib/types";
 import {
@@ -75,9 +76,14 @@ export default async function AdminStudentsPage({
   searchParams,
 }: AdminStudentsPageProps) {
   const params = (await searchParams) ?? {};
+  const requestHeaders = await headers();
   const membership = await requireActiveOrganizationMember();
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
+  const origin =
+    requestHeaders.get("origin") ??
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    "http://localhost:3001";
 
   const { data: instructorData, error: instructorError } =
     await buildActiveInstructorsQuery(
@@ -101,6 +107,7 @@ export default async function AdminStudentsPage({
     { data: schoolData, error: schoolError },
     { data: accessData, error: accessError },
     { data: requestData, error: requestError },
+    { data: settingData, error: settingError },
   ] = await Promise.all([
     supabase
       .from("lesson_types")
@@ -134,6 +141,14 @@ export default async function AdminStudentsPage({
           .in("instructor_id", selectedInstructorIds)
           .eq("status", "pending")
           .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
+    adminEnabled && selectedInstructorIds.length > 0
+      ? supabase
+          .from("instructor_settings")
+          .select(
+            "instructor_id, student_registration_token, student_registration_enabled, student_registration_token_updated_at",
+          )
+          .in("instructor_id", selectedInstructorIds)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
@@ -184,12 +199,25 @@ export default async function AdminStudentsPage({
     schoolError ??
     accessError ??
     requestError ??
+    settingError ??
     accessLessonTypeError ??
     bookingError ??
     slotError;
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
   const schools = (schoolData ?? []) as School[];
   const pendingRequests = (requestData ?? []) as StudentRegistrationRequest[];
+  const registrationSettings = ((settingData ?? []) as Pick<
+    InstructorSetting,
+    | "instructor_id"
+    | "student_registration_token"
+    | "student_registration_enabled"
+    | "student_registration_token_updated_at"
+  >[])[0];
+  const registrationLink =
+    registrationSettings?.student_registration_token &&
+    registrationSettings.student_registration_enabled
+      ? `${origin}/student/register?token=${registrationSettings.student_registration_token}`
+      : null;
   const schoolsById = new Map(schools.map((school) => [school.id, school]));
   const lessonTypesById = new Map(
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
@@ -293,12 +321,6 @@ export default async function AdminStudentsPage({
               Активные ученики, доступы для записи, прогресс занятий и долги в
               одном рабочем списке.
             </p>
-            <Link
-              href="/student/register"
-              className="mt-4 inline-flex h-10 items-center justify-center rounded-lg border px-3 text-sm font-medium transition hover:bg-zinc-50"
-            >
-              Страница регистрации ученика
-            </Link>
           </div>
         </header>
 
@@ -313,13 +335,13 @@ export default async function AdminStudentsPage({
             <div className="rounded-xl bg-white/70 p-3">
               <p className="font-semibold">1. Добавляете ученика</p>
               <p className="mt-1 text-blue-900/80">
-                Указываете имя, логин, PIN и типы занятий, которые ему доступны.
+                  Указываете имя, логин, ПИН-код и типы занятий, которые ему доступны.
               </p>
             </div>
             <div className="rounded-xl bg-white/70 p-3">
               <p className="font-semibold">2. Копируете данные</p>
               <p className="mt-1 text-blue-900/80">
-                Отправляете ученику ссылку, логин и PIN в любом мессенджере.
+                  Отправляете ученику ссылку, логин и ПИН-код в любом мессенджере.
               </p>
             </div>
             <div className="rounded-xl bg-white/70 p-3">
@@ -348,6 +370,10 @@ export default async function AdminStudentsPage({
             selectedInstructorId={selectedInstructor.id}
             canSelectInstructor={false}
             adminEnabled={adminEnabled}
+            registrationLink={registrationLink}
+            registrationLinkUpdatedAt={
+              registrationSettings?.student_registration_token_updated_at ?? null
+            }
           />
         ) : (
           <div className="rounded-2xl border border-dashed bg-white px-4 py-10 text-center text-sm text-zinc-500">

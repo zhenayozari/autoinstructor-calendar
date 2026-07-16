@@ -42,7 +42,7 @@ function validateLogin(login: string) {
 
 function validateSecret(secret: string) {
   if (secret.length < 4 || secret.length > 72) {
-    throw new Error("PIN/пароль должен содержать от 4 до 72 символов");
+    throw new Error("ПИН-код/пароль должен содержать от 4 до 72 символов");
   }
 }
 
@@ -62,6 +62,43 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Не удалось отправить заявку";
 }
 
+async function getRegistrationInstructor(token: string) {
+  const supabase = createAdminClient();
+  const { data: settings, error: settingsError } = await supabase
+    .from("instructor_settings")
+    .select("instructor_id, student_registration_enabled")
+    .eq("student_registration_token", token)
+    .maybeSingle();
+
+  if (settingsError) {
+    throw new Error(settingsError.message);
+  }
+
+  if (!settings || !settings.student_registration_enabled) {
+    throw new Error("Ссылка регистрации недоступна");
+  }
+
+  const { data: instructor, error: instructorError } = await supabase
+    .from("instructors")
+    .select("id, organization_id, is_active")
+    .eq("id", settings.instructor_id)
+    .maybeSingle();
+
+  if (instructorError) {
+    throw new Error(instructorError.message);
+  }
+
+  if (!instructor?.is_active) {
+    throw new Error("Сейчас регистрация недоступна");
+  }
+
+  return instructor as {
+    id: string;
+    organization_id: string;
+    is_active: boolean;
+  };
+}
+
 export async function createStudentRegistrationRequestAction(
   previousState: StudentRegistrationActionState,
   formData: FormData,
@@ -69,6 +106,7 @@ export async function createStudentRegistrationRequestAction(
   void previousState;
 
   try {
+    const token = readRequiredString(formData, "token");
     const firstName = validateLength(
       readOptionalString(formData, "first_name"),
       80,
@@ -96,21 +134,7 @@ export async function createStudentRegistrationRequestAction(
     validateSecret(secret);
 
     const supabase = createAdminClient();
-    const { data: instructor, error: instructorError } = await supabase
-      .from("instructors")
-      .select("id, organization_id")
-      .eq("is_active", true)
-      .order("name")
-      .limit(1)
-      .maybeSingle();
-
-    if (instructorError) {
-      throw new Error(instructorError.message);
-    }
-
-    if (!instructor) {
-      throw new Error("Сейчас регистрация недоступна");
-    }
+    const instructor = await getRegistrationInstructor(token);
 
     const { data: existingAccess, error: accessError } = await supabase
       .from("student_accesses")

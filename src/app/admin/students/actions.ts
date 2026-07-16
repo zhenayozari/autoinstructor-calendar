@@ -1,5 +1,6 @@
 "use server";
 
+import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import {
   requireActiveOrganizationMember,
@@ -12,6 +13,8 @@ export type StudentAccessActionState = {
   status: "idle" | "success" | "error";
   message: string;
 };
+
+export type StudentRegistrationLinkActionState = StudentAccessActionState;
 
 function readRequiredString(formData: FormData, field: string) {
   const value = formData.get(field);
@@ -75,7 +78,7 @@ function validateLogin(login: string) {
 
 function validateSecret(secret: string) {
   if (secret.length < 4 || secret.length > 72) {
-    throw new Error("PIN/пароль должен содержать от 4 до 72 символов");
+    throw new Error("ПИН-код/пароль должен содержать от 4 до 72 символов");
   }
 }
 
@@ -287,7 +290,7 @@ export async function createStudentAccessAction(
 
     return {
       status: "success",
-      message: "Ученик добавлен. Скопируйте логин и PIN и передайте ученику.",
+      message: "Ученик добавлен. Скопируйте логин и ПИН-код и передайте ученику.",
     };
   } catch (error) {
     console.error("createStudentAccessAction:", error);
@@ -567,7 +570,7 @@ export async function updateStudentAccessAction(
     return {
       status: "success",
       message: newSecret
-        ? "Доступ обновлён. Не забудьте передать ученику новый PIN/пароль."
+      ? "Доступ обновлён. Не забудьте передать ученику новый ПИН-код/пароль."
         : "Доступ обновлён",
     };
   } catch (error) {
@@ -649,6 +652,47 @@ export async function toggleStudentAccessAction(
     };
   } catch (error) {
     console.error("toggleStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function refreshStudentRegistrationLinkAction(
+  previousState: StudentRegistrationLinkActionState,
+  formData: FormData,
+): Promise<StudentRegistrationLinkActionState> {
+  void previousState;
+
+  try {
+    const instructorId = readRequiredString(formData, "instructor_id");
+    await requireInstructorAccess(instructorId);
+    const token = randomBytes(24).toString("hex");
+    const supabase = createAdminClient();
+    const { error } = await supabase.from("instructor_settings").upsert(
+      {
+        instructor_id: instructorId,
+        student_registration_token: token,
+        student_registration_enabled: true,
+        student_registration_token_updated_at: new Date().toISOString(),
+      },
+      { onConflict: "instructor_id" },
+    );
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: "Ссылка регистрации обновлена",
+    };
+  } catch (error) {
+    console.error("refreshStudentRegistrationLinkAction:", error);
 
     return {
       status: "error",

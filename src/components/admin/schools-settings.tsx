@@ -208,10 +208,12 @@ function DeleteSchoolForm({
 
 export function SchoolsSettings({
   schools,
-  enabled,
+  adminEnabled,
+  canManage,
 }: {
   schools: School[];
-  enabled: boolean;
+  adminEnabled: boolean;
+  canManage: boolean;
 }) {
   return (
     <Card id="schools-settings">
@@ -223,23 +225,33 @@ export function SchoolsSettings({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        {!enabled && (
+        {canManage && !adminEnabled && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Для управления источниками нужен серверный ключ{" "}
-            <code className="font-semibold">SUPABASE_SECRET_KEY</code>.
+            Сейчас управление источниками недоступно. Проверьте серверные
+            настройки проекта.
           </div>
         )}
 
-        <details
-          className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md"
-        >
-          <summary className="cursor-pointer font-semibold">
-            + Добавить источник
-          </summary>
-          <div className="mt-4">
-            <CreateSchoolForm enabled={enabled} />
+        {!canManage && (
+          <div className="rounded-xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+            Это школьный список источников. Выбирайте их в расписании и
+            карточках учеников; добавлять и менять источники может только
+            руководитель.
           </div>
-        </details>
+        )}
+
+        {canManage && (
+          <details
+            className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md"
+          >
+            <summary className="cursor-pointer font-semibold">
+              + Добавить источник
+            </summary>
+            <div className="mt-4">
+              <CreateSchoolForm enabled={adminEnabled} />
+            </div>
+          </details>
+        )}
 
         <div className="space-y-3">
           {schools.length === 0 ? (
@@ -280,35 +292,44 @@ export function SchoolsSettings({
                         {school.is_active ? "Показывается" : "Скрыт"}
                       </Badge>
 
-                      <form action={toggleSchoolActiveAction}>
-                        <input
-                          type="hidden"
-                          name="school_id"
-                          value={school.id}
-                        />
-                        <input
-                          type="hidden"
-                          name="is_active"
-                          value={school.is_active ? "false" : "true"}
-                        />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          disabled={!enabled}
-                        >
-                          {school.is_active ? <PowerOff /> : <Power />}
-                          {school.is_active ? "Скрыть" : "Показать"}
-                        </Button>
-                      </form>
-                      <DeleteSchoolForm school={school} enabled={enabled} />
+                      {canManage && (
+                        <>
+                          <form action={toggleSchoolActiveAction}>
+                            <input
+                              type="hidden"
+                              name="school_id"
+                              value={school.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="is_active"
+                              value={school.is_active ? "false" : "true"}
+                            />
+                            <Button
+                              type="submit"
+                              variant="outline"
+                              size="sm"
+                              disabled={!adminEnabled}
+                            >
+                              {school.is_active ? <PowerOff /> : <Power />}
+                              {school.is_active ? "Скрыть" : "Показать"}
+                            </Button>
+                          </form>
+                          <DeleteSchoolForm
+                            school={school}
+                            enabled={adminEnabled}
+                          />
+                        </>
+                      )}
                     </div>
                   </div>
                 </summary>
 
-                <div className="mt-4 border-t pt-4">
-                  <EditSchoolForm school={school} enabled={enabled} />
-                </div>
+                {canManage && (
+                  <div className="mt-4 border-t pt-4">
+                    <EditSchoolForm school={school} enabled={adminEnabled} />
+                  </div>
+                )}
               </details>
             ))
           )}

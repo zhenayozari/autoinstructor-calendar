@@ -234,8 +234,8 @@ function makeCustomLessonTypeCode() {
 async function requireLessonTypeManager() {
   const membership = await requireActiveOrganizationMember();
 
-  if (!membership.isOwnerOrAdmin) {
-    throw new Error("Управлять типами занятий могут только owner или admin");
+  if (membership.role !== "owner") {
+    throw new Error("Управлять типами занятий может только руководитель");
   }
 
   return membership;

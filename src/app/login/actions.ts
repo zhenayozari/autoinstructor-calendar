@@ -25,7 +25,7 @@ export async function loginAction(
   ) {
     return {
       status: "error",
-      message: "Введите email и пароль",
+      message: "Введите эл. почту и пароль",
     };
   }
 
@@ -40,7 +40,7 @@ export async function loginAction(
 
     return {
       status: "error",
-      message: "Неверный email или пароль",
+      message: "Неверная эл. почта или пароль",
     };
   }
 

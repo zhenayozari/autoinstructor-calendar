@@ -284,10 +284,12 @@ function DeleteLessonTypeForm({
 
 export function LessonTypesSettings({
   lessonTypes,
-  enabled,
+  adminEnabled,
+  canManage,
 }: {
   lessonTypes: EditableLessonType[];
-  enabled: boolean;
+  adminEnabled: boolean;
+  canManage: boolean;
 }) {
   return (
     <Card id="lesson-types-settings">
@@ -299,21 +301,31 @@ export function LessonTypesSettings({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        {!enabled && (
+        {canManage && !adminEnabled && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Для управления типами занятий нужен серверный ключ{" "}
-            <code className="font-semibold">SUPABASE_SECRET_KEY</code>.
+            Сейчас управление типами занятий недоступно. Проверьте серверные
+            настройки проекта.
           </div>
         )}
 
-        <details className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md">
-          <summary className="cursor-pointer font-semibold">
-            + Добавить тип занятия
-          </summary>
-          <div className="mt-4">
-            <CreateLessonTypeForm enabled={enabled} />
+        {!canManage && (
+          <div className="rounded-xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+            Это школьный список типов занятий. Выбирайте их при создании
+            слотов и доступов учеников; добавлять и менять типы может только
+            руководитель.
           </div>
-        </details>
+        )}
+
+        {canManage && (
+          <details className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md">
+            <summary className="cursor-pointer font-semibold">
+              + Добавить тип занятия
+            </summary>
+            <div className="mt-4">
+              <CreateLessonTypeForm enabled={adminEnabled} />
+            </div>
+          </details>
+        )}
 
         <div className="space-y-3">
           {lessonTypes.length === 0 ? (
@@ -362,77 +374,90 @@ export function LessonTypesSettings({
                           {lessonType.is_active ? "Показывается" : "Скрыт"}
                         </Badge>
 
-                        <form action={moveLessonTypeAction}>
-                          <input
-                            type="hidden"
-                            name="lesson_type_id"
-                            value={lessonType.id}
-                          />
-                          <input type="hidden" name="direction" value="up" />
-                          <Button
-                            type="submit"
-                            variant="outline"
-                            size="icon-sm"
-                            disabled={!enabled || index === 0}
-                            aria-label="Поднять выше"
-                          >
-                            <ArrowUp />
-                          </Button>
-                        </form>
+                        {canManage && (
+                          <>
+                            <form action={moveLessonTypeAction}>
+                              <input
+                                type="hidden"
+                                name="lesson_type_id"
+                                value={lessonType.id}
+                              />
+                              <input type="hidden" name="direction" value="up" />
+                              <Button
+                                type="submit"
+                                variant="outline"
+                                size="icon-sm"
+                                disabled={!adminEnabled || index === 0}
+                                aria-label="Поднять выше"
+                              >
+                                <ArrowUp />
+                              </Button>
+                            </form>
 
-                        <form action={moveLessonTypeAction}>
-                          <input
-                            type="hidden"
-                            name="lesson_type_id"
-                            value={lessonType.id}
-                          />
-                          <input type="hidden" name="direction" value="down" />
-                          <Button
-                            type="submit"
-                            variant="outline"
-                            size="icon-sm"
-                            disabled={!enabled || index === lessonTypes.length - 1}
-                            aria-label="Опустить ниже"
-                          >
-                            <ArrowDown />
-                          </Button>
-                        </form>
+                            <form action={moveLessonTypeAction}>
+                              <input
+                                type="hidden"
+                                name="lesson_type_id"
+                                value={lessonType.id}
+                              />
+                              <input
+                                type="hidden"
+                                name="direction"
+                                value="down"
+                              />
+                              <Button
+                                type="submit"
+                                variant="outline"
+                                size="icon-sm"
+                                disabled={
+                                  !adminEnabled ||
+                                  index === lessonTypes.length - 1
+                                }
+                                aria-label="Опустить ниже"
+                              >
+                                <ArrowDown />
+                              </Button>
+                            </form>
 
-                        <form action={toggleLessonTypeActiveAction}>
-                          <input
-                            type="hidden"
-                            name="lesson_type_id"
-                            value={lessonType.id}
-                          />
-                          <input
-                            type="hidden"
-                            name="is_active"
-                            value={lessonType.is_active ? "false" : "true"}
-                          />
-                          <Button
-                            type="submit"
-                            variant="outline"
-                            size="sm"
-                            disabled={!enabled}
-                          >
-                            {lessonType.is_active ? <PowerOff /> : <Power />}
-                            {lessonType.is_active ? "Скрыть" : "Показать"}
-                          </Button>
-                        </form>
-                        <DeleteLessonTypeForm
-                          lessonType={lessonType}
-                          enabled={enabled}
-                        />
+                            <form action={toggleLessonTypeActiveAction}>
+                              <input
+                                type="hidden"
+                                name="lesson_type_id"
+                                value={lessonType.id}
+                              />
+                              <input
+                                type="hidden"
+                                name="is_active"
+                                value={lessonType.is_active ? "false" : "true"}
+                              />
+                              <Button
+                                type="submit"
+                                variant="outline"
+                                size="sm"
+                                disabled={!adminEnabled}
+                              >
+                                {lessonType.is_active ? <PowerOff /> : <Power />}
+                                {lessonType.is_active ? "Скрыть" : "Показать"}
+                              </Button>
+                            </form>
+                            <DeleteLessonTypeForm
+                              lessonType={lessonType}
+                              enabled={adminEnabled}
+                            />
+                          </>
+                        )}
                       </div>
                     </div>
                   </summary>
 
-                  <div className="mt-4 border-t pt-4">
-                    <EditLessonTypeForm
-                      lessonType={lessonType}
-                      enabled={enabled}
-                    />
-                  </div>
+                  {canManage && (
+                    <div className="mt-4 border-t pt-4">
+                      <EditLessonTypeForm
+                        lessonType={lessonType}
+                        enabled={adminEnabled}
+                      />
+                    </div>
+                  )}
                 </details>
               );
             })

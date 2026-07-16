@@ -16,6 +16,7 @@ import {
   approveStudentRegistrationRequestAction,
   archiveStudentAccessAction,
   createStudentAccessAction,
+  refreshStudentRegistrationLinkAction,
   rejectStudentRegistrationRequestAction,
   toggleStudentAccessAction,
   updateStudentAccessAction,
@@ -177,7 +178,7 @@ function CopyAccessButton({
       `${label || "Здравствуйте"}, доступ для записи на занятия:`,
       `${baseUrl}/student/login`,
       `Логин: ${login}`,
-      secret ? `PIN/пароль: ${secret}` : "PIN/пароль: укажите новый PIN в админке",
+      secret ? `ПИН-код/пароль: ${secret}` : "ПИН-код/пароль: укажите новый ПИН-код в кабинете инструктора",
     ].join("\n");
 
     await navigator.clipboard.writeText(text);
@@ -193,8 +194,127 @@ function CopyAccessButton({
       disabled={!login}
     >
       {copied ? <Check /> : <Copy />}
-      {copied ? "Скопировано" : "Скопировать логин и PIN"}
+      {copied ? "Скопировано" : "Скопировать логин и ПИН-код"}
     </Button>
+  );
+}
+
+function StudentRegistrationLinkCard({
+  selectedInstructorId,
+  registrationLink,
+  registrationLinkUpdatedAt,
+}: {
+  selectedInstructorId: string;
+  registrationLink: string | null;
+  registrationLinkUpdatedAt: string | null;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [state, formAction, isPending] = useActionState(
+    refreshStudentRegistrationLinkAction,
+    INITIAL_STATE,
+  );
+
+  async function copyLink() {
+    if (!registrationLink) return;
+
+    await navigator.clipboard.writeText(registrationLink);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Ссылка регистрации ученика</h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Отправьте её ученику. Заявка появится во вкладке “Заявки”, а доступ
+            включится только после подтверждения.
+          </p>
+          {registrationLinkUpdatedAt && (
+            <p className="text-muted-foreground mt-1 text-xs">
+              Обновлена: {formatLocalDateTime(registrationLinkUpdatedAt)}
+            </p>
+          )}
+        </div>
+        <form action={formAction}>
+          <input
+            type="hidden"
+            name="instructor_id"
+            value={selectedInstructorId}
+          />
+          <Button type="submit" variant="outline" disabled={isPending}>
+            <RefreshCw />
+            {isPending
+              ? "Обновляем..."
+              : registrationLink
+                ? "Обновить ссылку"
+                : "Создать ссылку"}
+          </Button>
+        </form>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={registrationLink ?? "Ссылка пока не создана"}
+          readOnly
+          className="h-10 text-sm"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10"
+          onClick={copyLink}
+          disabled={!registrationLink}
+        >
+          {copied ? <Check /> : <Copy />}
+          {copied ? "Скопировано" : "Скопировать"}
+        </Button>
+      </div>
+
+      <StateMessage state={state} />
+    </section>
+  );
+}
+
+function StudentLoginLinkCard() {
+  const [copied, setCopied] = useState(false);
+
+  async function copyLink() {
+    const loginLink = `${window.location.origin}/student/login`;
+
+    await navigator.clipboard.writeText(loginLink);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Вход ученика</h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Эту ссылку можно отправить ученику повторно, если он потерял вход в
+            личный кабинет. Логин и ПИН-код отправляются отдельно из карточки
+            ученика.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10"
+          onClick={copyLink}
+        >
+          {copied ? <Check /> : <Copy />}
+          {copied ? "Скопировано" : "Скопировать ссылку"}
+        </Button>
+      </div>
+      <Input
+        value="/student/login"
+        readOnly
+        className="mt-4 h-10 text-sm"
+      />
+    </section>
   );
 }
 
@@ -298,7 +418,7 @@ function CreateStudentAccessForm({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="student-access-secret">PIN/пароль</Label>
+            <Label htmlFor="student-access-secret">ПИН-код/пароль</Label>
             <div className="flex gap-2">
               <Input
                 id="student-access-secret"
@@ -313,7 +433,7 @@ function CreateStudentAccessForm({
                 variant="outline"
                 size="icon-lg"
                 onClick={() => setSecret(makePin())}
-                aria-label="Сгенерировать PIN"
+                aria-label="Сгенерировать ПИН-код"
               >
                 <RefreshCw />
               </Button>
@@ -639,7 +759,7 @@ function StudentAccessCard({
             </div>
             <div className="space-y-2">
               <Label htmlFor={`new-secret-${access.id}`}>
-                Новый PIN/пароль
+                Новый ПИН-код/пароль
               </Label>
               <Input
                 id={`new-secret-${access.id}`}
@@ -1049,6 +1169,8 @@ export function StudentAccessesPanel({
   selectedInstructorId,
   canSelectInstructor,
   adminEnabled,
+  registrationLink,
+  registrationLinkUpdatedAt,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
@@ -1059,6 +1181,8 @@ export function StudentAccessesPanel({
   selectedInstructorId: string;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  registrationLink: string | null;
+  registrationLinkUpdatedAt: string | null;
 }) {
   const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
     pendingRequests.length > 0 ? "pending" : "active",
@@ -1067,14 +1191,20 @@ export function StudentAccessesPanel({
   if (!adminEnabled) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
-        Для управления учениками нужен серверный ключ{" "}
-        <code className="font-semibold">SUPABASE_SECRET_KEY</code>.
+        Управление учениками сейчас недоступно. Проверьте настройки проекта.
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      <StudentRegistrationLinkCard
+        selectedInstructorId={selectedInstructorId}
+        registrationLink={registrationLink}
+        registrationLinkUpdatedAt={registrationLinkUpdatedAt}
+      />
+      <StudentLoginLinkCard />
+
       {tab === "active" && (
         <CreateStudentAccessForm
           instructors={instructors}
@@ -1134,7 +1264,7 @@ export function StudentAccessesPanel({
           accesses.length === 0 ? (
             <div className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm text-zinc-500">
               Пока нет учеников. Добавьте первого ученика и передайте ему ссылку,
-              логин и PIN.
+              логин и ПИН-код.
             </div>
           ) : (
             <div className="space-y-3">

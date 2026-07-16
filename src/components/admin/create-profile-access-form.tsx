@@ -62,7 +62,7 @@ export function CreateProfileAccessForm({
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor={`access-email-${instructorId}`}>Email</Label>
+          <Label htmlFor={`access-email-${instructorId}`}>Эл. почта</Label>
           <Input
             id={`access-email-${instructorId}`}
             name="email"
@@ -100,8 +100,8 @@ export function CreateProfileAccessForm({
               }
             }}
           >
-            <option value="instructor">Instructor</option>
-            {currentRole === "owner" && <option value="admin">Admin</option>}
+            <option value="instructor">Инструктор</option>
+            {currentRole === "owner" && <option value="admin">Администратор</option>}
           </select>
         </div>
         <label className="flex items-center gap-2 self-end rounded-lg border bg-white px-3 py-2">
@@ -126,7 +126,7 @@ export function CreateProfileAccessForm({
           <span className="text-sm">
             <span className="block font-medium">Также ведёт занятия</span>
             <span className="text-muted-foreground block text-xs">
-              Только в этом случае admin будет связан с данным профилем.
+              Только в этом случае администратор будет связан с данным профилем.
             </span>
           </span>
         </label>
@@ -145,7 +145,7 @@ export function CreateProfileAccessForm({
         {isPending
           ? "Создаём…"
           : role === "admin" && !adminAlsoTeaches
-            ? "Создать admin без профиля"
+            ? "Создать администратора без профиля"
             : "Создать доступ"}
       </Button>
     </form>

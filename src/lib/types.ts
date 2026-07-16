@@ -122,10 +122,75 @@ export type StudentRegistrationRequest = {
   updated_at: string;
 };
 
+export type StaffInvitationStatus =
+  | "invited"
+  | "submitted"
+  | "approved"
+  | "rejected"
+  | "expired";
+
+export type StaffInvitation = {
+  id: string;
+  organization_id: string;
+  invited_by_member_id: string | null;
+  token: string;
+  status: StaffInvitationStatus;
+  invited_name: string | null;
+  invited_email: string | null;
+  invited_phone: string | null;
+  submitted_name: string | null;
+  submitted_email: string | null;
+  submitted_phone: string | null;
+  user_id: string | null;
+  instructor_id: string | null;
+  expires_at: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type InstructorSetting = {
   instructor_id: string;
   booking_access_code: string | null;
   booking_access_code_updated_at: string | null;
+  student_registration_token: string;
+  student_registration_enabled: boolean;
+  student_registration_token_updated_at: string;
+};
+
+export type OrganizationSiteSettings = {
+  organization_id: string;
+  hero_label: string;
+  hero_title: string;
+  hero_text: string;
+  about_title: string;
+  about_text: string;
+  contact_phone: string | null;
+  telegram_url: string | null;
+  whatsapp_url: string | null;
+  landing_content: unknown;
+  show_about: boolean;
+  show_lesson_types: boolean;
+  show_instructors: boolean;
+  show_contacts: boolean;
+  show_student_login: boolean;
+  updated_at: string;
+};
+
+export type InstructorSiteSettings = {
+  instructor_id: string;
+  organization_id: string;
+  is_visible: boolean;
+  show_photo: boolean;
+  show_bio: boolean;
+  show_contact: boolean;
+  show_car: boolean;
+  show_experience: boolean;
+  public_note: string | null;
+  public_contact: string | null;
+  sort_order: number;
+  updated_at: string;
 };
 
 export type AccessCodeHistoryItem = {

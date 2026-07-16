@@ -35,7 +35,7 @@ export function CreateInstructorForm() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="slug">Slug</Label>
+          <Label htmlFor="slug">Адрес профиля</Label>
           <Input
             id="slug"
             name="slug"
@@ -44,7 +44,7 @@ export function CreateInstructorForm() {
             required
           />
           <p className="text-muted-foreground text-xs">
-            Используется в публичном URL.
+            Используется в публичной ссылке.
           </p>
         </div>
 

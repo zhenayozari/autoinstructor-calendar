@@ -187,8 +187,7 @@ export function AccessCodeForm({
 
         {!saltConfigured && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Добавьте <code className="font-semibold">BOOKING_CODE_SALT</code>{" "}
-            в <code className="font-semibold">.env.local</code>.
+            Добавьте кодовую соль в настройки сервера.
           </div>
         )}
 

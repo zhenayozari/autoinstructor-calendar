@@ -15,7 +15,7 @@ const INITIAL_STATE: StudentRegistrationActionState = {
   message: "",
 };
 
-export function StudentRegistrationForm() {
+export function StudentRegistrationForm({ token }: { token: string }) {
   const [state, formAction, isPending] = useActionState(
     createStudentRegistrationRequestAction,
     INITIAL_STATE,
@@ -24,6 +24,8 @@ export function StudentRegistrationForm() {
 
   return (
     <form action={formAction} className="space-y-4">
+      <input type="hidden" name="token" value={token} />
+
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="student-last-name">Фамилия</Label>
@@ -85,7 +87,7 @@ export function StudentRegistrationForm() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="student-register-secret">PIN/пароль</Label>
+          <Label htmlFor="student-register-secret">ПИН-код/пароль</Label>
           <Input
             id="student-register-secret"
             name="secret"

@@ -2,7 +2,7 @@ export function getSupabaseUrl() {
   const value = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
   if (!value) {
-    throw new Error("NEXT_PUBLIC_SUPABASE_URL is not configured");
+    throw new Error("Не настроена ссылка проекта Supabase");
   }
 
   const url = new URL(value);
@@ -13,7 +13,7 @@ export function getSupabasePublishableKey() {
   const value = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
   if (!value) {
-    throw new Error("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is not configured");
+    throw new Error("Не настроен публичный ключ проекта Supabase");
   }
 
   return value;

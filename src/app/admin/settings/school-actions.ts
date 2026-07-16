@@ -51,8 +51,8 @@ function getErrorMessage(error: unknown) {
 async function requireSchoolManager() {
   const membership = await requireActiveOrganizationMember();
 
-  if (!membership.isOwnerOrAdmin) {
-    throw new Error("Управлять источниками могут только owner или admin");
+  if (membership.role !== "owner") {
+    throw new Error("Управлять источниками может только руководитель");
   }
 
   return membership;

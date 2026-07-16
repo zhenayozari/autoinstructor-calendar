@@ -35,7 +35,7 @@ export function StudentLoginForm() {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="student-secret">PIN/пароль</Label>
+        <Label htmlFor="student-secret">ПИН-код/пароль</Label>
         <Input
           id="student-secret"
           name="secret"

@@ -27,7 +27,7 @@ export async function studentLoginAction(
   ) {
     return {
       status: "error",
-      message: "Введите логин и PIN/пароль",
+      message: "Введите логин и ПИН-код/пароль",
     };
   }
 
@@ -56,7 +56,7 @@ export async function studentLoginAction(
   ) {
     return {
       status: "error",
-      message: "Неверный логин или PIN/пароль",
+      message: "Неверный логин или ПИН-код/пароль",
     };
   }
 

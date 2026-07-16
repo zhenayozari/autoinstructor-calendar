@@ -69,11 +69,11 @@ function validateAssignableRole(
   role: string,
 ) {
   if (role !== "admin" && role !== "instructor") {
-    throw new Error("Можно назначить только роль admin или instructor");
+    throw new Error("Можно назначить только роль администратора или инструктора");
   }
 
   if (managerRole === "admin" && role === "admin") {
-    throw new Error("Только owner может назначать роль admin");
+    throw new Error("Только владелец может назначать роль администратора");
   }
 }
 
@@ -95,11 +95,11 @@ async function getManageableMember(
   }
 
   if (data.role === "owner") {
-    throw new Error("Owner нельзя изменять на этом этапе");
+    throw new Error("Владельца нельзя изменять на этом этапе");
   }
 
   if (managerRole === "admin" && data.role === "admin") {
-    throw new Error("Admin не может изменять другого admin");
+    throw new Error("Администратор не может изменять другого администратора");
   }
 
   return data as {
@@ -139,7 +139,7 @@ async function getManageableInstructor(
   }
 
   if (instructor.slug === "main-instructor" || ownerMember) {
-    throw new Error("Основной профиль owner нельзя деактивировать или удалить");
+    throw new Error("Основной профиль владельца нельзя деактивировать или удалить");
   }
 
   return instructor as {
@@ -171,7 +171,7 @@ export async function createInstructorAction(
       return {
         status: "error",
         message:
-          "Slug может содержать только латинские буквы, цифры и дефисы",
+          "Адрес профиля может содержать только латинские буквы, цифры и дефисы",
       };
     }
 
@@ -200,7 +200,7 @@ export async function createInstructorAction(
 
     if (instructorError || !instructor) {
       if (instructorError?.code === "23505") {
-        throw new Error("Инструктор с таким slug уже существует");
+        throw new Error("Инструктор с таким адресом профиля уже существует");
       }
 
       throw new Error(
@@ -280,14 +280,14 @@ export async function saveOrganizationMemberAction(
     if (authUserError || !authUserData.user) {
       return {
         status: "error",
-        message: "Auth-пользователь с таким UID не найден",
+        message: "Пользователь с таким идентификатором не найден",
       };
     }
 
     if (authUserData.user.email?.toLowerCase() !== email) {
       return {
         status: "error",
-        message: "Email не совпадает с email Auth-пользователя",
+        message: "Эл. почта не совпадает с эл. почтой пользователя",
       };
     }
 
@@ -305,14 +305,14 @@ export async function saveOrganizationMemberAction(
     if (existingMember?.role === "owner") {
       return {
         status: "error",
-        message: "Owner нельзя изменять на этом этапе",
+        message: "Владельца нельзя изменять на этом этапе",
       };
     }
 
     if (manager.role === "admin" && existingMember?.role === "admin") {
       return {
         status: "error",
-        message: "Admin не может изменять другого admin",
+        message: "Администратор не может изменять другого администратора",
       };
     }
 
@@ -441,12 +441,12 @@ export async function createEmployeeUserAction(
         message.includes("exists")
       ) {
         throw new Error(
-          "Пользователь с таким email уже существует. Используйте блок привязки по UID/email.",
+          "Пользователь с такой эл. почтой уже существует. Используйте блок привязки по идентификатору.",
         );
       }
 
       throw new Error(
-        authError?.message ?? "Не удалось создать Auth-пользователя",
+        authError?.message ?? "Не удалось создать пользователя",
       );
     }
 
@@ -551,12 +551,12 @@ export async function createAccessForInstructorAction(
         message.includes("exists")
       ) {
         throw new Error(
-          "Пользователь с таким email уже существует. Используйте расширенный режим привязки по UID.",
+          "Пользователь с такой эл. почтой уже существует. Используйте расширенный режим привязки по идентификатору.",
         );
       }
 
       throw new Error(
-        authError?.message ?? "Не удалось создать Auth-пользователя",
+        authError?.message ?? "Не удалось создать пользователя",
       );
     }
 
@@ -664,7 +664,7 @@ export async function removeMemberAccessAction(
     return {
       status: "success",
       message:
-        "Доступ удалён. Auth-пользователь и профиль инструктора сохранены.",
+      "Доступ удалён. Пользователь и профиль инструктора сохранены.",
     };
   } catch (error) {
     console.error("removeMemberAccessAction:", error);
@@ -709,7 +709,7 @@ export async function createTeamMemberAction(
 
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
         throw new Error(
-          "Slug может содержать только латинские буквы, цифры и дефисы",
+          "Адрес профиля может содержать только латинские буквы, цифры и дефисы",
         );
       }
 
@@ -734,7 +734,7 @@ export async function createTeamMemberAction(
 
       if (instructorError || !instructor) {
         if (instructorError?.code === "23505") {
-          throw new Error("Инструктор с таким slug уже существует");
+          throw new Error("Инструктор с таким адресом профиля уже существует");
         }
 
         throw new Error(
@@ -782,12 +782,12 @@ export async function createTeamMemberAction(
         message.includes("exists")
       ) {
         throw new Error(
-          "Пользователь с таким email уже существует. Используйте «Расширенный режим» для привязки существующего Auth-пользователя.",
+          "Пользователь с такой эл. почтой уже существует. Используйте «Расширенный режим» для привязки существующего пользователя.",
         );
       }
 
       throw new Error(
-        authError?.message ?? "Не удалось создать Auth-пользователя",
+        authError?.message ?? "Не удалось создать пользователя",
       );
     }
 

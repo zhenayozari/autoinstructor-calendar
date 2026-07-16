@@ -187,6 +187,7 @@ export function AdminQuickActions({
                 <QuickCreateDayForm
                   instructors={orderedInstructors}
                   lessonTypes={lessonTypes}
+                  schools={schools}
                   adminEnabled={adminEnabled}
                 />
               )}

@@ -362,6 +362,7 @@ function getPublicationAt(formData: FormData, timezone: string) {
 
 type SourceSlot = {
   lesson_type_id: string;
+  school_id: string | null;
   start_time: string;
   end_time: string;
   location_type: "in_car" | "online" | "classroom" | "other";
@@ -477,6 +478,7 @@ async function copySlotsToDate({
       instructor_id: instructorId,
       schedule_day_id: scheduleDayId,
       lesson_type_id: slot.lesson_type_id,
+      school_id: slot.school_id,
       start_time: targetStart.toISOString(),
       end_time: targetEnd.toISOString(),
       location_type: slot.location_type,
@@ -546,7 +548,7 @@ export async function copyDayAction(
     const { data, error } = await supabase
       .from("slots")
       .select(
-        "lesson_type_id, start_time, end_time, location_type, status, note",
+        "lesson_type_id, school_id, start_time, end_time, location_type, status, note",
       )
       .eq("instructor_id", instructorId)
       .eq("schedule_day_id", sourceDay.id)
@@ -678,7 +680,7 @@ export async function copyWeekAction(
       const { data, error } = await supabase
         .from("slots")
         .select(
-          "lesson_type_id, start_time, end_time, location_type, status, note",
+          "lesson_type_id, school_id, start_time, end_time, location_type, status, note",
         )
         .eq("instructor_id", instructorId)
         .eq("schedule_day_id", sourceDay.id)
@@ -872,7 +874,7 @@ export async function quickCreateDayAction(
 
   try {
     const instructorId = readRequiredString(formData, "instructor_id");
-    await requireInstructorAccess(instructorId);
+    const membership = await requireInstructorAccess(instructorId);
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     const date = readRequiredString(formData, "date");
     const workStartTime = readRequiredString(formData, "work_start_time");
@@ -885,6 +887,10 @@ export async function quickCreateDayAction(
     );
     const breakMinutes = readInteger(formData, "break_minutes", 0, 240);
     const note = readOptionalNote(formData);
+    const schoolId = await validateOptionalSchoolId(
+      readOptionalString(formData, "school_id"),
+      membership.organizationId,
+    );
     const requestedTransmission = formData.get("transmission");
     const transmission =
       requestedTransmission === "automatic" ||
@@ -1048,6 +1054,7 @@ export async function quickCreateDayAction(
         instructor_id: instructorId,
         schedule_day_id: scheduleDay.id,
         lesson_type_id: lessonTypeId,
+        school_id: schoolId,
         start_time: candidate.start.toISOString(),
         end_time: candidate.end.toISOString(),
         location_type: locationType,

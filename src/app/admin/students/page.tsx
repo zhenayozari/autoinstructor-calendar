@@ -24,6 +24,7 @@ import {
   type StudentAccessCrm,
   type StudentAccessCrmSummary,
 } from "@/components/admin/student-accesses-panel";
+import { getPublicOrigin } from "@/lib/public-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -80,10 +81,7 @@ export default async function AdminStudentsPage({
   const membership = await requireActiveOrganizationMember();
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
-  const origin =
-    requestHeaders.get("origin") ??
-    process.env.NEXT_PUBLIC_SITE_URL ??
-    "http://localhost:3001";
+  const origin = getPublicOrigin(requestHeaders);
 
   const { data: instructorData, error: instructorError } =
     await buildActiveInstructorsQuery(

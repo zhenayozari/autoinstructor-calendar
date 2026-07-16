@@ -34,6 +34,7 @@ import {
   getLocalDate,
   getUtcWeekStart,
 } from "@/lib/formatters";
+import { getPublicOrigin } from "@/lib/public-origin";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type {
@@ -346,10 +347,7 @@ export default async function DirectorStaffPage({
   const requestHeaders = await headers();
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
-  const origin =
-    requestHeaders.get("origin") ??
-    process.env.NEXT_PUBLIC_SITE_URL ??
-    "http://localhost:3001";
+  const origin = getPublicOrigin(requestHeaders);
   const timezone = "Asia/Irkutsk";
   const currentDate = getLocalDate(timezone);
   const weekStart = getUtcWeekStart(currentDate);

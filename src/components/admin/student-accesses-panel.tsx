@@ -386,13 +386,13 @@ function CreateStudentAccessForm({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="student-access-phone">Телефон</Label>
+            <Label htmlFor="student-access-phone">Способ связи</Label>
             <Input
               id="student-access-phone"
               name="student_phone"
-              type="tel"
-              placeholder="+7 999 123-45-67"
-              maxLength={40}
+              type="text"
+              placeholder="Телефон, Telegram, VK или другой контакт"
+              maxLength={200}
             />
           </div>
 
@@ -576,7 +576,7 @@ function StudentAccessCard({
             </p>
             {access.student_phone && (
               <p className="text-muted-foreground mt-1 text-xs">
-                Телефон:{" "}
+                Способ связи:{" "}
                 <span className="font-semibold">{access.student_phone}</span>
               </p>
             )}
@@ -782,14 +782,14 @@ function StudentAccessCard({
               />
             </div>
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor={`phone-${access.id}`}>Телефон</Label>
+              <Label htmlFor={`phone-${access.id}`}>Способ связи</Label>
               <Input
                 id={`phone-${access.id}`}
                 name="student_phone"
-                type="tel"
+                type="text"
                 defaultValue={access.student_phone ?? ""}
-                placeholder="+7 999 123-45-67"
-                maxLength={40}
+                placeholder="Телефон, Telegram, VK или другой контакт"
+                maxLength={200}
               />
             </div>
             <div className="space-y-2 md:col-span-2">
@@ -990,7 +990,7 @@ function StudentRegistrationRequestCard({
             </p>
             {request.student_phone && (
               <p className="text-muted-foreground mt-1 text-xs">
-                Телефон:{" "}
+                Способ связи:{" "}
                 <span className="font-semibold">{request.student_phone}</span>
               </p>
             )}
@@ -1024,14 +1024,14 @@ function StudentRegistrationRequestCard({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor={`request-phone-${request.id}`}>Телефон</Label>
+              <Label htmlFor={`request-phone-${request.id}`}>Способ связи</Label>
               <Input
                 id={`request-phone-${request.id}`}
                 name="student_phone"
-                type="tel"
+                type="text"
                 defaultValue={request.student_phone ?? ""}
-                placeholder="+7 999 123-45-67"
-                maxLength={40}
+                placeholder="Телефон, Telegram, VK или другой контакт"
+                maxLength={200}
               />
             </div>
             <div className="space-y-2">
@@ -1175,7 +1175,7 @@ function ArchivedAccessCard({
           </p>
           {access.student_phone && (
             <p className="text-muted-foreground mt-1 text-xs">
-              Телефон:{" "}
+              Способ связи:{" "}
               <span className="font-semibold">{access.student_phone}</span>
             </p>
           )}

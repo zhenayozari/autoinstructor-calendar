@@ -119,8 +119,8 @@ export async function createStudentRegistrationRequestAction(
     );
     const studentPhone = validateLength(
       readOptionalString(formData, "student_phone"),
-      40,
-      "Телефон",
+      200,
+      "Способ связи",
     );
     const schoolText = validateLength(
       readOptionalString(formData, "school_text"),

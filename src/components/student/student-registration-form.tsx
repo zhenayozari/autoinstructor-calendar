@@ -26,38 +26,28 @@ export function StudentRegistrationForm({ token }: { token: string }) {
     <form action={formAction} className="space-y-4">
       <input type="hidden" name="token" value={token} />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="student-last-name">Фамилия</Label>
-          <Input
-            id="student-last-name"
-            name="last_name"
-            placeholder="Иванова"
-            maxLength={80}
-            disabled={isSuccess}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="student-first-name">Имя</Label>
-          <Input
-            id="student-first-name"
-            name="first_name"
-            placeholder="Мария"
-            maxLength={80}
-            disabled={isSuccess}
-          />
-        </div>
+      <div className="space-y-2">
+        <Label htmlFor="student-display-name">Как вас подписать</Label>
+        <Input
+          id="student-display-name"
+          name="first_name"
+          placeholder="Например: Маша, Мария или ученик из ОМГ"
+          maxLength={80}
+          disabled={isSuccess}
+        />
+        <p className="text-xs leading-5 text-zinc-500">
+          Можно указать имя, короткую метку или оставить поле пустым.
+        </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="student-phone">Телефон</Label>
+        <Label htmlFor="student-contact">Способ связи</Label>
         <Input
-          id="student-phone"
+          id="student-contact"
           name="student_phone"
-          type="tel"
-          placeholder="+7 999 123-45-67"
-          maxLength={40}
+          type="text"
+          placeholder="Телефон, Telegram, VK или другой удобный способ"
+          maxLength={200}
           disabled={isSuccess}
         />
       </div>
@@ -119,7 +109,7 @@ export function StudentRegistrationForm({ token }: { token: string }) {
       >
         <Send />
         {isPending
-          ? "Отправляем…"
+          ? "Отправляем..."
           : isSuccess
             ? "Заявка отправлена"
             : "Отправить заявку"}

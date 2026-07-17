@@ -84,8 +84,8 @@ function validateSecret(secret: string) {
 }
 
 function validateStudentPhone(phone: string | null) {
-  if (phone && phone.length > 40) {
-    throw new Error("Телефон должен быть не длиннее 40 символов");
+  if (phone && phone.length > 200) {
+    throw new Error("Способ связи должен быть не длиннее 200 символов");
   }
 
   return phone;

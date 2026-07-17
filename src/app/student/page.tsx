@@ -74,19 +74,6 @@ const DEFAULT_TIMEZONE = "Asia/Irkutsk";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ANCHOR = "student-schedule";
 
-function isMissingSchoolIdColumnError(error: { code?: string; message?: string } | null) {
-  const message = error?.message?.toLowerCase() ?? "";
-
-  return (
-    error?.code === "42703" ||
-    error?.code === "PGRST204" ||
-    (message.includes("school_id") &&
-      (message.includes("does not exist") ||
-        message.includes("could not find") ||
-        message.includes("schema cache")))
-  );
-}
-
 function parseDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   return new Date(Date.UTC(year, month - 1, day));
@@ -636,7 +623,7 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   let slotsError: { message: string } | null = null;
 
   if (access.lessonTypeIds.length > 0) {
-    let availableSlotsQuery = supabase
+    const availableSlotsResult = await supabase
       .from("public_schedule_slots")
       .select("*")
       .eq("instructor_id", access.instructorId)
@@ -647,19 +634,8 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
       .lte("date", formatDateValue(weekEnd))
       .order("start_time", { ascending: true });
 
-    availableSlotsQuery = access.schoolId
-      ? availableSlotsQuery.eq("school_id", access.schoolId)
-      : availableSlotsQuery.is("school_id", null);
-
-    const availableSlotsResult = await availableSlotsQuery;
-
-    if (isMissingSchoolIdColumnError(availableSlotsResult.error)) {
-      slotsData = [];
-      slotsError = null;
-    } else {
-      slotsData = availableSlotsResult.data ?? [];
-      slotsError = availableSlotsResult.error;
-    }
+    slotsData = availableSlotsResult.data ?? [];
+    slotsError = availableSlotsResult.error;
   }
 
   const usage = await getUsedCounts(access.id, visibleWeekStart);

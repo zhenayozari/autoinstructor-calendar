@@ -372,6 +372,7 @@ export default async function AdminStudentsPage({
             registrationLinkUpdatedAt={
               registrationSettings?.student_registration_token_updated_at ?? null
             }
+            canDeleteStudents={membership.role === "owner"}
           />
         ) : (
           <div className="rounded-2xl border border-dashed bg-white px-4 py-10 text-center text-sm text-zinc-500">

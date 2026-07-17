@@ -9,7 +9,6 @@ import {
   updateSchoolAction,
   type SchoolActionState,
 } from "@/app/admin/settings/school-actions";
-import { formatMoney } from "@/lib/formatters";
 import type { School } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,7 +60,7 @@ function SchoolFields({
           id={`${idPrefix}-name`}
           name="name"
           defaultValue={school?.name ?? ""}
-          placeholder="Например: Автошкола Сигнал или Частные"
+          placeholder="Например: ОМГ, Главная дорога, Частные ученики"
           maxLength={80}
           required
         />
@@ -79,23 +78,9 @@ function SchoolFields({
             required
           />
           <span className="text-sm text-zinc-500">
-            Используется в слотах, учениках и отчётах
+            Используется в карточках учеников и отчётах.
           </span>
         </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-price`}>Цена источника, ₽</Label>
-        <Input
-          id={`${idPrefix}-price`}
-          name="default_price"
-          type="number"
-          min={0}
-          max={10000000}
-          step={1}
-          defaultValue={school?.default_price ?? ""}
-          placeholder="Например: 1800"
-        />
       </div>
 
       <div className="flex items-end">
@@ -106,7 +91,7 @@ function SchoolFields({
             defaultChecked={school?.is_active ?? true}
             className="size-4"
           />
-          Показывать в расписании и учениках
+          Показывать в карточках учеников
         </label>
       </div>
     </div>
@@ -125,7 +110,7 @@ function CreateSchoolForm({ enabled }: { enabled: boolean }) {
       <StateMessage state={state} />
       <Button type="submit" disabled={isPending || !enabled}>
         <Plus />
-        {isPending ? "Добавляем…" : "Добавить источник"}
+        {isPending ? "Добавляем..." : "Добавить источник"}
       </Button>
     </form>
   );
@@ -149,7 +134,7 @@ function EditSchoolForm({
       <StateMessage state={state} />
       <Button type="submit" variant="outline" disabled={isPending || !enabled}>
         <Pencil />
-        {isPending ? "Сохраняем…" : "Сохранить изменения"}
+        {isPending ? "Сохраняем..." : "Сохранить изменения"}
       </Button>
     </form>
   );
@@ -189,7 +174,7 @@ function DeleteSchoolForm({
         disabled={!enabled || isPending}
       >
         <Trash2 />
-        {isPending ? "Удаляем…" : "Удалить"}
+        {isPending ? "Удаляем..." : "Удалить"}
       </Button>
       {state.message && (
         <span
@@ -220,8 +205,9 @@ export function SchoolsSettings({
       <CardHeader className="pb-3">
         <CardTitle>Автошколы и источники</CardTitle>
         <CardDescription>
-          Источник отвечает на вопрос, откуда пришёл ученик или занятие:
-          автошкола, частный ученик, подарок или рекомендация.
+          Источник отвечает на вопрос, откуда пришёл ученик: автошкола,
+          частный ученик, подарок или рекомендация. Цена записи берётся из типа
+          занятия или указывается вручную в самой записи.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -234,16 +220,13 @@ export function SchoolsSettings({
 
         {!canManage && (
           <div className="rounded-xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
-            Это школьный список источников. Выбирайте их в расписании и
-            карточках учеников; добавлять и менять источники может только
-            руководитель.
+            Это школьный список источников. Выбирайте их в карточках учеников;
+            добавлять и менять источники может только руководитель.
           </div>
         )}
 
         {canManage && (
-          <details
-            className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md"
-          >
+          <details className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm open:border-zinc-500 open:bg-white open:shadow-md">
             <summary className="cursor-pointer font-semibold">
               + Добавить источник
             </summary>
@@ -256,7 +239,8 @@ export function SchoolsSettings({
         <div className="space-y-3">
           {schools.length === 0 ? (
             <div className="rounded-xl border border-dashed px-5 py-8 text-center text-sm text-zinc-500">
-              Источников пока нет. Добавьте автошколу или частные занятия.
+              Источников пока нет. Добавьте автошколу, рекомендацию или
+              частных учеников.
             </div>
           ) : (
             schools.map((school) => (
@@ -274,9 +258,7 @@ export function SchoolsSettings({
                       <div className="min-w-0">
                         <p className="truncate font-semibold">{school.name}</p>
                         <p className="text-muted-foreground text-xs">
-                          {school.default_price !== null
-                            ? formatMoney(school.default_price)
-                            : "Цена не задана"}
+                          Источник ученика
                         </p>
                       </div>
                     </div>

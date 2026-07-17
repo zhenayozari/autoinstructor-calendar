@@ -96,6 +96,7 @@ function readLocationType(formData: FormData): SlotLocationType {
   return value;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function validateOptionalSchoolId(
   schoolId: string | null,
   organizationId: string,
@@ -362,7 +363,6 @@ function getPublicationAt(formData: FormData, timezone: string) {
 
 type SourceSlot = {
   lesson_type_id: string;
-  school_id: string | null;
   start_time: string;
   end_time: string;
   location_type: "in_car" | "online" | "classroom" | "other";
@@ -478,7 +478,7 @@ async function copySlotsToDate({
       instructor_id: instructorId,
       schedule_day_id: scheduleDayId,
       lesson_type_id: slot.lesson_type_id,
-      school_id: slot.school_id,
+      school_id: null,
       start_time: targetStart.toISOString(),
       end_time: targetEnd.toISOString(),
       location_type: slot.location_type,
@@ -547,9 +547,7 @@ export async function copyDayAction(
 
     const { data, error } = await supabase
       .from("slots")
-      .select(
-        "lesson_type_id, school_id, start_time, end_time, location_type, status, note",
-      )
+      .select("lesson_type_id, start_time, end_time, location_type, status, note")
       .eq("instructor_id", instructorId)
       .eq("schedule_day_id", sourceDay.id)
       .in("status", ["available", "blocked"])
@@ -679,9 +677,7 @@ export async function copyWeekAction(
       const targetDate = addDaysToDate(targetWeekStart, dayOffset);
       const { data, error } = await supabase
         .from("slots")
-        .select(
-          "lesson_type_id, school_id, start_time, end_time, location_type, status, note",
-        )
+        .select("lesson_type_id, start_time, end_time, location_type, status, note")
         .eq("instructor_id", instructorId)
         .eq("schedule_day_id", sourceDay.id)
         .in("status", ["available", "blocked"])
@@ -874,7 +870,7 @@ export async function quickCreateDayAction(
 
   try {
     const instructorId = readRequiredString(formData, "instructor_id");
-    const membership = await requireInstructorAccess(instructorId);
+    await requireInstructorAccess(instructorId);
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     const date = readRequiredString(formData, "date");
     const workStartTime = readRequiredString(formData, "work_start_time");
@@ -887,10 +883,6 @@ export async function quickCreateDayAction(
     );
     const breakMinutes = readInteger(formData, "break_minutes", 0, 240);
     const note = readOptionalNote(formData);
-    const schoolId = await validateOptionalSchoolId(
-      readOptionalString(formData, "school_id"),
-      membership.organizationId,
-    );
     const requestedTransmission = formData.get("transmission");
     const transmission =
       requestedTransmission === "automatic" ||
@@ -1054,7 +1046,7 @@ export async function quickCreateDayAction(
         instructor_id: instructorId,
         schedule_day_id: scheduleDay.id,
         lesson_type_id: lessonTypeId,
-        school_id: schoolId,
+        school_id: null,
         start_time: candidate.start.toISOString(),
         end_time: candidate.end.toISOString(),
         location_type: locationType,
@@ -1122,17 +1114,13 @@ export async function createSlotAction(
 
   try {
     const instructorId = readRequiredString(formData, "instructor_id");
-    const membership = await requireInstructorAccess(instructorId);
+    await requireInstructorAccess(instructorId);
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     const date = readRequiredString(formData, "date");
     const startTime = readRequiredString(formData, "start_time");
     const locationType = readLocationType(formData);
     const note = readOptionalNote(formData);
     const publishDay = formData.get("publish_day") === "on";
-    const schoolId = await validateOptionalSchoolId(
-      readOptionalString(formData, "school_id"),
-      membership.organizationId,
-    );
     const requestedTransmission = formData.get("transmission");
     const transmission =
       requestedTransmission === "automatic" || requestedTransmission === "manual"
@@ -1245,7 +1233,7 @@ export async function createSlotAction(
       instructor_id: instructorId,
       schedule_day_id: scheduleDay.id,
       lesson_type_id: lessonTypeId,
-      school_id: schoolId,
+      school_id: null,
       start_time: startsAt.toISOString(),
       end_time: endsAt.toISOString(),
       location_type: locationType,
@@ -1309,11 +1297,7 @@ export async function updateSlotAction(
       throw new Error("Слот не найден");
     }
 
-    const membership = await requireInstructorAccess(slot.instructor_id);
-    const schoolId = await validateOptionalSchoolId(
-      readOptionalString(formData, "school_id"),
-      membership.organizationId,
-    );
+    await requireInstructorAccess(slot.instructor_id);
 
     const [
       { data: instructor, error: instructorError },
@@ -1429,7 +1413,7 @@ export async function updateSlotAction(
       .update({
         schedule_day_id: targetDay.id,
         lesson_type_id: lessonTypeId,
-        school_id: schoolId,
+        school_id: null,
         location_type: locationType,
         start_time: startsAt.toISOString(),
         end_time: endsAt.toISOString(),
@@ -1642,6 +1626,309 @@ export async function cancelBookingAction(formData: FormData) {
   } catch (error) {
     console.error("cancelBookingAction:", error);
     throw error;
+  }
+}
+
+async function getLessonTypeDefaultPriceAmount(
+  supabase: ReturnType<typeof createAdminClient>,
+  lessonTypeId: string,
+) {
+  const { data, error } = await supabase
+    .from("lesson_types")
+    .select("default_price_amount")
+    .eq("id", lessonTypeId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error)) {
+      return null;
+    }
+
+    throw new Error(error.message);
+  }
+
+  return typeof data?.default_price_amount === "number"
+    ? data.default_price_amount
+    : null;
+}
+
+async function insertAssignedStudentBooking({
+  supabase,
+  slotId,
+  studentAccessId,
+  studentLabel,
+  priceAmount,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  slotId: string;
+  studentAccessId: string;
+  studentLabel: string;
+  priceAmount: number | null;
+}) {
+  const payload = {
+    slot_id: slotId,
+    student_access_id: studentAccessId,
+    student_label: studentLabel,
+    status: "confirmed",
+  };
+  const { error } = await supabase.from("bookings").insert({
+    ...payload,
+    price_amount: priceAmount,
+  });
+
+  if (!error || !isMissingColumnError(error)) {
+    return error;
+  }
+
+  const { error: fallbackError } = await supabase
+    .from("bookings")
+    .insert(payload);
+
+  return fallbackError;
+}
+
+async function countConfirmedBookingsForStudentAccess(
+  supabase: ReturnType<typeof createAdminClient>,
+  studentAccessId: string,
+) {
+  const { count, error } = await supabase
+    .from("bookings")
+    .select("id", { count: "exact", head: true })
+    .eq("student_access_id", studentAccessId)
+    .eq("status", "confirmed");
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return count ?? 0;
+}
+
+async function countConfirmedBookingsForStudentAccessInWeek({
+  supabase,
+  studentAccessId,
+  instructorId,
+  weekStart,
+  weekEnd,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  studentAccessId: string;
+  instructorId: string;
+  weekStart: string;
+  weekEnd: string;
+}) {
+  const { data: dayData, error: dayError } = await supabase
+    .from("schedule_days")
+    .select("id")
+    .eq("instructor_id", instructorId)
+    .gte("date", weekStart)
+    .lte("date", weekEnd);
+
+  if (dayError) {
+    throw new Error(dayError.message);
+  }
+
+  const dayIds = (dayData ?? []).map((day) => day.id);
+
+  if (dayIds.length === 0) {
+    return 0;
+  }
+
+  const { data: slotData, error: slotError } = await supabase
+    .from("slots")
+    .select("id")
+    .in("schedule_day_id", dayIds);
+
+  if (slotError) {
+    throw new Error(slotError.message);
+  }
+
+  const slotIds = (slotData ?? []).map((slot) => slot.id);
+
+  if (slotIds.length === 0) {
+    return 0;
+  }
+
+  const { count, error } = await supabase
+    .from("bookings")
+    .select("id", { count: "exact", head: true })
+    .eq("student_access_id", studentAccessId)
+    .eq("status", "confirmed")
+    .in("slot_id", slotIds);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return count ?? 0;
+}
+
+export async function assignStudentToSlotAction(
+  previousState: SlotActionState = INITIAL_STATE,
+  formData: FormData,
+): Promise<SlotActionState> {
+  void previousState;
+
+  try {
+    await requireActiveOrganizationMember();
+    const slotId = readRequiredString(formData, "slot_id");
+    const studentAccessId = readRequiredString(formData, "student_access_id");
+    const supabase = createAdminClient();
+    const { data: slot, error: slotError } = await supabase
+      .from("slots")
+      .select(
+        "id, instructor_id, schedule_day_id, lesson_type_id, status",
+      )
+      .eq("id", slotId)
+      .maybeSingle();
+
+    if (slotError) {
+      throw new Error(slotError.message);
+    }
+
+    if (!slot) {
+      throw new Error("Слот не найден");
+    }
+
+    await requireInstructorAccess(slot.instructor_id);
+
+    if (slot.status !== "available") {
+      throw new Error("Записать ученика можно только в свободный слот");
+    }
+
+    const { count: activeBookingCount, error: bookingCountError } =
+      await supabase
+        .from("bookings")
+        .select("id", { count: "exact", head: true })
+        .eq("slot_id", slot.id)
+        .eq("status", "confirmed");
+
+    if (bookingCountError) {
+      throw new Error(bookingCountError.message);
+    }
+
+    if ((activeBookingCount ?? 0) > 0) {
+      throw new Error("Этот слот уже занят");
+    }
+
+    const { data: access, error: accessError } = await supabase
+      .from("student_accesses")
+      .select(
+        "id, instructor_id, display_label, total_lesson_limit, weekly_lesson_limit, is_active, is_archived",
+      )
+      .eq("id", studentAccessId)
+      .eq("instructor_id", slot.instructor_id)
+      .maybeSingle();
+
+    if (accessError) {
+      throw new Error(accessError.message);
+    }
+
+    if (!access) {
+      throw new Error("Ученик не найден у этого инструктора");
+    }
+
+    if (!access.is_active || access.is_archived) {
+      throw new Error("Доступ ученика не активен");
+    }
+
+    const { data: allowedLessonTypes, error: allowedLessonTypesError } =
+      await supabase
+        .from("student_access_lesson_types")
+        .select("lesson_type_id")
+        .eq("student_access_id", access.id);
+
+    if (allowedLessonTypesError) {
+      throw new Error(allowedLessonTypesError.message);
+    }
+
+    const canUseLessonType = (allowedLessonTypes ?? []).some(
+      (item) => item.lesson_type_id === slot.lesson_type_id,
+    );
+
+    if (!canUseLessonType) {
+      throw new Error("Ученику не доступен этот тип занятия");
+    }
+
+    if (access.total_lesson_limit !== null) {
+      const totalUsed = await countConfirmedBookingsForStudentAccess(
+        supabase,
+        access.id,
+      );
+
+      if (totalUsed >= access.total_lesson_limit) {
+        throw new Error("У ученика закончился общий лимит занятий");
+      }
+    }
+
+    if (access.weekly_lesson_limit !== null) {
+      const { data: scheduleDay, error: scheduleDayError } = await supabase
+        .from("schedule_days")
+        .select("date")
+        .eq("id", slot.schedule_day_id)
+        .maybeSingle();
+
+      if (scheduleDayError) {
+        throw new Error(scheduleDayError.message);
+      }
+
+      if (!scheduleDay) {
+        throw new Error("День расписания не найден");
+      }
+
+      const weekStart = getWeekStart(scheduleDay.date);
+      const weekEnd = addDaysToDate(weekStart, 6);
+      const weeklyUsed = await countConfirmedBookingsForStudentAccessInWeek({
+        supabase,
+        studentAccessId: access.id,
+        instructorId: slot.instructor_id,
+        weekStart,
+        weekEnd,
+      });
+
+      if (weeklyUsed >= access.weekly_lesson_limit) {
+        throw new Error("У ученика закончился лимит занятий на эту неделю");
+      }
+    }
+
+    const priceAmount = await getLessonTypeDefaultPriceAmount(
+      supabase,
+      slot.lesson_type_id,
+    );
+    const insertError = await insertAssignedStudentBooking({
+      supabase,
+      slotId: slot.id,
+      studentAccessId: access.id,
+      studentLabel: access.display_label,
+      priceAmount,
+    });
+
+    if (insertError) {
+      if (insertError.code === "23505") {
+        throw new Error("Этот слот уже занят");
+      }
+
+      throw new Error(insertError.message);
+    }
+
+    revalidateAdminCrmPaths();
+    revalidatePath("/student");
+    revalidatePath("/director");
+    revalidatePath("/director/schedule");
+    revalidatePath("/director/students");
+    revalidatePath("/director/reports");
+
+    return {
+      status: "success",
+      message: "Ученик записан на занятие",
+    };
+  } catch (error) {
+    console.error("assignStudentToSlotAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
   }
 }
 

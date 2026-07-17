@@ -82,15 +82,6 @@ export function DirectorSlotRow({
                 ? "В классе"
                 : "Другое"}
         </span>
-        {slot.school && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 font-medium">
-            <span
-              className="size-2 rounded-full border border-black/10"
-              style={{ backgroundColor: slot.school.color }}
-            />
-            {slot.school.name}
-          </span>
-        )}
       </div>
 
       {slot.booking && (

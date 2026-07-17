@@ -80,7 +80,7 @@ export async function SchedulePreview() {
           </p>
         </div>
         <Link
-          href="/schedule"
+          href="/student/login"
           className="inline-flex w-fit items-center gap-2 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-100"
         >
           <CalendarDays className="size-4" />
@@ -102,7 +102,7 @@ export async function SchedulePreview() {
           {slots.map((slot) => (
             <Link
               key={slot.id}
-              href={`/instructors/${slot.instructor_slug}#booking`}
+              href="/student/login"
               className="group rounded-2xl border border-white/10 bg-white/[0.06] p-4 transition hover:bg-white/10"
               style={{
                 borderLeftColor: slot.lesson_type_color,

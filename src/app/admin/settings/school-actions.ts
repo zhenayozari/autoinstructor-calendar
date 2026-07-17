@@ -19,29 +19,6 @@ function readRequiredString(formData: FormData, field: string) {
   return value.trim();
 }
 
-function readOptionalInteger(
-  formData: FormData,
-  field: string,
-  min: number,
-  max: number,
-) {
-  const raw = formData.get(field);
-
-  if (typeof raw !== "string" || !raw.trim()) {
-    return null;
-  }
-
-  const value = Number(raw.trim());
-
-  if (!Number.isInteger(value) || value < min || value > max) {
-    throw new Error(
-      `Поле «${field}» должно быть целым числом от ${min} до ${max}`,
-    );
-  }
-
-  return value;
-}
-
 function getErrorMessage(error: unknown) {
   return error instanceof Error
     ? error.message
@@ -58,6 +35,16 @@ async function requireSchoolManager() {
   return membership;
 }
 
+function validateSchoolFields(name: string, color: string) {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
+    throw new Error("Укажите цвет в формате HEX, например #FF9900");
+  }
+
+  if (name.length > 80) {
+    throw new Error("Название источника должно быть не длиннее 80 символов");
+  }
+}
+
 export async function createSchoolAction(
   previousState: SchoolActionState,
   formData: FormData,
@@ -68,23 +55,15 @@ export async function createSchoolAction(
     const membership = await requireSchoolManager();
     const name = readRequiredString(formData, "name");
     const color = readRequiredString(formData, "color");
-    const defaultPrice = readOptionalInteger(formData, "default_price", 0, 10_000_000);
     const isActive = formData.get("is_active") === "on";
 
-    if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
-      throw new Error("Укажите цвет в формате HEX, например #FF9900");
-    }
-
-    if (name.length > 80) {
-      throw new Error("Название источника должно быть не длиннее 80 символов");
-    }
+    validateSchoolFields(name, color);
 
     const supabase = createAdminClient();
     const { error } = await supabase.from("schools").insert({
       organization_id: membership.organizationId,
       name,
       color,
-      default_price: defaultPrice,
       is_active: isActive,
     });
 
@@ -115,21 +94,14 @@ export async function updateSchoolAction(
     const schoolId = readRequiredString(formData, "school_id");
     const name = readRequiredString(formData, "name");
     const color = readRequiredString(formData, "color");
-    const defaultPrice = readOptionalInteger(formData, "default_price", 0, 10_000_000);
     const isActive = formData.get("is_active") === "on";
 
-    if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
-      throw new Error("Укажите цвет в формате HEX, например #FF9900");
-    }
-
-    if (name.length > 80) {
-      throw new Error("Название источника должно быть не длиннее 80 символов");
-    }
+    validateSchoolFields(name, color);
 
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("schools")
-      .update({ name, color, default_price: defaultPrice, is_active: isActive })
+      .update({ name, color, is_active: isActive })
       .eq("id", schoolId)
       .eq("organization_id", membership.organizationId);
 

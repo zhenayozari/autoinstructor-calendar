@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  assignStudentToSlotAction,
   cancelBookingAction,
   deleteSelectedSlotsAction,
   deleteSlotAction,
@@ -37,7 +38,15 @@ import {
   selectClassName,
 } from "@/lib/formatters";
 import { getVisibleSlotNote } from "@/lib/slot-notes";
-import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
+import type {
+  Booking,
+  Instructor,
+  LessonType,
+  ScheduleDay,
+  School,
+  Slot,
+  StudentAccess,
+} from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -76,17 +85,6 @@ function getShortLessonName(name: string) {
   if (normalized.includes("доп")) return "Доп";
 
   return name.length > 12 ? `${name.slice(0, 11)}…` : name;
-}
-
-function getSlotSchoolName(slot: Slot, schools: School[]) {
-  if (!slot.school_id) {
-    return "Частное занятие";
-  }
-
-  return (
-    schools.find((school) => school.id === slot.school_id)?.name ??
-    "Источник не найден"
-  );
 }
 
 function formatMobileWeekday(value: string) {
@@ -179,7 +177,6 @@ function SlotEditForm({
   scheduleDay,
   lessonType,
   lessonTypes,
-  schools,
   timezone,
   adminEnabled,
 }: {
@@ -203,10 +200,6 @@ function SlotEditForm({
     activeLessonTypes.some((candidate) => candidate.id === slot.lesson_type_id)
       ? activeLessonTypes
       : [lessonType, ...activeLessonTypes];
-  const schoolOptions = schools.filter(
-    (school) => school.is_active || school.id === slot.school_id,
-  );
-
   return (
     <form action={formAction} className="space-y-3 rounded-xl border bg-white p-3">
       <input type="hidden" name="slot_id" value={slot.id} />
@@ -253,23 +246,6 @@ function SlotEditForm({
             {lessonTypeOptions.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {candidate.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor={`edit-school-${slot.id}`}>Источник</Label>
-          <select
-            id={`edit-school-${slot.id}`}
-            name="school_id"
-            className={selectClassName}
-            defaultValue={slot.school_id ?? ""}
-          >
-            <option value="">Частное занятие / без автошколы</option>
-            {schoolOptions.map((school) => (
-              <option key={school.id} value={school.id}>
-                {school.name}
               </option>
             ))}
           </select>
@@ -331,6 +307,102 @@ function SlotEditForm({
         {isPending ? "Сохраняем…" : "Сохранить изменения"}
       </Button>
     </form>
+  );
+}
+
+function AssignStudentToSlotForm({
+  slot,
+  lessonType,
+  studentAccesses,
+  adminEnabled,
+}: {
+  slot: Slot;
+  lessonType: LessonType;
+  studentAccesses: StudentAccess[];
+  adminEnabled: boolean;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    assignStudentToSlotAction,
+    INITIAL_SLOT_UPDATE_STATE,
+  );
+  const eligibleStudentAccesses = studentAccesses.filter(
+    (access) =>
+      access.instructor_id === slot.instructor_id &&
+      access.is_active &&
+      !access.is_archived &&
+      access.lesson_type_ids.includes(slot.lesson_type_id),
+  );
+
+  if (slot.status !== "available") {
+    return null;
+  }
+
+  return (
+    <details className="group rounded-lg border border-emerald-200 bg-emerald-50/70">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-semibold text-emerald-950">
+        <span className="inline-flex items-center gap-1.5">
+          <UserRound className="size-3.5" />
+          Записать ученика
+        </span>
+        <ChevronRight className="size-3.5 text-emerald-700 transition-transform group-open:rotate-90" />
+      </summary>
+      <div className="space-y-2 border-t border-emerald-200 px-3 py-3">
+        <p className="text-xs leading-5 text-emerald-900">
+          Показываются активные ученики, которым доступен тип занятия:
+          {" "}
+          <span className="font-semibold">{lessonType.name}</span>.
+        </p>
+
+        {eligibleStudentAccesses.length > 0 ? (
+          <form action={formAction} className="space-y-2">
+            <input type="hidden" name="slot_id" value={slot.id} />
+            <select
+              name="student_access_id"
+              className={selectClassName}
+              defaultValue=""
+              required
+              disabled={!adminEnabled || isPending}
+            >
+              <option value="" disabled>
+                Выберите ученика
+              </option>
+              {eligibleStudentAccesses.map((access) => (
+                <option key={access.id} value={access.id}>
+                  {access.display_label}
+                  {access.login ? ` · ${access.login}` : ""}
+                </option>
+              ))}
+            </select>
+
+            {state.message && (
+              <p
+                className={`rounded-lg px-3 py-2 text-xs ${
+                  state.status === "success"
+                    ? "bg-emerald-100 text-emerald-800"
+                    : "bg-red-50 text-red-700"
+                }`}
+              >
+                {state.message}
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              className="h-9 w-full"
+              disabled={!adminEnabled || isPending}
+            >
+              <UserRound />
+              {isPending ? "Записываем..." : "Записать в слот"}
+            </Button>
+          </form>
+        ) : (
+          <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-zinc-600">
+            Подходящих учеников пока нет. Проверьте доступ ученика и выбранные
+            типы занятий на странице «Ученики».
+          </p>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -507,6 +579,7 @@ function DesktopSlotPanel({
   instructor,
   lessonTypes,
   schools,
+  studentAccesses,
   adminEnabled,
   onClose,
 }: {
@@ -517,13 +590,12 @@ function DesktopSlotPanel({
   instructor: Instructor;
   lessonTypes: LessonType[];
   schools: School[];
+  studentAccesses: StudentAccess[];
   adminEnabled: boolean;
   onClose: () => void;
 }) {
   const isBlocked = slot.status === "blocked";
   const visibleNote = getVisibleSlotNote(slot.note);
-  const schoolName = getSlotSchoolName(slot, schools);
-
   return (
     <div className="fixed inset-0 z-50 hidden lg:block">
       <button
@@ -598,10 +670,6 @@ function DesktopSlotPanel({
                 {locationLabels[slot.location_type]}
               </p>
             </div>
-            <div className="rounded-xl bg-zinc-50 p-3">
-              <p className="text-muted-foreground text-xs">Источник</p>
-              <p className="mt-1 font-semibold">{schoolName}</p>
-            </div>
           </div>
 
           {booking ? (
@@ -639,6 +707,15 @@ function DesktopSlotPanel({
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800">
               На этот слот пока никто не записан.
             </div>
+          )}
+
+          {!booking && !isBlocked && (
+            <AssignStudentToSlotForm
+              slot={slot}
+              lessonType={lessonType}
+              studentAccesses={studentAccesses}
+              adminEnabled={adminEnabled}
+            />
           )}
 
           {visibleNote && (
@@ -694,6 +771,7 @@ function MobileSlotRow({
   scheduleDay,
   lessonTypes,
   schools,
+  studentAccesses,
   timezone,
   adminEnabled,
   selectionMode = false,
@@ -706,6 +784,7 @@ function MobileSlotRow({
   scheduleDay: ScheduleDay | undefined;
   lessonTypes: LessonType[];
   schools: School[];
+  studentAccesses: StudentAccess[];
   timezone: string;
   adminEnabled: boolean;
   selectionMode?: boolean;
@@ -714,8 +793,6 @@ function MobileSlotRow({
 }) {
   const isBlocked = slot.status === "blocked";
   const visibleNote = getVisibleSlotNote(slot.note);
-  const schoolName = getSlotSchoolName(slot, schools);
-
   return (
     <details
       className={`group rounded-lg border bg-white ${
@@ -786,10 +863,6 @@ function MobileSlotRow({
               {locationLabels[slot.location_type]}
             </p>
           </div>
-          <div>
-            <p className="text-zinc-400">Источник</p>
-            <p className="mt-0.5 font-semibold">{schoolName}</p>
-          </div>
           {booking && (
             <div>
               <p className="text-zinc-400">Ученик</p>
@@ -810,6 +883,15 @@ function MobileSlotRow({
               disabled={!adminEnabled}
             />
           </div>
+        )}
+
+        {!booking && !isBlocked && (
+          <AssignStudentToSlotForm
+            slot={slot}
+            lessonType={lessonType}
+            studentAccesses={studentAccesses}
+            adminEnabled={adminEnabled}
+          />
         )}
 
         {visibleNote && (
@@ -862,6 +944,7 @@ export function AdminWeekCalendar({
   scheduleDays,
   slots,
   bookings,
+  studentAccesses,
   weekDate,
   currentWeekDate,
   instructorId,
@@ -877,6 +960,7 @@ export function AdminWeekCalendar({
   scheduleDays: ScheduleDay[];
   slots: Slot[];
   bookings: Booking[];
+  studentAccesses: StudentAccess[];
   weekDate: string;
   currentWeekDate: string;
   instructorId: string;
@@ -1385,6 +1469,7 @@ export function AdminWeekCalendar({
                     scheduleDay={mobileSelectedDayData.scheduleDay}
                     lessonTypes={lessonTypes}
                     schools={schools}
+                    studentAccesses={studentAccesses}
                     timezone={selectedInstructor.timezone}
                     adminEnabled={adminEnabled}
                     selectionMode={selectionMode}
@@ -1475,6 +1560,7 @@ export function AdminWeekCalendar({
             instructor={selectedInstructor}
             lessonTypes={lessonTypes}
             schools={schools}
+            studentAccesses={studentAccesses}
             adminEnabled={adminEnabled}
             onClose={() => setSelectedSlotId(null)}
           />

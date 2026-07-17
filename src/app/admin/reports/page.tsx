@@ -55,7 +55,6 @@ type ReportSlot = Pick<
   | "instructor_id"
   | "schedule_day_id"
   | "lesson_type_id"
-  | "school_id"
   | "start_time"
   | "end_time"
 >;
@@ -456,7 +455,7 @@ export default async function AdminReportsPage({
       ? await supabase
           .from("slots")
           .select(
-            "id, instructor_id, schedule_day_id, lesson_type_id, school_id, start_time, end_time",
+            "id, instructor_id, schedule_day_id, lesson_type_id, start_time, end_time",
           )
           .in("schedule_day_id", scheduleDayIds)
           .neq("status", "cancelled")
@@ -466,10 +465,6 @@ export default async function AdminReportsPage({
 
   if (selectedLessonTypeId !== "all") {
     slots = slots.filter((slot) => slot.lesson_type_id === selectedLessonTypeId);
-  }
-
-  if (selectedSchoolId !== "all") {
-    slots = slots.filter((slot) => slot.school_id === selectedSchoolId);
   }
 
   const slotIds = slots.map((slot) => slot.id);
@@ -487,6 +482,21 @@ export default async function AdminReportsPage({
     bookings = bookings.filter(
       (booking) => booking.student_access_id === selectedStudentId,
     );
+  }
+
+  const studentAccessesById = new Map(
+    studentAccesses.map((access) => [access.id, access]),
+  );
+
+  if (selectedSchoolId !== "all") {
+    bookings = bookings.filter((booking) => {
+      if (!booking.student_access_id) return false;
+
+      return (
+        studentAccessesById.get(booking.student_access_id)?.school_id ===
+        selectedSchoolId
+      );
+    });
   }
 
   if (selectedPayment === "paid") {
@@ -529,6 +539,9 @@ export default async function AdminReportsPage({
       const lessonType = lessonTypesById.get(slot.lesson_type_id);
       const instructor = instructorsById.get(slot.instructor_id);
       if (!scheduleDay || !lessonType || !instructor) return null;
+      const access = booking.student_access_id
+        ? studentAccessesById.get(booking.student_access_id)
+        : null;
 
       return {
         ...booking,
@@ -536,7 +549,7 @@ export default async function AdminReportsPage({
         scheduleDay,
         lessonType,
         instructor,
-        school: slot.school_id ? schoolsById.get(slot.school_id) ?? null : null,
+        school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
       };
     })
     .filter((item): item is ReportItem => Boolean(item));

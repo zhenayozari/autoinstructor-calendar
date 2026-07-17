@@ -5,12 +5,15 @@ import {
   Check,
   Link2,
   X,
+  Trash2,
   UserPlus,
   UsersRound,
 } from "lucide-react";
 import {
   approveStaffInvitationAction,
   createStaffInvitationAction,
+  deleteStaffInvitationAction,
+  deleteStaffInstructorAction,
   rejectStaffInvitationAction,
   updateStaffInstructorStatusAction,
 } from "@/app/director/staff/actions";
@@ -146,14 +149,18 @@ function getInviteStatusMessage(status?: string) {
   switch (status) {
     case "created":
       return "Приглашение создано. Ссылку можно отправить сотруднику.";
+    case "invitation-deleted":
+      return "Ссылка приглашения удалена.";
     case "approved":
       return "Сотрудник подтверждён. Теперь он может войти как инструктор.";
     case "rejected":
       return "Заявка сотрудника отклонена.";
     case "staff-updated":
       return "Доступ сотрудника обновлён.";
+    case "staff-deleted":
+      return "Сотрудник удалён из школы.";
     case "error":
-  return "Не удалось выполнить действие. Проверьте миграцию и служебный ключ проекта.";
+      return "Не удалось выполнить действие. Проверьте миграцию и служебный ключ проекта.";
     default:
       return null;
   }
@@ -212,6 +219,17 @@ function InvitationLinkCard({
         </span>
       </div>
       <Input className="mt-3 h-10 text-sm" value={href} readOnly />
+      <form action={deleteStaffInvitationAction} className="mt-3">
+        <input type="hidden" name="invitation_id" value={invitation.id} />
+        <Button
+          type="submit"
+          variant="outline"
+          className="h-10 w-full border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
+        >
+          <Trash2 className="size-4" />
+          Удалить ссылку
+        </Button>
+      </form>
     </article>
   );
 }
@@ -319,21 +337,53 @@ function StaffCard({
       )}
 
       {!isOwner && !isPending && (
-        <form action={updateStaffInstructorStatusAction} className="mt-3">
-          <input type="hidden" name="instructor_id" value={instructor.id} />
-          <input
-            type="hidden"
-            name="next_active"
-            value={instructor.is_active ? "false" : "true"}
-          />
-          <Button
-            type="submit"
-            variant={instructor.is_active ? "outline" : "default"}
-            className="h-10 w-full"
-          >
-            {instructor.is_active ? "Отключить доступ" : "Вернуть доступ"}
-          </Button>
-        </form>
+        <div className="mt-3 space-y-3">
+          <form action={updateStaffInstructorStatusAction}>
+            <input type="hidden" name="instructor_id" value={instructor.id} />
+            <input
+              type="hidden"
+              name="next_active"
+              value={instructor.is_active ? "false" : "true"}
+            />
+            <Button
+              type="submit"
+              variant={instructor.is_active ? "outline" : "default"}
+              className="h-10 w-full"
+            >
+              {instructor.is_active ? "Отключить доступ" : "Вернуть доступ"}
+            </Button>
+          </form>
+
+          <details className="rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
+            <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
+              Удалить сотрудника
+            </summary>
+            <form action={deleteStaffInstructorAction} className="mt-3 space-y-3">
+              <input type="hidden" name="instructor_id" value={instructor.id} />
+              <label className="flex items-start gap-2 text-xs text-red-800">
+                <input
+                  type="checkbox"
+                  name="confirm_delete"
+                  value="yes"
+                  required
+                  className="mt-0.5 size-4 shrink-0"
+                />
+                <span>
+                  Удалить сотрудника, его расписание, слоты, записи и учеников.
+                  Это действие нельзя отменить.
+                </span>
+              </label>
+              <Button
+                type="submit"
+                variant="outline"
+                className="h-10 w-full border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-800"
+              >
+                <Trash2 className="size-4" />
+                Удалить навсегда
+              </Button>
+            </form>
+          </details>
+        </div>
       )}
     </article>
   );

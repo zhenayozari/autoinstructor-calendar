@@ -2,6 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
@@ -165,6 +166,66 @@ async function getManageableAccess(accessId: string) {
       login: string;
     },
   };
+}
+
+function assertOwnerCanDelete(membership: Awaited<ReturnType<typeof requireActiveOrganizationMember>>) {
+  if (membership.role !== "owner") {
+    throw new Error("Удалять навсегда может только руководитель");
+  }
+}
+
+function assertDeleteConfirmed(formData: FormData) {
+  if (formData.get("confirm_delete") !== "yes") {
+    throw new Error("Подтвердите удаление");
+  }
+}
+
+function revalidateStudentAccessPaths() {
+  revalidatePath("/admin");
+  revalidatePath("/admin/students");
+  revalidatePath("/admin/reports");
+  revalidatePath("/director");
+  revalidatePath("/director/students");
+  revalidatePath("/director/reports");
+  revalidatePath("/student");
+}
+
+async function deleteStudentAccessById(accessId: string, formData: FormData) {
+  assertDeleteConfirmed(formData);
+
+  const { membership, access } = await getManageableAccess(accessId);
+  assertOwnerCanDelete(membership);
+
+  const supabase = createAdminClient();
+  const { error: bookingsError } = await supabase
+    .from("bookings")
+    .delete()
+    .eq("student_access_id", access.id);
+
+  if (bookingsError) {
+    throw new Error(bookingsError.message);
+  }
+
+  const { error: lessonTypesError } = await supabase
+    .from("student_access_lesson_types")
+    .delete()
+    .eq("student_access_id", access.id);
+
+  if (lessonTypesError) {
+    throw new Error(lessonTypesError.message);
+  }
+
+  const { error: accessError } = await supabase
+    .from("student_accesses")
+    .delete()
+    .eq("id", access.id)
+    .eq("organization_id", membership.organizationId);
+
+  if (accessError) {
+    throw new Error(accessError.message);
+  }
+
+  revalidateStudentAccessPaths();
 }
 
 async function getManageableRegistrationRequest(requestId: string) {
@@ -621,6 +682,44 @@ export async function archiveStudentAccessAction(
       message: getErrorMessage(error),
     };
   }
+}
+
+export async function deleteStudentAccessAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    await deleteStudentAccessById(accessId, formData);
+
+    return {
+      status: "success",
+      message: "Ученик удалён вместе с его записями",
+    };
+  } catch (error) {
+    console.error("deleteStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function deleteStudentAccessDirectAction(formData: FormData) {
+  let status = "student-deleted";
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    await deleteStudentAccessById(accessId, formData);
+  } catch (error) {
+    console.error("deleteStudentAccessDirectAction:", error);
+    status = "delete-error";
+  }
+
+  redirect(`/director/students?delete_status=${status}`);
 }
 
 export async function toggleStudentAccessAction(

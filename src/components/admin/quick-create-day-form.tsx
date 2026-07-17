@@ -27,7 +27,6 @@ const INITIAL_STATE: QuickCreateDayActionState = {
 export function QuickCreateDayForm({
   instructors,
   lessonTypes,
-  schools,
   adminEnabled,
 }: {
   instructors: Instructor[];
@@ -120,26 +119,6 @@ export function QuickCreateDayForm({
               Управление типами
             </a>
           </div>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="quick-school-id">Автошкола / источник</Label>
-          <select
-            id="quick-school-id"
-            name="school_id"
-            className={selectClassName}
-            defaultValue=""
-          >
-            <option value="">Частное занятие / без автошколы</option>
-            {schools.map((school) => (
-              <option key={school.id} value={school.id}>
-                {school.name}
-              </option>
-            ))}
-          </select>
-          <p className="text-muted-foreground text-xs">
-            Источник будет проставлен всем слотам, созданным на день.
-          </p>
         </div>
 
         <div className="space-y-2">

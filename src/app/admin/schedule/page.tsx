@@ -11,7 +11,15 @@ import {
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
+import type {
+  Booking,
+  Instructor,
+  LessonType,
+  ScheduleDay,
+  School,
+  Slot,
+  StudentAccess,
+} from "@/lib/types";
 import { AdminScheduleWorkspace } from "@/components/admin/admin-schedule-workspace";
 
 export const dynamic = "force-dynamic";
@@ -52,6 +60,7 @@ export default async function AdminSchedulePage({
     { data: schoolData, error: schoolError },
     { data: scheduleDayData, error: scheduleDayError },
     { data: slotData, error: slotError },
+    { data: studentAccessData, error: studentAccessError },
   ] = await Promise.all([
     supabase
       .from("lesson_types")
@@ -82,9 +91,43 @@ export default async function AdminSchedulePage({
           .neq("status", "cancelled")
           .order("start_time", { ascending: true })
       : Promise.resolve({ data: [], error: null }),
+    instructorIds.length > 0
+      ? supabase
+          .from("student_accesses")
+          .select(
+            "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, is_active, school_id, is_archived, archived_at, created_at, updated_at",
+          )
+          .in("instructor_id", instructorIds)
+          .eq("is_active", true)
+          .eq("is_archived", false)
+          .order("display_label")
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   const slots = (slotData ?? []) as Slot[];
+  const baseStudentAccesses = (studentAccessData ?? []) as Array<
+    Omit<StudentAccess, "lesson_type_ids">
+  >;
+  const studentAccessIds = baseStudentAccesses.map((access) => access.id);
+  const { data: studentAccessLessonTypeData, error: studentAccessLessonTypeError } =
+    studentAccessIds.length > 0
+      ? await supabase
+          .from("student_access_lesson_types")
+          .select("student_access_id, lesson_type_id")
+          .in("student_access_id", studentAccessIds)
+      : { data: [], error: null };
+  const lessonTypeIdsByAccessId = new Map<string, string[]>();
+
+  for (const item of studentAccessLessonTypeData ?? []) {
+    const current = lessonTypeIdsByAccessId.get(item.student_access_id) ?? [];
+    current.push(item.lesson_type_id);
+    lessonTypeIdsByAccessId.set(item.student_access_id, current);
+  }
+
+  const studentAccesses = baseStudentAccesses.map((access) => ({
+    ...access,
+    lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
+  })) as StudentAccess[];
   const slotIds = slots.map((slot) => slot.id);
   const { data: bookingData, error: bookingError } =
     adminEnabled && slotIds.length > 0
@@ -100,7 +143,9 @@ export default async function AdminSchedulePage({
     schoolError ??
     scheduleDayError ??
     slotError ??
-    bookingError;
+    bookingError ??
+    studentAccessError ??
+    studentAccessLessonTypeError;
   const lessonTypeCatalog = (lessonTypeData ?? []) as LessonType[];
   const schools = (schoolData ?? []) as School[];
   const scheduleDays = (scheduleDayData ?? []) as ScheduleDay[];
@@ -157,6 +202,7 @@ export default async function AdminSchedulePage({
           }))}
           slots={slots}
           bookings={bookings}
+          studentAccesses={studentAccesses}
           defaultWeekDate={defaultWeekDate}
           initialInstructorId={initialInstructorId}
           canSelectInstructor={false}

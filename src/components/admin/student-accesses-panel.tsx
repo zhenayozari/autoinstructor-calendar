@@ -11,11 +11,13 @@ import {
   Power,
   PowerOff,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import {
   approveStudentRegistrationRequestAction,
   archiveStudentAccessAction,
   createStudentAccessAction,
+  deleteStudentAccessAction,
   refreshStudentRegistrationLinkAction,
   rejectStudentRegistrationRequestAction,
   toggleStudentAccessAction,
@@ -536,10 +538,12 @@ function StudentAccessCard({
   access,
   lessonTypes,
   schools,
+  canDeleteStudents,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
+  canDeleteStudents: boolean;
 }) {
   const [updateState, updateAction, isUpdatePending] = useActionState(
     updateStudentAccessAction,
@@ -865,8 +869,14 @@ function StudentAccessCard({
           </div>
         </form>
 
-        <div className="border-t pt-4">
+        <div className="space-y-3 border-t pt-4">
           <ArchiveStudentAccessForm accessId={access.id} />
+          {canDeleteStudents && (
+            <DeleteStudentAccessForm
+              accessId={access.id}
+              label={access.display_label}
+            />
+          )}
         </div>
       </div>
     </details>
@@ -893,6 +903,53 @@ function ArchiveStudentAccessForm({ accessId }: { accessId: string }) {
         {isPending ? "Перемещаем…" : "В архив"}
       </Button>
     </form>
+  );
+}
+
+function DeleteStudentAccessForm({
+  accessId,
+  label,
+}: {
+  accessId: string;
+  label: string;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    deleteStudentAccessAction,
+    INITIAL_STATE,
+  );
+
+  return (
+    <details className="rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
+      <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
+        Удалить навсегда
+      </summary>
+      <form action={formAction} className="mt-3 space-y-3">
+        <input type="hidden" name="student_access_id" value={accessId} />
+        <label className="flex items-start gap-2 text-xs text-red-800">
+          <input
+            type="checkbox"
+            name="confirm_delete"
+            value="yes"
+            required
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <span>
+            Удалить ученика «{label}» вместе с его записями. Это действие
+            нельзя отменить.
+          </span>
+        </label>
+        <StateMessage state={state} />
+        <Button
+          type="submit"
+          variant="outline"
+          className="border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-800"
+          disabled={isPending}
+        >
+          <Trash2 className="size-4" />
+          {isPending ? "Удаляем..." : "Удалить ученика"}
+        </Button>
+      </form>
+    </details>
   );
 }
 
@@ -1090,9 +1147,11 @@ function StudentRegistrationRequestCard({
 function ArchivedAccessCard({
   access,
   lessonTypes,
+  canDeleteStudents,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
+  canDeleteStudents: boolean;
 }) {
   const allowedTypes = lessonTypes.filter((lt) =>
     access.lesson_type_ids.includes(lt.id),
@@ -1155,6 +1214,15 @@ function ArchivedAccessCard({
           ))}
         </div>
       )}
+
+      {canDeleteStudents && (
+        <div className="mt-4">
+          <DeleteStudentAccessForm
+            accessId={access.id}
+            label={access.display_label}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -1171,6 +1239,7 @@ export function StudentAccessesPanel({
   adminEnabled,
   registrationLink,
   registrationLinkUpdatedAt,
+  canDeleteStudents = false,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
@@ -1183,6 +1252,7 @@ export function StudentAccessesPanel({
   adminEnabled: boolean;
   registrationLink: string | null;
   registrationLinkUpdatedAt: string | null;
+  canDeleteStudents?: boolean;
 }) {
   const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
     pendingRequests.length > 0 ? "pending" : "active",
@@ -1274,6 +1344,7 @@ export function StudentAccessesPanel({
                   access={access}
                   lessonTypes={lessonTypes}
                   schools={schools}
+                  canDeleteStudents={canDeleteStudents}
                 />
               ))}
             </div>
@@ -1307,6 +1378,7 @@ export function StudentAccessesPanel({
                   key={access.id}
                   access={access}
                   lessonTypes={lessonTypes}
+                  canDeleteStudents={canDeleteStudents}
                 />
               ))}
             </div>

@@ -58,7 +58,6 @@ function getSlotStatusLabel(slot: Slot, booking: Booking | undefined) {
 export function SlotForm({
   instructors,
   lessonTypes,
-  schools,
   scheduleDays = [],
   slots = [],
   bookings = [],
@@ -352,23 +351,6 @@ export function SlotForm({
               Окончание автоматически: {endTime}
             </p>
           )}
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="school_id">Автошкола / источник</Label>
-          <select
-            id="school_id"
-            name="school_id"
-            className={selectClassName}
-            defaultValue=""
-          >
-            <option value="">Частное занятие / без автошколы</option>
-            {schools.map((school) => (
-              <option key={school.id} value={school.id}>
-                {school.name}
-              </option>
-            ))}
-          </select>
         </div>
 
         {selectedLessonType?.kind === "driving" && (

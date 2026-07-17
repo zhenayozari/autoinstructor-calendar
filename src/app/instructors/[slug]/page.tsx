@@ -4,9 +4,10 @@ import { notFound } from "next/navigation";
 import {
   ArrowLeft,
   BookOpen,
-  CalendarDays,
   CarFront,
   Contact,
+  GraduationCap,
+  LogIn,
   Medal,
   UsersRound,
 } from "lucide-react";
@@ -14,14 +15,12 @@ import { getPublicInstructorBySlug } from "@/lib/public-instructors";
 import { CapabilityBadges } from "@/components/instructors/capability-badges";
 import { InstructorInfoCard } from "@/components/instructors/instructor-info-card";
 import { InstructorPhoto } from "@/components/instructors/instructor-photo";
-import { PublicCalendar } from "@/components/calendar/public-calendar";
 import { PublicHeader } from "@/components/public/public-header";
 
 export const dynamic = "force-dynamic";
 
 type PageProps = {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ week?: string | string[] }>;
 };
 
 export async function generateMetadata({
@@ -35,28 +34,22 @@ export async function generateMetadata({
   }
 
   return {
-    title: `${instructor.public_name ?? "Инструктор"} | Расписание`,
+    title: `${instructor.public_name ?? "Инструктор"} | Автоинструктор`,
     description:
-      instructor.short_bio ?? "Публичный профиль и расписание инструктора",
+      instructor.short_bio ??
+      "Публичный профиль автоинструктора: опыт, формат занятий и контакты.",
   };
 }
 
-export default async function InstructorPage({
-  params,
-  searchParams,
-}: PageProps) {
-  const [{ slug }, queryParams] = await Promise.all([params, searchParams]);
+export default async function InstructorPage({ params }: PageProps) {
+  const { slug } = await params;
   const { instructor, error } = await getPublicInstructorBySlug(slug);
 
   if (error || !instructor) {
     notFound();
   }
 
-  const week = Array.isArray(queryParams.week)
-    ? queryParams.week[0]
-    : queryParams.week;
   const publicName = instructor.public_name ?? "Инструктор";
-  const basePath = `/instructors/${instructor.slug}`;
   const hasDriving = instructor.capabilities.includes("driving");
   const hasTheory = instructor.capabilities.includes("theory");
 
@@ -72,13 +65,6 @@ export default async function InstructorPage({
           >
             <ArrowLeft className="size-4" />
             Все инструкторы
-          </Link>
-          <Link
-            href="/schedule"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-zinc-600 transition hover:text-zinc-950"
-          >
-            <CalendarDays className="size-4" />
-            Общее расписание
           </Link>
         </nav>
 
@@ -100,16 +86,16 @@ export default async function InstructorPage({
               </h1>
               <p className="mt-5 max-w-3xl text-base leading-7 text-zinc-300 sm:text-lg sm:leading-8">
                 {instructor.short_bio ??
-                  "Индивидуальные занятия в комфортном темпе и понятная подготовка к уверенной езде."}
+                  "Индивидуальные занятия в спокойном темпе и понятная подготовка к уверенной езде."}
               </p>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <a
-                  href="#booking"
+                <Link
+                  href="/student/login"
                   className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-6 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-amber-200"
                 >
-                  <CalendarDays className="size-4" />
-                  Записаться
-                </a>
+                  <LogIn className="size-4" />
+                  Войти ученику
+                </Link>
                 <Link
                   href="/instructors"
                   className="inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
@@ -196,24 +182,28 @@ export default async function InstructorPage({
           </div>
         </section>
 
-        <section id="booking" className="scroll-mt-6 pt-12">
-          <div className="mb-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">
-              Онлайн-запись
-            </p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-              Выберите удобное время
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-zinc-500 sm:text-base">
-              Свободные слоты доступны для записи.
-            </p>
+        <section className="mt-6 rounded-[2rem] border border-black/5 bg-white p-6 shadow-sm sm:p-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-400">
+                Запись
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">
+                Расписание доступно ученикам в личном кабинете
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
+                Если у вас уже есть логин и PIN, войдите в кабинет ученика.
+                Если доступа нет, свяжитесь с инструктором или руководителем.
+              </p>
+            </div>
+            <Link
+              href="/student/login"
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-zinc-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800"
+            >
+              <GraduationCap className="size-4" />
+              Войти ученику
+            </Link>
           </div>
-          <PublicCalendar
-            week={week}
-            basePath={basePath}
-            instructorId={instructor.id}
-            showInstructorName={false}
-          />
         </section>
       </div>
     </main>

@@ -6,16 +6,12 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import type {
-  LessonType,
-  School,
-} from "@/lib/types";
+import type { LessonType, School } from "@/lib/types";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
 import { SchoolsSettings } from "@/components/admin/schools-settings";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -109,14 +105,15 @@ export default async function AdminSettingsPage() {
     adminEnabled
       ? supabase
           .from("schools")
-          .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+          .select(
+            "id, organization_id, name, color, default_price, is_active, created_at, updated_at",
+          )
           .eq("organization_id", membership.organizationId)
           .order("name")
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  const loadError =
-    lessonTypeError ?? schoolError;
+  const loadError = lessonTypeError ?? schoolError;
   const schools = (schoolData ?? []) as School[];
   const visibleSchools = canManageCatalog
     ? schools
@@ -137,7 +134,8 @@ export default async function AdminSettingsPage() {
               Справочники и цены
             </h1>
             <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-              Здесь задаются источники учеников, типы занятий и цены.
+              Здесь задаются источники учеников, типы занятий, длительность и
+              базовая цена занятия.
             </p>
           </div>
         </header>
@@ -165,10 +163,22 @@ export default async function AdminSettingsPage() {
             <CardTitle>Как считаются цены</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm leading-6 text-blue-950">
-            <p>1. Если у занятия указана ручная цена, используется она.</p>
-            <p>2. Если ручной цены нет, берётся цена источника.</p>
-            <p>3. Если источник не выбран, берётся цена типа занятия.</p>
-            <p>4. Если цены нет нигде, занятие попадёт в отчёты как “без цены”.</p>
+            <p>
+              1. При записи ученика система берёт базовую цену выбранного типа
+              занятия.
+            </p>
+            <p>
+              2. В карточке занятого слота инструктор может вручную поправить
+              “К оплате” и “Получено”.
+            </p>
+            <p>
+              3. Источник ученика нужен для группировки и отчётов, но не
+              меняет цену записи автоматически.
+            </p>
+            <p>
+              4. В отчёты попадает фактическая цена записи, которую можно
+              проверить и изменить в расписании.
+            </p>
           </CardContent>
         </Card>
 
@@ -183,8 +193,8 @@ export default async function AdminSettingsPage() {
                   Справочники задаёт руководитель
                 </p>
                 <p className="mt-1 text-zinc-500">
-                  Вы можете выбирать эти источники и типы занятий в расписании
-                  и учениках, но менять школьные правила может только
+                  Вы можете выбирать эти источники в карточках учеников и типы
+                  занятий в расписании, но менять школьные правила может только
                   руководитель.
                 </p>
               </div>

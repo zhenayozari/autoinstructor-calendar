@@ -35,10 +35,11 @@ type DirectorReportsPageProps = {
 
 type ReportSlot = Pick<
   Slot,
-  "id" | "instructor_id" | "schedule_day_id" | "school_id" | "start_time" | "end_time"
+  "id" | "instructor_id" | "schedule_day_id" | "start_time" | "end_time"
 >;
 
 type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
+  student_access_id: string | null;
   price_amount: number | null;
   paid_amount: number | null;
   is_paid: boolean;
@@ -341,6 +342,7 @@ export default async function DirectorReportsPage({
   const [
     { data: schoolData, error: schoolError },
     { data: scheduleDayData, error: scheduleDayError },
+    { data: studentAccessData, error: studentAccessError },
   ] = await Promise.all([
     supabase
       .from("schools")
@@ -355,6 +357,13 @@ export default async function DirectorReportsPage({
           .gte("date", from)
           .lte("date", to)
       : Promise.resolve({ data: [], error: null }),
+    reportInstructorIds.length > 0
+      ? supabase
+          .from("student_accesses")
+          .select("id, school_id, instructor_id")
+          .eq("organization_id", membership.organizationId)
+          .in("instructor_id", reportInstructorIds)
+      : Promise.resolve({ data: [], error: null }),
   ]);
   const scheduleDays = (scheduleDayData ?? []) as Pick<
     ScheduleDay,
@@ -365,7 +374,7 @@ export default async function DirectorReportsPage({
     scheduleDayIds.length > 0
       ? await supabase
           .from("slots")
-          .select("id, instructor_id, schedule_day_id, school_id, start_time, end_time")
+          .select("id, instructor_id, schedule_day_id, start_time, end_time")
           .in("schedule_day_id", scheduleDayIds)
           .neq("status", "cancelled")
       : { data: [], error: null };
@@ -375,18 +384,32 @@ export default async function DirectorReportsPage({
     slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, price_amount, paid_amount, is_paid, lesson_state")
+          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, lesson_state")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
 
-  const loadError = instructorError ?? schoolError ?? scheduleDayError ?? slotError ?? bookingError;
+  const loadError =
+    instructorError ??
+    schoolError ??
+    scheduleDayError ??
+    studentAccessError ??
+    slotError ??
+    bookingError;
   const schools = (schoolData ?? []) as School[];
   const bookings = (bookingData ?? []) as ReportBooking[];
+  const studentAccesses = (studentAccessData ?? []) as {
+    id: string;
+    instructor_id: string;
+    school_id: string | null;
+  }[];
   const instructorsById = new Map(
     instructors.map((instructor) => [instructor.id, instructor]),
   );
   const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  const studentAccessesById = new Map(
+    studentAccesses.map((access) => [access.id, access]),
+  );
   const scheduleDaysById = new Map(
     scheduleDays.map((scheduleDay) => [scheduleDay.id, scheduleDay]),
   );
@@ -400,13 +423,16 @@ export default async function DirectorReportsPage({
       const instructor = instructorsById.get(slot.instructor_id);
 
       if (!scheduleDay || !instructor) return null;
+      const access = booking.student_access_id
+        ? studentAccessesById.get(booking.student_access_id)
+        : null;
 
       return {
         ...booking,
         slot,
         scheduleDay,
         instructor,
-        school: slot.school_id ? schoolsById.get(slot.school_id) ?? null : null,
+        school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
       };
     })
     .filter((item): item is ReportItem => Boolean(item));

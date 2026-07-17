@@ -217,6 +217,51 @@ export async function rejectStaffInvitationAction(formData: FormData) {
   redirectWithStatus(status);
 }
 
+export async function deleteStaffInvitationAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "invitation-deleted";
+
+  try {
+    const invitationId = readRequiredString(formData, "invitation_id");
+    const supabase = createAdminClient();
+    const { data: invitation, error: invitationError } = await supabase
+      .from("staff_invitations")
+      .select("id, organization_id, status, instructor_id")
+      .eq("id", invitationId)
+      .eq("organization_id", membership.organizationId)
+      .maybeSingle();
+
+    if (invitationError || !invitation) {
+      throw new Error(invitationError?.message ?? "Приглашение не найдено");
+    }
+
+    if (invitation.status !== "invited") {
+      throw new Error("Удалить можно только активную ссылку без заявки");
+    }
+
+    if (invitation.instructor_id) {
+      throw new Error("У этого приглашения уже есть сотрудник. Используйте отклонение или удаление сотрудника.");
+    }
+
+    const { error: deleteError } = await supabase
+      .from("staff_invitations")
+      .delete()
+      .eq("id", invitation.id)
+      .eq("organization_id", membership.organizationId);
+
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
+
+    revalidatePath("/director/staff");
+  } catch (error) {
+    console.error("deleteStaffInvitationAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status);
+}
+
 export async function updateStaffInstructorStatusAction(formData: FormData) {
   const membership = await requireDirectorAccess();
   let status = "staff-updated";
@@ -227,7 +272,7 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
     const supabase = createAdminClient();
     const { data: member, error: memberError } = await supabase
       .from("organization_members")
-      .select("id, role")
+      .select("id, role, user_id")
       .eq("organization_id", membership.organizationId)
       .eq("instructor_id", instructorId)
       .maybeSingle();
@@ -270,6 +315,104 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
     revalidatePath("/director");
   } catch (error) {
     console.error("updateStaffInstructorStatusAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status);
+}
+
+export async function deleteStaffInstructorAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "staff-deleted";
+
+  try {
+    const instructorId = readRequiredString(formData, "instructor_id");
+
+    if (formData.get("confirm_delete") !== "yes") {
+      throw new Error("Подтвердите удаление сотрудника");
+    }
+
+    const supabase = createAdminClient();
+    const { data: member, error: memberError } = await supabase
+      .from("organization_members")
+      .select("id, role, user_id")
+      .eq("organization_id", membership.organizationId)
+      .eq("instructor_id", instructorId)
+      .maybeSingle();
+
+    if (memberError) {
+      throw new Error(memberError.message);
+    }
+
+    if (member?.role === "owner") {
+      throw new Error("Руководителя нельзя удалить отсюда");
+    }
+
+    const staffUserId =
+      typeof member?.user_id === "string" ? member.user_id : null;
+    let shouldDeleteAuthUser = false;
+
+    if (staffUserId) {
+      const { count, error: membershipsCountError } = await supabase
+        .from("organization_members")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", staffUserId);
+
+      if (membershipsCountError) {
+        throw new Error(membershipsCountError.message);
+      }
+
+      shouldDeleteAuthUser = (count ?? 0) <= 1;
+    }
+
+    const { data: instructor, error: instructorError } = await supabase
+      .from("instructors")
+      .select("id")
+      .eq("id", instructorId)
+      .eq("organization_id", membership.organizationId)
+      .maybeSingle();
+
+    if (instructorError || !instructor) {
+      throw new Error(instructorError?.message ?? "Сотрудник не найден");
+    }
+
+    const { error: invitationsDeleteError } = await supabase
+      .from("staff_invitations")
+      .delete()
+      .eq("organization_id", membership.organizationId)
+      .eq("instructor_id", instructorId);
+
+    if (invitationsDeleteError) {
+      throw new Error(invitationsDeleteError.message);
+    }
+
+    const { error: deleteError } = await supabase
+      .from("instructors")
+      .delete()
+      .eq("id", instructorId)
+      .eq("organization_id", membership.organizationId);
+
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
+
+    if (staffUserId && shouldDeleteAuthUser) {
+      const { error: authDeleteError } =
+        await supabase.auth.admin.deleteUser(staffUserId);
+
+      if (authDeleteError) {
+        throw new Error(authDeleteError.message);
+      }
+    }
+
+    revalidatePath("/director");
+    revalidatePath("/director/staff");
+    revalidatePath("/director/schedule");
+    revalidatePath("/director/students");
+    revalidatePath("/director/reports");
+    revalidatePath("/admin");
+  } catch (error) {
+    console.error("deleteStaffInstructorAction:", error);
     status = "error";
   }
 

@@ -113,7 +113,9 @@ export default async function DirectorSettingsPage() {
       .maybeSingle(),
     supabase
       .from("schools")
-      .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+      .select(
+        "id, organization_id, name, color, default_price, is_active, created_at, updated_at",
+      )
       .eq("organization_id", membership.organizationId)
       .order("name"),
     supabase
@@ -134,8 +136,6 @@ export default async function DirectorSettingsPage() {
     (lessonType) => lessonType.is_active !== false,
   );
   const hiddenLessonTypes = lessonTypes.length - activeLessonTypes.length;
-  const pricedSchools = schools.filter((school) => school.default_price !== null)
-    .length;
   const pricedLessonTypes = lessonTypes.filter(
     (lessonType) => lessonType.default_price_amount !== null,
   ).length;
@@ -151,7 +151,8 @@ export default async function DirectorSettingsPage() {
             Настройки школы
           </h1>
           <p className="text-muted-foreground mt-2 text-sm">
-            {organization?.name ?? "Автошкола"} · справочники и правила доступа.
+            {organization?.name ?? "Автошкола"} · справочники и правила
+            доступа.
           </p>
         </header>
 
@@ -161,7 +162,7 @@ export default async function DirectorSettingsPage() {
           </div>
         )}
 
-        <section className="grid gap-2 sm:grid-cols-4">
+        <section className="grid gap-2 sm:grid-cols-3">
           <MetricCard
             label="Источники"
             value={`${activeSchools.length}`}
@@ -173,14 +174,9 @@ export default async function DirectorSettingsPage() {
             description={`${hiddenLessonTypes} скрыто`}
           />
           <MetricCard
-            label="Цены источников"
-            value={`${pricedSchools}`}
-            description="С заданной ценой"
-          />
-          <MetricCard
             label="Цены занятий"
             value={`${pricedLessonTypes}`}
-            description="С заданной ценой"
+            description="С заданной базовой ценой"
           />
         </section>
 
@@ -194,7 +190,8 @@ export default async function DirectorSettingsPage() {
                     Источники
                   </CardTitle>
                   <CardDescription>
-                    Автошколы, частные ученики и другие источники заявок.
+                    Автошколы, частные ученики, рекомендации и другие источники
+                    заявок.
                   </CardDescription>
                 </div>
                 <Button
@@ -217,14 +214,10 @@ export default async function DirectorSettingsPage() {
                   <CatalogItem
                     key={school.id}
                     title={school.name}
-                    subtitle="Автошкола / источник ученика"
+                    subtitle="Источник ученика"
                     color={school.color}
                     isActive={school.is_active}
-                    meta={
-                      school.default_price !== null
-                        ? `Цена источника: ${formatMoney(school.default_price)}`
-                        : "Цена источника не задана"
-                    }
+                    meta="Используется в карточках учеников и отчётах"
                   />
                 ))
               )}
@@ -240,7 +233,7 @@ export default async function DirectorSettingsPage() {
                     Типы занятий
                   </CardTitle>
                   <CardDescription>
-                    Вождение, допзанятия, подарочные и теория.
+                    Вождение, допзанятия, подарочные занятия и теория.
                   </CardDescription>
                 </div>
                 <Button
@@ -287,7 +280,8 @@ export default async function DirectorSettingsPage() {
                 Где редактировать
               </CardTitle>
               <CardDescription>
-                Пока справочники редактируются в кабинете инструктора, чтобы не было двух разных форм.
+                Справочники редактируются в кабинете инструктора, чтобы не было
+                двух разных форм.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -298,7 +292,8 @@ export default async function DirectorSettingsPage() {
                 Права
               </CardTitle>
               <CardDescription>
-                В интерфейсе сейчас только руководитель и инструктор, без роли администратора.
+                В интерфейсе сейчас есть роли руководителя и инструктора, без
+                отдельной роли администратора.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -309,7 +304,8 @@ export default async function DirectorSettingsPage() {
                 Цены
               </CardTitle>
               <CardDescription>
-                В отчёты попадает фактическая цена записи, которую можно поправить в расписании.
+                В отчёты попадает фактическая цена записи. Её можно поправить в
+                расписании, а базовая цена берётся из типа занятия.
               </CardDescription>
             </CardHeader>
           </Card>

@@ -3,9 +3,11 @@ import {
   Archive,
   CircleDollarSign,
   Filter,
+  Trash2,
   UserRoundCheck,
   UsersRound,
 } from "lucide-react";
+import { deleteStudentAccessDirectAction } from "@/app/admin/students/actions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -29,6 +31,7 @@ type DirectorStudentsPageProps = {
     school?: string;
     status?: string;
     debt?: string;
+    delete_status?: string;
   }>;
 };
 
@@ -91,6 +94,41 @@ function MetricCard({
       <p className="text-xs font-medium text-zinc-500">{label}</p>
       <p className="mt-1 text-2xl font-semibold text-zinc-950">{value}</p>
       <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+    </div>
+  );
+}
+
+function getDeleteStatusMessage(status?: string) {
+  switch (status) {
+    case "student-deleted":
+      return {
+        tone: "success" as const,
+        text: "Ученик удалён вместе с его записями.",
+      };
+    case "delete-error":
+      return {
+        tone: "error" as const,
+        text: "Не удалось удалить ученика. Обновите страницу и попробуйте ещё раз.",
+      };
+    default:
+      return null;
+  }
+}
+
+function DeleteStatusMessage({ status }: { status?: string }) {
+  const message = getDeleteStatusMessage(status);
+
+  if (!message) return null;
+
+  return (
+    <div
+      className={`rounded-xl px-4 py-3 text-sm ${
+        message.tone === "success"
+          ? "bg-emerald-50 text-emerald-700"
+          : "bg-red-50 text-red-700"
+      }`}
+    >
+      {message.text}
     </div>
   );
 }
@@ -203,6 +241,36 @@ function StudentCard({ student }: { student: DirectorStudent }) {
           </p>
         </div>
       </div>
+
+      <details className="mt-3 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
+        <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
+          Удалить ученика
+        </summary>
+        <form action={deleteStudentAccessDirectAction} className="mt-3 space-y-3">
+          <input type="hidden" name="student_access_id" value={student.id} />
+          <label className="flex items-start gap-2 text-xs text-red-800">
+            <input
+              type="checkbox"
+              name="confirm_delete"
+              value="yes"
+              required
+              className="mt-0.5 size-4 shrink-0"
+            />
+            <span>
+              Удалить ученика «{student.display_label}» вместе с его записями.
+              Это действие нельзя отменить.
+            </span>
+          </label>
+          <Button
+            type="submit"
+            variant="outline"
+            className="h-10 w-full border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-800"
+          >
+            <Trash2 className="size-4" />
+            Удалить навсегда
+          </Button>
+        </form>
+      </details>
     </article>
   );
 }
@@ -374,6 +442,8 @@ export default async function DirectorStudentsPage({
             Не удалось загрузить часть данных: {loadError.message}
           </div>
         )}
+
+        <DeleteStatusMessage status={params.delete_status} />
 
         <section className="grid gap-2 sm:grid-cols-4">
           <MetricCard

@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import { AdminQuickActions } from "@/components/admin/admin-quick-actions";
 import { AdminWeekCalendar } from "@/components/admin/admin-week-calendar";
-import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
+import type {
+  Booking,
+  Instructor,
+  LessonType,
+  ScheduleDay,
+  School,
+  Slot,
+  StudentAccess,
+} from "@/lib/types";
 
 import {
   Card,
@@ -22,6 +30,7 @@ export function AdminScheduleWorkspace({
   scheduleDays,
   slots,
   bookings,
+  studentAccesses,
   defaultWeekDate,
   initialInstructorId,
   canSelectInstructor,
@@ -35,6 +44,7 @@ export function AdminScheduleWorkspace({
   scheduleDays: ScheduleDay[];
   slots: Slot[];
   bookings: Booking[];
+  studentAccesses: StudentAccess[];
   defaultWeekDate: string;
   initialInstructorId: string;
   canSelectInstructor: boolean;
@@ -96,6 +106,7 @@ export function AdminScheduleWorkspace({
             scheduleDays={scheduleDays}
             slots={slots}
             bookings={bookings}
+            studentAccesses={studentAccesses}
             weekDate={weekDate}
             currentWeekDate={defaultWeekDate}
             instructorId={instructorId}

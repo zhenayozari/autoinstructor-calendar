@@ -140,16 +140,6 @@ function SlotRow({
         </span>
       </div>
 
-      {slot.school && (
-        <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-500">
-          <span
-            className="size-2 rounded-full border border-black/10"
-            style={{ backgroundColor: slot.school.color }}
-          />
-          {slot.school.name}
-        </div>
-      )}
-
       {slot.booking && (
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
           <div className="flex items-center justify-between gap-2">

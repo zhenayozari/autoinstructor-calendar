@@ -1,0 +1,4 @@
+export const STUDENT_SECRET_MIN_LENGTH = 8;
+export const STUDENT_SECRET_MAX_LENGTH = 72;
+export const STUDENT_SECRET_ALPHABET =
+  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";

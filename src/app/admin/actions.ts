@@ -7,6 +7,7 @@ import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
 } from "@/lib/auth";
+import { logAuditEvent } from "@/lib/audit-log";
 
 export type SlotActionState = {
   status: "idle" | "success" | "error";
@@ -1297,7 +1298,7 @@ export async function updateSlotAction(
       throw new Error("Слот не найден");
     }
 
-    await requireInstructorAccess(slot.instructor_id);
+    const membership = await requireInstructorAccess(slot.instructor_id);
 
     const [
       { data: instructor, error: instructorError },
@@ -1430,6 +1431,20 @@ export async function updateSlotAction(
       throw new Error(updateError.message);
     }
 
+    await logAuditEvent({
+      membership,
+      action: "slot.updated",
+      entityType: "slot",
+      entityId: slotId,
+      metadata: {
+        instructor_id: slot.instructor_id,
+        had_confirmed_booking: (confirmedBookingsCount ?? 0) > 0,
+        date_changed: currentDay.date !== date,
+        lesson_type_changed: slot.lesson_type_id !== lessonTypeId,
+        location_type_changed: slot.location_type !== locationType,
+      },
+    });
+
     revalidatePath("/admin");
     revalidatePath("/admin/schedule");
     revalidatePath("/admin/bookings");
@@ -1472,7 +1487,7 @@ export async function deleteSlotAction(formData: FormData) {
       throw new Error("Слот не найден");
     }
 
-    await requireInstructorAccess(slot.instructor_id);
+    const membership = await requireInstructorAccess(slot.instructor_id);
 
     const { error } = await supabase
       .from("slots")
@@ -1483,6 +1498,16 @@ export async function deleteSlotAction(formData: FormData) {
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "slot.deleted",
+      entityType: "slot",
+      entityId: slotId,
+      metadata: {
+        instructor_id: slot.instructor_id,
+      },
+    });
 
     revalidatePath("/admin");
     revalidatePath("/admin/schedule");
@@ -1539,8 +1564,10 @@ export async function deleteSelectedSlotsAction(
       ...new Set(selectedSlots.map((slot) => slot.instructor_id)),
     ];
 
+    let membership = await requireActiveOrganizationMember();
+
     for (const selectedInstructorId of instructorIds) {
-      await requireInstructorAccess(selectedInstructorId);
+      membership = await requireInstructorAccess(selectedInstructorId);
     }
 
     const manageableSlotIds = selectedSlots.map((slot) => slot.id);
@@ -1552,6 +1579,16 @@ export async function deleteSelectedSlotsAction(
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "slots.bulk_deleted",
+      entityType: "slot",
+      metadata: {
+        count: manageableSlotIds.length,
+        instructor_ids: instructorIds,
+      },
+    });
 
     revalidatePath("/admin");
     revalidatePath("/admin/schedule");
@@ -1603,7 +1640,7 @@ export async function cancelBookingAction(formData: FormData) {
       throw new Error("Слот записи не найден");
     }
 
-    await requireInstructorAccess(slot.instructor_id);
+    const membership = await requireInstructorAccess(slot.instructor_id);
 
     const { error } = await supabase
       .from("bookings")
@@ -1617,6 +1654,17 @@ export async function cancelBookingAction(formData: FormData) {
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.cancelled",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        slot_id: booking.slot_id,
+        instructor_id: slot.instructor_id,
+      },
+    });
 
     revalidatePath("/admin");
     revalidatePath("/admin/schedule");
@@ -1790,7 +1838,7 @@ export async function assignStudentToSlotAction(
       throw new Error("Слот не найден");
     }
 
-    await requireInstructorAccess(slot.instructor_id);
+    const membership = await requireInstructorAccess(slot.instructor_id);
 
     if (slot.status !== "available") {
       throw new Error("Записать ученика можно только в свободный слот");
@@ -1910,6 +1958,18 @@ export async function assignStudentToSlotAction(
 
       throw new Error(insertError.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.assigned_by_instructor",
+      entityType: "slot",
+      entityId: slot.id,
+      metadata: {
+        instructor_id: slot.instructor_id,
+        student_access_id: access.id,
+        price_amount: priceAmount,
+      },
+    });
 
     revalidateAdminCrmPaths();
     revalidatePath("/student");
@@ -2320,7 +2380,7 @@ export async function togglePaymentAction(formData: FormData) {
       throw new Error("Слот записи не найден");
     }
 
-    await requireInstructorAccess(slot.instructor_id);
+    const membership = await requireInstructorAccess(slot.instructor_id);
 
     const { error } = await supabase
       .from("bookings")
@@ -2335,6 +2395,19 @@ export async function togglePaymentAction(formData: FormData) {
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.payment_toggled",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        slot_id: booking.slot_id,
+        instructor_id: slot.instructor_id,
+        is_paid: isPaid,
+        paid_amount: isPaid ? (booking.price_amount ?? 0) : 0,
+      },
+    });
 
     revalidatePath("/admin");
     revalidatePath("/admin/schedule");
@@ -2373,7 +2446,8 @@ export async function updateBookingPaymentAction(
     }
 
     const isPaid = priceAmount !== null && paidAmount >= priceAmount;
-    const { supabase } = await requireManageableBooking(bookingId);
+    const { supabase, booking, slot, membership } =
+      await requireManageableBooking(bookingId);
     const { error } = await supabase
       .from("bookings")
       .update({
@@ -2389,6 +2463,21 @@ export async function updateBookingPaymentAction(
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.payment_updated",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        slot_id: booking.slot_id,
+        instructor_id: slot.instructor_id,
+        price_amount: priceAmount,
+        paid_amount: paidAmount,
+        is_paid: isPaid,
+        has_payment_note: Boolean(paymentNote),
+      },
+    });
 
     revalidateAdminCrmPaths();
     revalidatePath("/admin/bookings");
@@ -2443,9 +2532,9 @@ async function requireManageableBooking(bookingId: string) {
     throw new Error("РЎР»РѕС‚ Р·Р°РїРёСЃРё РЅРµ РЅР°Р№РґРµРЅ");
   }
 
-  await requireInstructorAccess(slot.instructor_id);
+  const membership = await requireInstructorAccess(slot.instructor_id);
 
-  return { supabase, booking };
+  return { supabase, booking, slot, membership };
 }
 
 function revalidateAdminCrmPaths() {
@@ -2461,7 +2550,8 @@ export async function updateBookingLessonStateAction(formData: FormData) {
   const lessonState = readBookingLessonState(formData);
 
   try {
-    const { supabase } = await requireManageableBooking(bookingId);
+    const { supabase, booking, slot, membership } =
+      await requireManageableBooking(bookingId);
     const { error } = await supabase
       .from("bookings")
       .update({
@@ -2475,6 +2565,18 @@ export async function updateBookingLessonStateAction(formData: FormData) {
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.lesson_state_updated",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        slot_id: booking.slot_id,
+        instructor_id: slot.instructor_id,
+        lesson_state: lessonState,
+      },
+    });
 
     revalidateAdminCrmPaths();
   } catch (error) {

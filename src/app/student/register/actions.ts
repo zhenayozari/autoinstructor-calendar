@@ -1,6 +1,10 @@
 "use server";
 
 import { hashStudentAccessSecret } from "@/lib/student-access";
+import {
+  STUDENT_SECRET_MAX_LENGTH,
+  STUDENT_SECRET_MIN_LENGTH,
+} from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type StudentRegistrationActionState = {
@@ -41,8 +45,13 @@ function validateLogin(login: string) {
 }
 
 function validateSecret(secret: string) {
-  if (secret.length < 4 || secret.length > 72) {
-    throw new Error("ПИН-код/пароль должен содержать от 4 до 72 символов");
+  if (
+    secret.length < STUDENT_SECRET_MIN_LENGTH ||
+    secret.length > STUDENT_SECRET_MAX_LENGTH
+  ) {
+    throw new Error(
+      `ПИН-код/пароль должен содержать от ${STUDENT_SECRET_MIN_LENGTH} до ${STUDENT_SECRET_MAX_LENGTH} символов`,
+    );
   }
 }
 

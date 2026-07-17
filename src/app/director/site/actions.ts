@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireDirectorAccess } from "@/lib/director-auth";
+import { logAuditEvent } from "@/lib/audit-log";
 import {
   DEFAULT_LANDING_CONTENT,
   normalizeLandingContent,
@@ -198,12 +199,15 @@ export async function updateOrganizationSiteSettingsAction(
 
   let logoUrl = readText(formData, "current_logo_url");
   let heroImageUrl = readText(formData, "current_hero_image_url");
+  let logoUploaded = false;
+  let heroImageUploaded = false;
 
   try {
     const logoFile = readImageFile(formData, "logo_file");
     const heroFile = readImageFile(formData, "hero_image_file");
 
     if (logoFile) {
+      logoUploaded = true;
       logoUrl = await uploadSiteImage({
         file: logoFile,
         kind: "logo",
@@ -213,6 +217,7 @@ export async function updateOrganizationSiteSettingsAction(
     }
 
     if (heroFile) {
+      heroImageUploaded = true;
       heroImageUrl = await uploadSiteImage({
         file: heroFile,
         kind: "hero",
@@ -452,6 +457,24 @@ export async function updateOrganizationSiteSettingsAction(
     };
   }
 
+  await logAuditEvent({
+    membership,
+    action: "site.settings_updated",
+    entityType: "organization_site_settings",
+    entityId: membership.organizationId,
+    metadata: {
+      hero_enabled: landingContent.hero.enabled,
+      situations_enabled: landingContent.situations.enabled,
+      approach_enabled: landingContent.approach.enabled,
+      process_enabled: landingContent.process.enabled,
+      instructors_enabled: landingContent.instructors.enabled,
+      contacts_enabled: landingContent.contacts.enabled,
+      legal_enabled: landingContent.legal.enabled,
+      logo_uploaded: logoUploaded,
+      hero_image_uploaded: heroImageUploaded,
+    },
+  });
+
   revalidatePath("/");
   revalidatePath("/director/site");
 
@@ -514,6 +537,21 @@ export async function updateInstructorSiteSettingsAction(
       message: error.message,
     };
   }
+
+  await logAuditEvent({
+    membership,
+    action: "site.instructor_settings_updated",
+    entityType: "instructor_site_settings",
+    entityId: instructorId,
+    metadata: {
+      is_visible: readCheckbox(formData, "is_visible"),
+      show_photo: readCheckbox(formData, "show_photo"),
+      show_bio: readCheckbox(formData, "show_bio"),
+      show_contact: readCheckbox(formData, "show_contact"),
+      show_car: readCheckbox(formData, "show_car"),
+      show_experience: readCheckbox(formData, "show_experience"),
+    },
+  });
 
   revalidatePath("/");
   revalidatePath("/director/site");

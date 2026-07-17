@@ -7,7 +7,12 @@ import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
 } from "@/lib/auth";
+import { logAuditEvent } from "@/lib/audit-log";
 import { hashStudentAccessSecret } from "@/lib/student-access";
+import {
+  STUDENT_SECRET_MAX_LENGTH,
+  STUDENT_SECRET_MIN_LENGTH,
+} from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type StudentAccessActionState = {
@@ -78,8 +83,13 @@ function validateLogin(login: string) {
 }
 
 function validateSecret(secret: string) {
-  if (secret.length < 4 || secret.length > 72) {
-    throw new Error("ПИН-код/пароль должен содержать от 4 до 72 символов");
+  if (
+    secret.length < STUDENT_SECRET_MIN_LENGTH ||
+    secret.length > STUDENT_SECRET_MAX_LENGTH
+  ) {
+    throw new Error(
+      `ПИН-код/пароль должен содержать от ${STUDENT_SECRET_MIN_LENGTH} до ${STUDENT_SECRET_MAX_LENGTH} символов`,
+    );
   }
 }
 
@@ -224,6 +234,16 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
   if (accessError) {
     throw new Error(accessError.message);
   }
+
+  await logAuditEvent({
+    membership,
+    action: "student_access.deleted",
+    entityType: "student_access",
+    entityId: access.id,
+    metadata: {
+      instructor_id: access.instructor_id,
+    },
+  });
 
   revalidateStudentAccessPaths();
 }
@@ -371,7 +391,8 @@ export async function approveStudentRegistrationRequestAction(
 
   try {
     const requestId = readRequiredString(formData, "request_id");
-    const { request } = await getManageableRegistrationRequest(requestId);
+    const { membership, request } =
+      await getManageableRegistrationRequest(requestId);
     const displayLabel = readRequiredString(formData, "display_label");
     const login = normalizeLogin(readRequiredString(formData, "login"));
     const studentPhone = validateStudentPhone(
@@ -470,6 +491,19 @@ export async function approveStudentRegistrationRequestAction(
       throw new Error(requestError.message);
     }
 
+    await logAuditEvent({
+      membership,
+      action: "student_registration.approved",
+      entityType: "student_registration_request",
+      entityId: request.id,
+      metadata: {
+        instructor_id: request.instructor_id,
+        student_access_id: access.id,
+        is_active: isActive,
+        lesson_type_count: lessonTypeIds.length,
+      },
+    });
+
     revalidatePath("/admin/students");
 
     return {
@@ -494,7 +528,8 @@ export async function rejectStudentRegistrationRequestAction(
 
   try {
     const requestId = readRequiredString(formData, "request_id");
-    const { request } = await getManageableRegistrationRequest(requestId);
+    const { membership, request } =
+      await getManageableRegistrationRequest(requestId);
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_registration_requests")
@@ -508,6 +543,16 @@ export async function rejectStudentRegistrationRequestAction(
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "student_registration.rejected",
+      entityType: "student_registration_request",
+      entityId: request.id,
+      metadata: {
+        instructor_id: request.instructor_id,
+      },
+    });
 
     revalidatePath("/admin/students");
 
@@ -533,7 +578,7 @@ export async function updateStudentAccessAction(
 
   try {
     const accessId = readRequiredString(formData, "student_access_id");
-    const { access } = await getManageableAccess(accessId);
+    const { membership, access } = await getManageableAccess(accessId);
     const displayLabel = readRequiredString(formData, "display_label");
     const login = normalizeLogin(readRequiredString(formData, "login"));
     const studentPhone = validateStudentPhone(
@@ -626,6 +671,19 @@ export async function updateStudentAccessAction(
       throw new Error(insertError.message);
     }
 
+    await logAuditEvent({
+      membership,
+      action: "student_access.updated",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        is_active: isActive,
+        secret_changed: Boolean(newSecret),
+        lesson_type_count: lessonTypeIds.length,
+      },
+    });
+
     revalidatePath("/admin/students");
 
     return {
@@ -652,7 +710,7 @@ export async function archiveStudentAccessAction(
 
   try {
     const accessId = readRequiredString(formData, "student_access_id");
-    const { access } = await getManageableAccess(accessId);
+    const { membership, access } = await getManageableAccess(accessId);
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_accesses")
@@ -667,6 +725,16 @@ export async function archiveStudentAccessAction(
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.archived",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+      },
+    });
 
     revalidatePath("/admin/students");
 
@@ -731,7 +799,7 @@ export async function toggleStudentAccessAction(
   try {
     const accessId = readRequiredString(formData, "student_access_id");
     const isActive = formData.get("is_active") === "true";
-    const { access } = await getManageableAccess(accessId);
+    const { membership, access } = await getManageableAccess(accessId);
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_accesses")
@@ -742,6 +810,17 @@ export async function toggleStudentAccessAction(
     if (error) {
       throw new Error(error.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: isActive ? "student_access.enabled" : "student_access.disabled",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        is_active: isActive,
+      },
+    });
 
     revalidatePath("/admin/students");
 

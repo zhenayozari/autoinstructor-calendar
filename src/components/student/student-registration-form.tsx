@@ -6,6 +6,7 @@ import {
   createStudentRegistrationRequestAction,
   type StudentRegistrationActionState,
 } from "@/app/student/register/actions";
+import { STUDENT_SECRET_MIN_LENGTH } from "@/lib/student-secret-policy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,7 +83,7 @@ export function StudentRegistrationForm({ token }: { token: string }) {
             id="student-register-secret"
             name="secret"
             type="password"
-            placeholder="Минимум 4 символа"
+            placeholder={`Минимум ${STUDENT_SECRET_MIN_LENGTH} символов`}
             autoComplete="new-password"
             disabled={isSuccess}
             required

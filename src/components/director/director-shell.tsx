@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3,
   CalendarDays,
+  FileClock,
   Globe2,
   LayoutDashboard,
   LogOut,
@@ -39,6 +40,7 @@ const drawerLinks = [
   { href: "/director/students", label: "Ученики", icon: UserRoundCheck },
   { href: "/director/reports", label: "Итоги", icon: BarChart3 },
   { href: "/director/site", label: "Сайт", icon: Globe2 },
+  { href: "/director/audit", label: "Журнал действий", icon: FileClock },
   { href: "/director/settings", label: "Настройки школы", icon: Settings },
   { href: "/admin", label: "Кабинет инструктора", icon: UserRoundCheck },
 ] as const;

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDirectorAccess } from "@/lib/director-auth";
+import { logAuditEvent } from "@/lib/audit-log";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 function readOptionalString(formData: FormData, field: string) {
@@ -63,19 +64,34 @@ export async function createStaffInvitationAction(formData: FormData) {
     const token = randomBytes(24).toString("hex");
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 14).toISOString();
     const supabase = createAdminClient();
-    const { error } = await supabase.from("staff_invitations").insert({
-      organization_id: membership.organizationId,
-      invited_by_member_id: membership.id,
-      token,
-      invited_name: invitedName,
-      invited_email: invitedEmail,
-      invited_phone: invitedPhone,
-      expires_at: expiresAt,
-    });
+    const { data: invitation, error } = await supabase
+      .from("staff_invitations")
+      .insert({
+        organization_id: membership.organizationId,
+        invited_by_member_id: membership.id,
+        token,
+        invited_name: invitedName,
+        invited_email: invitedEmail,
+        invited_phone: invitedPhone,
+        expires_at: expiresAt,
+      })
+      .select("id")
+      .single();
 
-    if (error) {
-      throw new Error(error.message);
+    if (error || !invitation) {
+      throw new Error(error?.message ?? "Не удалось создать приглашение");
     }
+
+    await logAuditEvent({
+      membership,
+      action: "staff_invitation.created",
+      entityType: "staff_invitation",
+      entityId: invitation.id,
+      metadata: {
+        has_email: Boolean(invitedEmail),
+        has_phone: Boolean(invitedPhone),
+      },
+    });
 
     revalidatePath("/director/staff");
   } catch (error) {
@@ -151,6 +167,16 @@ export async function approveStaffInvitationAction(formData: FormData) {
       throw new Error(updateError.message);
     }
 
+    await logAuditEvent({
+      membership,
+      action: "staff_invitation.approved",
+      entityType: "staff_invitation",
+      entityId: invitation.id,
+      metadata: {
+        instructor_id: invitation.instructor_id,
+      },
+    });
+
     revalidatePath("/director/staff");
     revalidatePath("/director");
   } catch (error) {
@@ -208,6 +234,16 @@ export async function rejectStaffInvitationAction(formData: FormData) {
       throw new Error(updateError.message);
     }
 
+    await logAuditEvent({
+      membership,
+      action: "staff_invitation.rejected",
+      entityType: "staff_invitation",
+      entityId: invitation.id,
+      metadata: {
+        instructor_id: invitation.instructor_id,
+      },
+    });
+
     revalidatePath("/director/staff");
   } catch (error) {
     console.error("rejectStaffInvitationAction:", error);
@@ -252,6 +288,16 @@ export async function deleteStaffInvitationAction(formData: FormData) {
     if (deleteError) {
       throw new Error(deleteError.message);
     }
+
+    await logAuditEvent({
+      membership,
+      action: "staff_invitation.deleted",
+      entityType: "staff_invitation",
+      entityId: invitation.id,
+      metadata: {
+        status: invitation.status,
+      },
+    });
 
     revalidatePath("/director/staff");
   } catch (error) {
@@ -310,6 +356,16 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
         throw new Error(updateMemberError.message);
       }
     }
+
+    await logAuditEvent({
+      membership,
+      action: nextActive ? "staff.enabled" : "staff.disabled",
+      entityType: "instructor",
+      entityId: instructorId,
+      metadata: {
+        is_active: nextActive,
+      },
+    });
 
     revalidatePath("/director/staff");
     revalidatePath("/director");
@@ -404,6 +460,16 @@ export async function deleteStaffInstructorAction(formData: FormData) {
         throw new Error(authDeleteError.message);
       }
     }
+
+    await logAuditEvent({
+      membership,
+      action: "staff.deleted",
+      entityType: "instructor",
+      entityId: instructorId,
+      metadata: {
+        auth_user_deleted: Boolean(staffUserId && shouldDeleteAuthUser),
+      },
+    });
 
     revalidatePath("/director");
     revalidatePath("/director/staff");

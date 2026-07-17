@@ -69,6 +69,11 @@ type StaffMember = {
   is_active: boolean;
 };
 
+type StaffContact = {
+  email: string | null;
+  phone: string | null;
+};
+
 type StaffStats = {
   studentCount: number;
   weekSlots: number;
@@ -274,13 +279,18 @@ function StaffCard({
   stats,
   isPending,
   member,
+  contact,
 }: {
   instructor: StaffInstructor;
   stats: StaffStats;
   isPending?: boolean;
   member?: StaffMember;
+  contact?: StaffContact;
 }) {
   const isOwner = member?.role === "owner";
+  const contactItems = [contact?.email, contact?.phone].filter(
+    (item): item is string => Boolean(item),
+  );
 
   return (
     <article className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -289,9 +299,19 @@ function StaffCard({
           <h2 className="truncate text-lg font-semibold">
             {instructor.public_name ?? instructor.name}
           </h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {instructor.timezone}
-          </p>
+          {contactItems.length > 0 ? (
+            <div className="text-muted-foreground mt-1 space-y-0.5 text-sm">
+              {contactItems.map((item) => (
+                <p key={item} className="truncate">
+                  {item}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground mt-1 text-sm">
+              Контакты не указаны
+            </p>
+          )}
         </div>
         {isOwner ? (
           <span className="rounded-full bg-zinc-950 px-2 py-1 text-xs font-semibold text-white">
@@ -538,11 +558,38 @@ export default async function DirectorStaffPage({
     0,
   );
   const invitations = (invitationData ?? []) as StaffInvitation[];
+  const contactsByInstructorId = new Map<string, StaffContact>();
+
+  for (const invitation of invitations) {
+    if (!invitation.instructor_id || invitation.status !== "approved") {
+      continue;
+    }
+
+    if (contactsByInstructorId.has(invitation.instructor_id)) {
+      continue;
+    }
+
+    contactsByInstructorId.set(invitation.instructor_id, {
+      email: invitation.submitted_email ?? invitation.invited_email ?? null,
+      phone: invitation.submitted_phone ?? invitation.invited_phone ?? null,
+    });
+  }
+
   const membersByInstructorId = new Map(
     ((memberData ?? []) as StaffMember[])
       .filter((member) => member.instructor_id)
       .map((member) => [member.instructor_id as string, member]),
   );
+
+  for (const [instructorId, member] of membersByInstructorId.entries()) {
+    if (member.role === "owner" && !contactsByInstructorId.has(instructorId)) {
+      contactsByInstructorId.set(instructorId, {
+        email: membership.user.email ?? null,
+        phone: null,
+      });
+    }
+  }
+
   const nowIso = new Date().toISOString();
   const openInvitations = invitations.filter(
     (invitation) =>
@@ -641,6 +688,7 @@ export default async function DirectorStaffPage({
                     instructor={instructor}
                     isPending={pendingInstructorIds.has(instructor.id)}
                     member={membersByInstructorId.get(instructor.id)}
+                    contact={contactsByInstructorId.get(instructor.id)}
                     stats={
                       statsByInstructorId.get(instructor.id) ?? createEmptyStats()
                     }

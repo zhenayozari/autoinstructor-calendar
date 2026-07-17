@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useActionState } from "react";
+import { useEffect, useState, useActionState } from "react";
 import {
   Archive,
   Check,
@@ -25,6 +25,10 @@ import {
   type StudentAccessActionState,
 } from "@/app/admin/students/actions";
 import { formatLocalDateTime, formatMoney, selectClassName } from "@/lib/formatters";
+import {
+  STUDENT_SECRET_ALPHABET,
+  STUDENT_SECRET_MIN_LENGTH,
+} from "@/lib/student-secret-policy";
 import type {
   Instructor,
   LessonType,
@@ -78,12 +82,26 @@ function getRequestDisplayName(request: StudentRegistrationRequest) {
   return label || request.login;
 }
 
+function getRandomIndex(max: number) {
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(values);
+    return values[0] % max;
+  }
+
+  return Math.floor(Math.random() * max);
+}
+
 function makeLogin() {
-  return `u${Math.floor(100000 + Math.random() * 900000)}`;
+  const digits = Array.from({ length: 6 }, () => getRandomIndex(10)).join("");
+  return `u${digits}`;
 }
 
 function makePin() {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  return Array.from(
+    { length: STUDENT_SECRET_MIN_LENGTH },
+    () => STUDENT_SECRET_ALPHABET[getRandomIndex(STUDENT_SECRET_ALPHABET.length)],
+  ).join("");
 }
 
 function getActiveLessonTypes(lessonTypes: LessonType[]) {
@@ -338,10 +356,19 @@ function CreateStudentAccessForm({
     INITIAL_STATE,
   );
   const [label, setLabel] = useState("");
-  const [login, setLogin] = useState(makeLogin());
-  const [secret, setSecret] = useState(makePin());
+  const [login, setLogin] = useState("");
+  const [secret, setSecret] = useState("");
   const activeLessonTypes = getActiveLessonTypes(lessonTypes);
   const activeSchools = getActiveSchools(schools);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setLogin(makeLogin());
+      setSecret(makePin());
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   return (
     <details className="rounded-2xl border border-zinc-300 bg-white shadow-sm open:border-zinc-500 open:shadow-md">
@@ -427,7 +454,7 @@ function CreateStudentAccessForm({
                 name="secret"
                 value={secret}
                 onChange={(event) => setSecret(event.target.value)}
-                placeholder="Например: 7392"
+                placeholder={`Минимум ${STUDENT_SECRET_MIN_LENGTH} символов`}
                 required
               />
               <Button
@@ -768,7 +795,7 @@ function StudentAccessCard({
               <Input
                 id={`new-secret-${access.id}`}
                 name="new_secret"
-                placeholder="Оставьте пустым, если не меняете"
+                placeholder={`Оставьте пустым, если не меняете. Новый минимум ${STUDENT_SECRET_MIN_LENGTH} символов`}
               />
             </div>
             <div className="space-y-2">

@@ -8,6 +8,7 @@ import {
   requireInstructorAccess,
 } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit-log";
+import { getConfiguredLessonPriceAmount } from "@/lib/pricing";
 
 export type SlotActionState = {
   status: "idle" | "success" | "error";
@@ -1677,27 +1678,18 @@ export async function cancelBookingAction(formData: FormData) {
   }
 }
 
-async function getLessonTypeDefaultPriceAmount(
+async function getStudentLessonPriceAmount(
   supabase: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  schoolId: string | null,
   lessonTypeId: string,
 ) {
-  const { data, error } = await supabase
-    .from("lesson_types")
-    .select("default_price_amount")
-    .eq("id", lessonTypeId)
-    .maybeSingle();
-
-  if (error) {
-    if (isMissingColumnError(error)) {
-      return null;
-    }
-
-    throw new Error(error.message);
-  }
-
-  return typeof data?.default_price_amount === "number"
-    ? data.default_price_amount
-    : null;
+  return getConfiguredLessonPriceAmount({
+    supabase,
+    organizationId,
+    schoolId,
+    lessonTypeId,
+  });
 }
 
 async function insertAssignedStudentBooking({
@@ -1862,7 +1854,7 @@ export async function assignStudentToSlotAction(
     const { data: access, error: accessError } = await supabase
       .from("student_accesses")
       .select(
-        "id, instructor_id, display_label, total_lesson_limit, weekly_lesson_limit, is_active, is_archived",
+        "id, organization_id, instructor_id, school_id, display_label, total_lesson_limit, weekly_lesson_limit, is_active, is_archived",
       )
       .eq("id", studentAccessId)
       .eq("instructor_id", slot.instructor_id)
@@ -1939,8 +1931,10 @@ export async function assignStudentToSlotAction(
       }
     }
 
-    const priceAmount = await getLessonTypeDefaultPriceAmount(
+    const priceAmount = await getStudentLessonPriceAmount(
       supabase,
+      access.organization_id,
+      access.school_id,
       slot.lesson_type_id,
     );
     const insertError = await insertAssignedStudentBooking({
@@ -2011,12 +2005,6 @@ export async function createLessonTypeAction(
       15,
       480,
     );
-    const defaultPriceAmount = readOptionalInteger(
-      formData,
-      "default_price_amount",
-      0,
-      10_000_000,
-    );
     const description = readOptionalString(formData, "description");
     const isActive = formData.get("is_active") === "on";
 
@@ -2050,14 +2038,13 @@ export async function createLessonTypeAction(
       kind: persistence.kind,
       requires_vehicle: persistence.requires_vehicle,
       default_duration_minutes: durationMinutes,
-      default_price_amount: defaultPriceAmount,
       tags: persistence.tags,
       sort_order: (lastType?.sort_order ?? 0) + 10,
       is_active: isActive,
     };
     const { error } = await supabase.from("lesson_types").insert({
       ...lessonTypePayload,
-      default_price_amount: defaultPriceAmount,
+      default_price_amount: null,
     });
 
     if (error) {
@@ -2115,12 +2102,6 @@ export async function updateLessonTypeAction(
       15,
       480,
     );
-    const defaultPriceAmount = readOptionalInteger(
-      formData,
-      "default_price_amount",
-      0,
-      10_000_000,
-    );
     const description = readOptionalString(formData, "description");
     const isActive = formData.get("is_active") === "on";
 
@@ -2148,7 +2129,7 @@ export async function updateLessonTypeAction(
       .from("lesson_types")
       .update({
         ...lessonTypePayload,
-        default_price_amount: defaultPriceAmount,
+        default_price_amount: null,
       })
       .eq("id", lessonTypeId);
 

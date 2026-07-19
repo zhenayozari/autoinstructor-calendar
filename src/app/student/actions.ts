@@ -6,6 +6,7 @@ import {
   clearStudentSession,
   requireCurrentStudentAccess,
 } from "@/lib/student-session";
+import { getConfiguredLessonPriceAmount } from "@/lib/pricing";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type StudentBookingActionState = {
@@ -55,29 +56,6 @@ function isMissingColumnError(error: { code?: string; message?: string } | null)
     message.includes("could not find") ||
     message.includes("schema cache")
   );
-}
-
-async function getDefaultPriceAmount(
-  supabase: ReturnType<typeof createAdminClient>,
-  lessonTypeId: string,
-) {
-  const { data, error } = await supabase
-    .from("lesson_types")
-    .select("default_price_amount")
-    .eq("id", lessonTypeId)
-    .maybeSingle();
-
-  if (error) {
-    if (isMissingColumnError(error)) {
-      return null;
-    }
-
-    throw new Error(error.message);
-  }
-
-  return typeof data?.default_price_amount === "number"
-    ? data.default_price_amount
-    : null;
 }
 
 async function insertStudentBooking({
@@ -254,10 +232,12 @@ export async function studentBookSlotAction(
       }
     }
 
-    const priceAmount = await getDefaultPriceAmount(
+    const priceAmount = await getConfiguredLessonPriceAmount({
       supabase,
-      slot.lesson_type_id,
-    );
+      organizationId: access.organizationId,
+      schoolId: access.schoolId,
+      lessonTypeId: slot.lesson_type_id,
+    });
     const error = await insertStudentBooking({
       supabase,
       slotId: slot.id,

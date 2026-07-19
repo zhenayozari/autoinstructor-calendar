@@ -45,6 +45,16 @@ export type LessonType = {
   requires_vehicle?: boolean;
 };
 
+export type SchoolLessonTypePrice = {
+  id: string;
+  organization_id: string;
+  school_id: string;
+  lesson_type_id: string;
+  price_amount: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ScheduleDay = {
   id: string;
   instructor_id: string;

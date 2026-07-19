@@ -14,10 +14,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import { formatMoney } from "@/lib/formatters";
+import { isMissingPricingTableError } from "@/lib/pricing";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { LessonType, School } from "@/lib/types";
+import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -105,6 +105,7 @@ export default async function DirectorSettingsPage() {
     { data: organizationData, error: organizationError },
     { data: schoolData, error: schoolError },
     { data: lessonTypeData, error: lessonTypeError },
+    { data: priceData, error: priceError },
   ] = await Promise.all([
     supabase
       .from("organizations")
@@ -121,24 +122,32 @@ export default async function DirectorSettingsPage() {
     supabase
       .from("lesson_types")
       .select(
-        "id, code, name, color, kind, description, default_duration_minutes, default_price_amount, tags, sort_order, is_active, requires_vehicle",
+        "id, code, name, color, kind, description, default_duration_minutes, tags, sort_order, is_active, requires_vehicle",
       )
       .order("sort_order")
       .order("name"),
+    supabase
+      .from("school_lesson_type_prices")
+      .select(
+        "id, organization_id, school_id, lesson_type_id, price_amount, created_at, updated_at",
+      )
+      .eq("organization_id", membership.organizationId),
   ]);
-  const loadError = organizationError ?? schoolError ?? lessonTypeError;
+  const normalizedPriceError =
+    priceError && !isMissingPricingTableError(priceError) ? priceError : null;
+  const loadError =
+    organizationError ?? schoolError ?? lessonTypeError ?? normalizedPriceError;
   const organization = organizationData as Organization | null;
   const schools = (schoolData ?? []) as School[];
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
+  const prices = (priceData ?? []) as SchoolLessonTypePrice[];
   const activeSchools = schools.filter((school) => school.is_active !== false);
   const hiddenSchools = schools.length - activeSchools.length;
   const activeLessonTypes = lessonTypes.filter(
     (lessonType) => lessonType.is_active !== false,
   );
   const hiddenLessonTypes = lessonTypes.length - activeLessonTypes.length;
-  const pricedLessonTypes = lessonTypes.filter(
-    (lessonType) => lessonType.default_price_amount !== null,
-  ).length;
+  const pricedSchoolCount = new Set(prices.map((price) => price.school_id)).size;
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -174,9 +183,9 @@ export default async function DirectorSettingsPage() {
             description={`${hiddenLessonTypes} скрыто`}
           />
           <MetricCard
-            label="Цены занятий"
-            value={`${pricedLessonTypes}`}
-            description="С заданной базовой ценой"
+            label="Источники с ценами"
+            value={`${pricedSchoolCount}`}
+            description="По матрице цен"
           />
         </section>
 
@@ -259,12 +268,7 @@ export default async function DirectorSettingsPage() {
                     subtitle={`${getLessonKindLabel(lessonType)} · ${lessonType.default_duration_minutes} мин.`}
                     color={lessonType.color}
                     isActive={lessonType.is_active !== false}
-                    meta={
-                      lessonType.default_price_amount !== null &&
-                      lessonType.default_price_amount !== undefined
-                        ? `Цена типа: ${formatMoney(lessonType.default_price_amount)}`
-                        : "Цена типа не задана"
-                    }
+                    meta="Цена задаётся по источнику ученика"
                   />
                 ))
               )}
@@ -305,7 +309,8 @@ export default async function DirectorSettingsPage() {
               </CardTitle>
               <CardDescription>
                 В отчёты попадает фактическая цена записи. Её можно поправить в
-                расписании, а базовая цена берётся из типа занятия.
+                расписании, а стартовая цена берётся из источника ученика и
+                типа занятия.
               </CardDescription>
             </CardHeader>
           </Card>

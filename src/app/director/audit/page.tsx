@@ -57,6 +57,7 @@ const ACTION_LABELS: Record<string, string> = {
   "staff.enabled": "Доступ сотрудника включён",
   "staff.disabled": "Доступ сотрудника отключён",
   "staff.deleted": "Сотрудник удалён",
+  "price_matrix.updated": "Цены по источнику изменены",
   "site.settings_updated": "Настройки сайта изменены",
   "site.instructor_settings_updated": "Профиль инструктора на сайте изменён",
 };
@@ -67,6 +68,7 @@ const ENTITY_LABELS: Record<string, string> = {
   student_access: "Ученик",
   staff_invitation: "Приглашение сотрудника",
   instructor: "Сотрудник",
+  price_matrix: "Матрица цен",
   organization_site_settings: "Сайт",
   instructor_site_settings: "Инструктор на сайте",
   student_registration_request: "Заявка ученика",
@@ -127,6 +129,8 @@ function getMetadataChips(metadata: Record<string, unknown> | null) {
 
   const chips: string[] = [];
   const count = metadata.count;
+  const configuredCount = metadata.configured_count;
+  const clearedCount = metadata.cleared_count;
   const priceAmount = formatMoney(metadata.price_amount);
   const paidAmount = formatMoney(metadata.paid_amount);
   const lessonState = getLessonStateLabel(metadata.lesson_state);
@@ -136,6 +140,8 @@ function getMetadataChips(metadata: Record<string, unknown> | null) {
   const hadBooking = booleanChip(metadata.had_confirmed_booking, "была запись", "");
 
   if (typeof count === "number") chips.push(`Количество: ${count}`);
+  if (typeof configuredCount === "number") chips.push(`Заполнено: ${configuredCount}`);
+  if (typeof clearedCount === "number") chips.push(`Очищено: ${clearedCount}`);
   if (priceAmount) chips.push(`К оплате: ${priceAmount}`);
   if (paidAmount) chips.push(`Получено: ${paidAmount}`);
   if (lessonState) chips.push(`Статус: ${lessonState}`);

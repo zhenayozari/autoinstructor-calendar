@@ -18,7 +18,7 @@ import {
   updateLessonTypeAction,
   type LessonTypeActionState,
 } from "@/app/admin/actions";
-import { formatMoney, selectClassName } from "@/lib/formatters";
+import { selectClassName } from "@/lib/formatters";
 import type { LessonType } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,7 +40,6 @@ type EditableLessonType = LessonType &
       | "description"
       | "kind"
       | "default_duration_minutes"
-      | "default_price_amount"
       | "tags"
       | "sort_order"
       | "is_active"
@@ -156,20 +155,6 @@ function LessonTypeFields({
           step={5}
           defaultValue={lessonType?.default_duration_minutes ?? 90}
           required
-        />
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-price`}>Цена типа, ₽</Label>
-        <Input
-          id={`${idPrefix}-price`}
-          name="default_price_amount"
-          type="number"
-          min={0}
-          max={10000000}
-          step={1}
-          defaultValue={lessonType?.default_price_amount ?? ""}
-          placeholder="Например: 1500"
         />
       </div>
 
@@ -294,7 +279,7 @@ export function LessonTypesSettings({
   return (
     <Card id="lesson-types-settings">
       <CardHeader className="pb-3">
-        <CardTitle>Типы занятий и цены</CardTitle>
+        <CardTitle>Типы занятий</CardTitle>
         <CardDescription>
           Тип занятия отвечает на вопрос, что именно проводится: вождение,
           теория, доп занятие, подарок или другой формат.
@@ -356,9 +341,6 @@ export function LessonTypesSettings({
                             {lessonType.code} ·{" "}
                             {categoryLabels[category]} ·{" "}
                             {lessonType.default_duration_minutes} мин.
-                            {lessonType.default_price_amount !== null
-                              ? ` · ${formatMoney(lessonType.default_price_amount)}`
-                              : ""}
                           </p>
                         </div>
                       </div>

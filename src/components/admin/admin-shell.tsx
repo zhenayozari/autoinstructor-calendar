@@ -6,6 +6,7 @@ import {
   BarChart3,
   BriefcaseBusiness,
   CalendarDays,
+  Star,
   LogOut,
   Menu,
   Settings,
@@ -36,6 +37,7 @@ const primaryLinks = [
 ] as const;
 
 const drawerLinks = [
+  { href: "/admin/rating", label: "Рейтинг", icon: Star },
   { href: "/admin/settings", label: "Настройки", icon: Settings },
   { href: "/admin/profile", label: "Профиль", icon: UserRoundPen },
 ] as const;

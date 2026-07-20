@@ -95,6 +95,18 @@ export type Booking = {
   student_access_id?: string | null;
 };
 
+export type LessonReview = {
+  id: string;
+  organization_id: string;
+  instructor_id: string;
+  booking_id: string;
+  student_access_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type StudentAccess = {
   id: string;
   instructor_id: string;

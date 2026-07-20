@@ -7,6 +7,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { studentLogoutAction } from "@/app/student/actions";
+import { LessonReviewForm } from "@/components/student/lesson-review-form";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StudentBookingButton } from "@/components/student/student-booking-button";
@@ -68,6 +69,15 @@ type StudentBookingRow = {
 type StudentLesson = {
   booking: StudentBookingRow;
   slot: ScheduleSlot;
+  review: LessonReviewRow | null;
+};
+
+type LessonReviewRow = {
+  id: string;
+  booking_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
 };
 
 const DEFAULT_TIMEZONE = "Asia/Irkutsk";
@@ -325,6 +335,8 @@ function StudentLessonCard({
     lesson.slot.end_time,
     timezone,
   )}`;
+  const canReview =
+    lesson.booking.lesson_state === "completed" && !lesson.review;
 
   return (
     <article
@@ -370,6 +382,22 @@ function StudentLessonCard({
           {getLocationLabel(lesson.slot.location_type)}
         </span>
       </div>
+
+      {lesson.review && (
+        <div className="mt-4 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <p className="font-semibold">
+            Ваша оценка: {"★".repeat(lesson.review.rating)}
+            {"☆".repeat(5 - lesson.review.rating)}
+          </p>
+          {lesson.review.comment && (
+            <p className="mt-2 leading-6 text-emerald-800">
+              {lesson.review.comment}
+            </p>
+          )}
+        </div>
+      )}
+
+      {canReview && <LessonReviewForm bookingId={lesson.booking.id} />}
     </article>
   );
 }
@@ -610,6 +638,7 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   }
 
   const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
+  const bookingIds = studentBookings.map((booking) => booking.id);
   const { data: bookedSlotData, error: bookedSlotError } =
     bookedSlotIds.length > 0
       ? await supabase
@@ -618,6 +647,18 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
           .in("id", bookedSlotIds)
       : { data: [], error: null };
   const bookedSlots = (bookedSlotData ?? []) as ScheduleSlot[];
+  const { data: reviewData } =
+    bookingIds.length > 0
+      ? await supabase
+          .from("lesson_reviews")
+          .select("id, booking_id, rating, comment, created_at")
+          .eq("student_access_id", access.id)
+          .in("booking_id", bookingIds)
+      : { data: [] };
+  const reviews = (reviewData ?? []) as LessonReviewRow[];
+  const reviewsByBookingId = new Map(
+    reviews.map((review) => [review.booking_id, review]),
+  );
 
   let slotsData: unknown[] = [];
   let slotsError: { message: string } | null = null;
@@ -648,6 +689,7 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
       return {
         booking,
         slot,
+        review: reviewsByBookingId.get(booking.id) ?? null,
       };
     })
     .filter((lesson): lesson is StudentLesson => Boolean(lesson))

@@ -588,6 +588,33 @@ export default async function Home() {
                 </div>
               </details>
             )}
+            <div className="mt-4 text-center text-[11px] leading-5 text-zinc-400">
+              Связь с разработчиком:{" "}
+              <span className="inline-flex flex-wrap justify-center gap-x-3 gap-y-1">
+                <a
+                  href="tel:+79361677764"
+                  className="font-medium text-zinc-500 underline-offset-4 transition hover:text-zinc-800 hover:underline"
+                >
+                  Телефон
+                </a>
+                <a
+                  href="https://t.me/GelyshaG"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-zinc-500 underline-offset-4 transition hover:text-zinc-800 hover:underline"
+                >
+                  Telegram
+                </a>
+                <a
+                  href="https://wa.me/qr/7SVQ24ROVJ7IK1"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-zinc-500 underline-offset-4 transition hover:text-zinc-800 hover:underline"
+                >
+                  WhatsApp
+                </a>
+              </span>
+            </div>
           </footer>
         </div>
       </div>

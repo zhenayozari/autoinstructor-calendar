@@ -19,13 +19,19 @@ import {
   cancelBookingAction,
   deleteSelectedSlotsAction,
   deleteSlotAction,
+  updateBookingCategoryAction,
   updateDayPublicationAction,
   updateSlotAction,
+  type BookingCategoryActionState,
   type BulkSlotDeleteActionState,
   type PublicationActionState,
   type SlotActionState,
 } from "@/app/admin/actions";
 import { BookingPaymentForm } from "@/components/admin/pay-toggle-button";
+import {
+  bookingCategoryOptions,
+  getBookingCategoryLabel,
+} from "@/lib/booking-categories";
 import {
   addUtcDays,
   formatDateTime,
@@ -72,6 +78,11 @@ const INITIAL_PUBLICATION_STATE: PublicationActionState = {
 };
 
 const INITIAL_SLOT_UPDATE_STATE: SlotActionState = {
+  status: "idle",
+  message: "",
+};
+
+const INITIAL_BOOKING_CATEGORY_STATE: BookingCategoryActionState = {
   status: "idle",
   message: "",
 };
@@ -447,6 +458,66 @@ function SlotActions({
   );
 }
 
+function BookingCategoryForm({
+  booking,
+  disabled,
+}: {
+  booking: Booking;
+  disabled: boolean;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    updateBookingCategoryAction,
+    INITIAL_BOOKING_CATEGORY_STATE,
+  );
+  const currentCategory = booking.booking_category ?? "regular";
+
+  return (
+    <form action={formAction} className="space-y-2 rounded-lg border bg-white p-3">
+      <input type="hidden" name="booking_id" value={booking.id} />
+      <div className="space-y-1.5">
+        <Label htmlFor={`booking-category-${booking.id}`}>
+          Категория записи
+        </Label>
+        <select
+          id={`booking-category-${booking.id}`}
+          name="booking_category"
+          className={selectClassName}
+          defaultValue={currentCategory}
+          disabled={disabled || isPending}
+        >
+          {bookingCategoryOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="text-xs leading-5 text-zinc-500">
+        Это аналитика записи ученика, а не тип слота в расписании.
+      </p>
+      {state.message && (
+        <p
+          className={`rounded-lg px-3 py-2 text-xs ${
+            state.status === "success"
+              ? "bg-emerald-50 text-emerald-700"
+              : "bg-red-50 text-red-700"
+          }`}
+        >
+          {state.message}
+        </p>
+      )}
+      <Button
+        type="submit"
+        variant="outline"
+        className="h-9 w-full text-xs"
+        disabled={disabled || isPending}
+      >
+        {isPending ? "Сохраняем..." : "Сохранить категорию"}
+      </Button>
+    </form>
+  );
+}
+
 function DesktopSlotCard({
   slot,
   lessonType,
@@ -681,6 +752,9 @@ function DesktopSlotPanel({
                     <UserRound className="size-4" />
                     {booking.student_label}
                   </p>
+                  <p className="mt-1 text-xs font-medium text-amber-800">
+                    {getBookingCategoryLabel(booking.booking_category)}
+                  </p>
                   <p className="mt-2 text-xs text-amber-800">
                     Запись создана:{" "}
                     {formatDateTime(booking.created_at, instructor.timezone)}
@@ -692,6 +766,12 @@ function DesktopSlotPanel({
                   Оплачено: {formatDateTime(booking.paid_at, instructor.timezone)}
                 </p>
               )}
+              <div className="mt-3">
+                <BookingCategoryForm
+                  booking={booking}
+                  disabled={!adminEnabled}
+                />
+              </div>
               <div className="mt-3">
                 <BookingPaymentForm
                   bookingId={booking.id}
@@ -869,7 +949,19 @@ function MobileSlotRow({
               <p className="mt-0.5 font-semibold">{booking.student_label}</p>
             </div>
           )}
+          {booking && (
+            <div>
+              <p className="text-zinc-400">Категория</p>
+              <p className="mt-0.5 font-semibold">
+                {getBookingCategoryLabel(booking.booking_category)}
+              </p>
+            </div>
+          )}
         </div>
+
+        {booking && (
+          <BookingCategoryForm booking={booking} disabled={!adminEnabled} />
+        )}
 
         {booking && (
           <div className="space-y-2 rounded-lg border bg-white px-3 py-2">

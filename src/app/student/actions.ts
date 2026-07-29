@@ -77,13 +77,24 @@ async function insertStudentBooking({
     student_label: studentLabel,
     status: "confirmed",
   };
-  const { error } = await supabase.from("bookings").insert({
+  const extendedPayload = {
+    ...payload,
+    price_amount: priceAmount,
+    booking_category: "regular",
+  };
+  const { error } = await supabase.from("bookings").insert(extendedPayload);
+
+  if (!error || !isMissingColumnError(error)) {
+    return error;
+  }
+
+  const { error: priceOnlyError } = await supabase.from("bookings").insert({
     ...payload,
     price_amount: priceAmount,
   });
 
-  if (!error || !isMissingColumnError(error)) {
-    return error;
+  if (!priceOnlyError || !isMissingColumnError(priceOnlyError)) {
+    return priceOnlyError;
   }
 
   const { error: fallbackError } = await supabase

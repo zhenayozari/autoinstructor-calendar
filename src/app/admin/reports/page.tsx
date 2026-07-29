@@ -13,8 +13,10 @@ import {
   selectClassName,
 } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
+import { getBookingCategoryLabel } from "@/lib/booking-categories";
 import type {
   Booking,
+  BookingCategory,
   Instructor,
   LessonState,
   LessonType,
@@ -65,6 +67,7 @@ type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   paid_amount: number | null;
   is_paid: boolean;
   paid_at: string | null;
+  booking_category: BookingCategory;
   lesson_state: LessonState;
   completed_at: string | null;
 };
@@ -472,7 +475,7 @@ export default async function AdminReportsPage({
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, paid_at, lesson_state, completed_at")
+          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, paid_at, booking_category, lesson_state, completed_at")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
@@ -555,6 +558,7 @@ export default async function AdminReportsPage({
     .filter((item): item is ReportItem => Boolean(item));
 
   const byLessonType = new Map<string, ReportGroup>();
+  const byBookingCategory = new Map<string, ReportGroup>();
   const byStudent = new Map<string, ReportGroup>();
   const byInstructor = new Map<string, ReportGroup>();
   const bySchool = new Map<string, ReportGroup>();
@@ -566,6 +570,12 @@ export default async function AdminReportsPage({
       item.lessonType.name,
       item,
       item.lessonType.color,
+    );
+    addToGroup(
+      byBookingCategory,
+      item.booking_category,
+      getBookingCategoryLabel(item.booking_category),
+      item,
     );
     addToGroup(byStudent, item.student_label, item.student_label, item);
     addToGroup(
@@ -584,6 +594,9 @@ export default async function AdminReportsPage({
   }
 
   const lessonTypeGroups = [...byLessonType.values()].sort(
+    (first, second) => second.amount - first.amount,
+  );
+  const bookingCategoryGroups = [...byBookingCategory.values()].sort(
     (first, second) => second.amount - first.amount,
   );
   const studentGroups = [...byStudent.values()].sort(
@@ -893,8 +906,14 @@ export default async function AdminReportsPage({
 
         <GroupTable
           title="По типам занятий"
-          description="Автошколы, допы, подарочные занятия и теория."
+          description="Физический тип слота: вождение или теория."
           groups={lessonTypeGroups}
+        />
+
+        <GroupTable
+          title="По категориям записей"
+          description="Обычные, дополнительные и подарочные занятия."
+          groups={bookingCategoryGroups}
         />
 
         <GroupTable

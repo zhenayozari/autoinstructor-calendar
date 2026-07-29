@@ -78,6 +78,7 @@ export type Slot = {
 };
 
 export type LessonState = "scheduled" | "completed" | "no_show";
+export type BookingCategory = "regular" | "extra" | "gift";
 
 export type Booking = {
   id: string;
@@ -89,6 +90,7 @@ export type Booking = {
   is_paid: boolean;
   paid_at: string | null;
   payment_note?: string | null;
+  booking_category?: BookingCategory;
   lesson_state: LessonState;
   completed_at: string | null;
   instructor_note: string | null;

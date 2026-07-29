@@ -46,7 +46,7 @@ type EditableLessonType = LessonType &
     >
   >;
 
-type LessonTypeCategory = "driving" | "theory" | "gift";
+type LessonTypeCategory = "driving" | "theory";
 
 const INITIAL_STATE: LessonTypeActionState = {
   status: "idle",
@@ -56,16 +56,11 @@ const INITIAL_STATE: LessonTypeActionState = {
 const categoryLabels: Record<LessonTypeCategory, string> = {
   driving: "Вождение",
   theory: "Теория",
-  gift: "Подарочное",
 };
 
 function getLessonTypeCategory(lessonType: EditableLessonType): LessonTypeCategory {
   if (lessonType.kind === "theory") {
     return "theory";
-  }
-
-  if (lessonType.tags.includes("gift")) {
-    return "gift";
   }
 
   return "driving";
@@ -110,7 +105,7 @@ function LessonTypeFields({
           id={`${idPrefix}-name`}
           name="name"
           defaultValue={lessonType?.name ?? ""}
-          placeholder="Например: Вождение, Доп занятие, Теория"
+          placeholder="Например: Вождение, Теория"
           maxLength={120}
           required
         />
@@ -127,7 +122,6 @@ function LessonTypeFields({
         >
           <option value="driving">Вождение</option>
           <option value="theory">Теория</option>
-          <option value="gift">Подарочное</option>
         </select>
       </div>
 
@@ -281,8 +275,9 @@ export function LessonTypesSettings({
       <CardHeader className="pb-3">
         <CardTitle>Типы занятий</CardTitle>
         <CardDescription>
-          Тип занятия отвечает на вопрос, что именно проводится: вождение,
-          теория, доп занятие, подарок или другой формат.
+          Тип занятия отвечает на вопрос, что физически проводится в слоте:
+          вождение или теория. Обычное, дополнительное и подарочное отмечаются
+          уже в конкретной записи ученика.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

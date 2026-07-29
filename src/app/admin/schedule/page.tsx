@@ -11,6 +11,7 @@ import {
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import type {
   Booking,
   Instructor,
@@ -133,7 +134,7 @@ export default async function AdminSchedulePage({
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, lesson_state, completed_at, instructor_note")
+          .select("id, slot_id, student_label, student_access_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, completed_at, instructor_note")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
@@ -147,6 +148,7 @@ export default async function AdminSchedulePage({
     studentAccessError ??
     studentAccessLessonTypeError;
   const lessonTypeCatalog = (lessonTypeData ?? []) as LessonType[];
+  const schedulableLessonTypes = getSchedulableLessonTypes(lessonTypeCatalog);
   const schools = (schoolData ?? []) as School[];
   const scheduleDays = (scheduleDayData ?? []) as ScheduleDay[];
   const bookings = (bookingData ?? []) as Booking[];
@@ -194,7 +196,7 @@ export default async function AdminSchedulePage({
 
         <AdminScheduleWorkspace
           instructors={instructors}
-          lessonTypes={lessonTypeCatalog}
+          lessonTypes={schedulableLessonTypes}
           schools={schools}
           scheduleDays={scheduleDays.map((day) => ({
             ...day,

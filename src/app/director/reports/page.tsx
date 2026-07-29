@@ -18,9 +18,18 @@ import {
   selectClassName,
 } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
+import { getBookingCategoryLabel } from "@/lib/booking-categories";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { Booking, Instructor, LessonState, ScheduleDay, School, Slot } from "@/lib/types";
+import type {
+  Booking,
+  BookingCategory,
+  Instructor,
+  LessonState,
+  ScheduleDay,
+  School,
+  Slot,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +52,7 @@ type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   price_amount: number | null;
   paid_amount: number | null;
   is_paid: boolean;
+  booking_category: BookingCategory;
   lesson_state: LessonState;
 };
 
@@ -384,7 +394,7 @@ export default async function DirectorReportsPage({
     slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, lesson_state")
+          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, booking_category, lesson_state")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
@@ -468,6 +478,7 @@ export default async function DirectorReportsPage({
   const byInstructor = new Map<string, MoneyGroup>();
   const bySchool = new Map<string, MoneyGroup>();
   const byStudent = new Map<string, MoneyGroup>();
+  const byBookingCategory = new Map<string, MoneyGroup>();
 
   for (const item of reportItems) {
     addToGroup(
@@ -483,6 +494,12 @@ export default async function DirectorReportsPage({
       item,
       item.school?.color,
     );
+    addToGroup(
+      byBookingCategory,
+      item.booking_category,
+      getBookingCategoryLabel(item.booking_category),
+      item,
+    );
     addToGroup(byStudent, item.student_label, item.student_label, item);
   }
 
@@ -490,6 +507,9 @@ export default async function DirectorReportsPage({
     (first, second) => second.plannedAmount - first.plannedAmount,
   );
   const schoolGroups = [...bySchool.values()].sort(
+    (first, second) => second.plannedAmount - first.plannedAmount,
+  );
+  const bookingCategoryGroups = [...byBookingCategory.values()].sort(
     (first, second) => second.plannedAmount - first.plannedAmount,
   );
   const topDebtGroups = [...byStudent.values()]
@@ -632,6 +652,11 @@ export default async function DirectorReportsPage({
             title="По источникам"
             description="Автошколы, частные ученики и другие источники."
             groups={schoolGroups}
+          />
+          <MoneyGroupTable
+            title="По категориям записей"
+            description="Обычные, дополнительные и подарочные занятия."
+            groups={bookingCategoryGroups}
           />
         </section>
 

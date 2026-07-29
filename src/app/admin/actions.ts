@@ -55,12 +55,18 @@ export type BookingPaymentActionState = {
   message: string;
 };
 
+export type BookingCategoryActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
 const INITIAL_STATE: SlotActionState = {
   status: "idle",
   message: "",
 };
 
-type LessonTypeCategory = "driving" | "theory" | "gift";
+type LessonTypeCategory = "driving" | "theory";
+type BookingCategory = "regular" | "extra" | "gift";
 type SlotLocationType = "in_car" | "online" | "classroom" | "other";
 
 function readRequiredString(formData: FormData, field: string) {
@@ -196,7 +202,7 @@ function isMissingColumnError(error: { code?: string; message?: string } | null)
 }
 
 function requireLessonTypeCategory(value: string): LessonTypeCategory {
-  if (value === "driving" || value === "theory" || value === "gift") {
+  if (value === "driving" || value === "theory") {
     return value;
   }
 
@@ -213,21 +219,22 @@ function getLessonTypePersistence(category: LessonTypeCategory) {
     };
   }
 
-  if (category === "gift") {
-    return {
-      kind: "driving" as const,
-      requires_vehicle: true,
-      tags: ["gift"],
-      defaultDuration: 90,
-    };
-  }
-
   return {
     kind: "driving" as const,
     requires_vehicle: true,
     tags: ["driving"],
     defaultDuration: 90,
   };
+}
+
+function readBookingCategory(formData: FormData): BookingCategory {
+  const value = readRequiredString(formData, "booking_category");
+
+  if (value === "regular" || value === "extra" || value === "gift") {
+    return value;
+  }
+
+  throw new Error("Выберите корректную категорию записи");
 }
 
 function makeCustomLessonTypeCode() {
@@ -1711,13 +1718,24 @@ async function insertAssignedStudentBooking({
     student_label: studentLabel,
     status: "confirmed",
   };
-  const { error } = await supabase.from("bookings").insert({
+  const extendedPayload = {
+    ...payload,
+    price_amount: priceAmount,
+    booking_category: "regular",
+  };
+  const { error } = await supabase.from("bookings").insert(extendedPayload);
+
+  if (!error || !isMissingColumnError(error)) {
+    return error;
+  }
+
+  const { error: priceOnlyError } = await supabase.from("bookings").insert({
     ...payload,
     price_amount: priceAmount,
   });
 
-  if (!error || !isMissingColumnError(error)) {
-    return error;
+  if (!priceOnlyError || !isMissingColumnError(priceOnlyError)) {
+    return priceOnlyError;
   }
 
   const { error: fallbackError } = await supabase
@@ -2470,6 +2488,59 @@ export async function updateBookingPaymentAction(
     };
   } catch (error) {
     console.error("updateBookingPaymentAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function updateBookingCategoryAction(
+  previousState: BookingCategoryActionState,
+  formData: FormData,
+): Promise<BookingCategoryActionState> {
+  void previousState;
+  await requireActiveOrganizationMember();
+  const bookingId = readRequiredString(formData, "booking_id");
+
+  try {
+    const bookingCategory = readBookingCategory(formData);
+    const { supabase, booking, slot, membership } =
+      await requireManageableBooking(bookingId);
+    const { error } = await supabase
+      .from("bookings")
+      .update({ booking_category: bookingCategory })
+      .eq("id", bookingId)
+      .eq("status", "confirmed");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.category_updated",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        slot_id: booking.slot_id,
+        instructor_id: slot.instructor_id,
+        booking_category: bookingCategory,
+      },
+    });
+
+    revalidateAdminCrmPaths();
+    revalidatePath("/director");
+    revalidatePath("/director/reports");
+    revalidatePath("/director/schedule");
+
+    return {
+      status: "success",
+      message: "Категория записи сохранена",
+    };
+  } catch (error) {
+    console.error("updateBookingCategoryAction:", error);
 
     return {
       status: "error",

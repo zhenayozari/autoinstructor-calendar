@@ -6,6 +6,7 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
 import { PriceMatrixSettings } from "@/components/admin/price-matrix-settings";
@@ -118,6 +119,7 @@ export default async function AdminSettingsPage() {
   const visibleLessonTypes = canManageCatalog
     ? lessonTypes
     : lessonTypes.filter((lessonType) => lessonType.is_active);
+  const priceLessonTypes = getSchedulableLessonTypes(visibleLessonTypes);
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -157,7 +159,7 @@ export default async function AdminSettingsPage() {
 
         <PriceMatrixSettings
           schools={visibleSchools}
-          lessonTypes={visibleLessonTypes}
+          lessonTypes={priceLessonTypes}
           prices={prices}
           adminEnabled={adminEnabled && !priceError}
           canManage={canManageCatalog}

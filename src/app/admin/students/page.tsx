@@ -10,6 +10,7 @@ import {
   hasSupabaseAdminKey,
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import type {
   Booking,
   Instructor,
@@ -202,6 +203,7 @@ export default async function AdminStudentsPage({
     bookingError ??
     slotError;
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
+  const schedulableLessonTypes = getSchedulableLessonTypes(lessonTypes);
   const schools = (schoolData ?? []) as School[];
   const pendingRequests = (requestData ?? []) as StudentRegistrationRequest[];
   const registrationSettings = ((settingData ?? []) as Pick<
@@ -360,7 +362,7 @@ export default async function AdminStudentsPage({
         {selectedInstructor ? (
           <StudentAccessesPanel
             instructors={instructors}
-            lessonTypes={lessonTypes}
+            lessonTypes={schedulableLessonTypes}
             schools={schools}
             accesses={activeAccesses}
             archivedAccesses={archivedAccesses}

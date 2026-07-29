@@ -32,6 +32,7 @@ import {
   bookingCategoryOptions,
   getBookingCategoryLabel,
 } from "@/lib/booking-categories";
+import { LessonStateControls } from "@/components/admin/lesson-state-controls";
 import {
   addUtcDays,
   formatDateTime,
@@ -772,6 +773,17 @@ function DesktopSlotPanel({
                   disabled={!adminEnabled}
                 />
               </div>
+              <div className="mt-3 space-y-2 rounded-lg border bg-white p-3">
+                <p className="text-xs font-medium text-zinc-600">
+                  Факт занятия
+                </p>
+                <LessonStateControls
+                  bookingId={booking.id}
+                  lessonState={booking.lesson_state}
+                  instructorNote={booking.instructor_note}
+                  disabled={!adminEnabled}
+                />
+              </div>
               <div className="mt-3">
                 <BookingPaymentForm
                   bookingId={booking.id}
@@ -961,6 +973,18 @@ function MobileSlotRow({
 
         {booking && (
           <BookingCategoryForm booking={booking} disabled={!adminEnabled} />
+        )}
+
+        {booking && (
+          <div className="space-y-2 rounded-lg border bg-white px-3 py-2">
+            <p className="text-xs font-medium text-zinc-600">Факт занятия</p>
+            <LessonStateControls
+              bookingId={booking.id}
+              lessonState={booking.lesson_state}
+              instructorNote={booking.instructor_note}
+              disabled={!adminEnabled}
+            />
+          </div>
         )}
 
         {booking && (

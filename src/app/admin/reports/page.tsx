@@ -25,6 +25,7 @@ import type {
   Slot,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { SourceSettlementButton } from "@/components/admin/source-settlement-button";
 import {
   Card,
   CardContent,
@@ -98,6 +99,18 @@ type DebtGroup = {
   label: string;
   amount: number;
   count: number;
+};
+
+type SourceSettlementGroup = {
+  id: string;
+  label: string;
+  color?: string;
+  completedCount: number;
+  debtCount: number;
+  earnedAmount: number;
+  paidAmount: number;
+  debtAmount: number;
+  missingPriceCount: number;
 };
 
 function getMonthBounds(dateValue: string) {
@@ -358,6 +371,153 @@ function GroupTable({
   );
 }
 
+function SourceSettlementsCard({
+  groups,
+  from,
+  to,
+  instructorId,
+}: {
+  groups: SourceSettlementGroup[];
+  from: string;
+  to: string;
+  instructorId: string;
+}) {
+  const totalCompleted = groups.reduce(
+    (sum, group) => sum + group.completedCount,
+    0,
+  );
+  const totalEarned = groups.reduce(
+    (sum, group) => sum + group.earnedAmount,
+    0,
+  );
+  const totalPaid = groups.reduce((sum, group) => sum + group.paidAmount, 0);
+  const totalDebt = groups.reduce((sum, group) => sum + group.debtAmount, 0);
+
+  return (
+    <Card className="border-emerald-200 bg-emerald-50/40">
+      <CardHeader className="pb-3">
+        <CardTitle>Расчёты с автошколами</CardTitle>
+        <CardDescription>
+          Проведённые занятия по источникам за период {from} — {to}. Здесь видно,
+          кто уже рассчитался и какой остаток к выплате.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">Проведено</p>
+            <p className="mt-1 font-semibold">{totalCompleted}</p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">К начислению</p>
+            <p className="mt-1 font-semibold">{formatMoney(totalEarned)}</p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-emerald-700">Получено</p>
+            <p className="mt-1 font-semibold text-emerald-900">
+              {formatMoney(totalPaid)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-amber-700">Остаток</p>
+            <p className="mt-1 font-semibold text-amber-900">
+              {formatMoney(totalDebt)}
+            </p>
+          </div>
+        </div>
+
+        {groups.length === 0 ? (
+          <div className="rounded-2xl border border-dashed bg-white px-4 py-8 text-center text-sm text-zinc-500">
+            За выбранный период проведённых занятий по источникам нет.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border bg-white">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="text-xs uppercase tracking-wide text-zinc-500">
+                <tr className="border-b">
+                  <th className="px-3 py-3 font-semibold">Источник</th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    Проведено
+                  </th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    К начислению
+                  </th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    Получено
+                  </th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    Остаток
+                  </th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    Без цены
+                  </th>
+                  <th className="px-3 py-3 text-right font-semibold">
+                    Расчёт
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((group) => (
+                  <tr key={group.id} className="border-b last:border-0">
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {group.color && (
+                          <span
+                            className="size-3 shrink-0 rounded-full border border-black/10"
+                            style={{ backgroundColor: group.color }}
+                          />
+                        )}
+                        <span className="truncate font-semibold">
+                          {group.label}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {group.completedCount}
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold tabular-nums">
+                      {formatMoney(group.earnedAmount)}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums text-emerald-800">
+                      {formatMoney(group.paidAmount)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold tabular-nums text-amber-800">
+                      {formatMoney(group.debtAmount)}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums text-zinc-500">
+                      {group.missingPriceCount || "—"}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      {group.debtAmount > 0 && group.id !== "without-source" ? (
+                        <SourceSettlementButton
+                          instructorId={instructorId}
+                          schoolId={group.id}
+                          sourceLabel={group.label}
+                          from={from}
+                          to={to}
+                          expectedCount={group.debtCount}
+                          expectedAmount={group.debtAmount}
+                        />
+                      ) : (
+                        <span className="text-xs text-zinc-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <p className="text-xs leading-5 text-emerald-950/70">
+          Кнопка расчёта закрывает только проведённые занятия с остатком к
+          выплате. Уже оплаченные записи повторно не меняются.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default async function AdminReportsPage({
   searchParams,
 }: AdminReportsPageProps) {
@@ -502,6 +662,8 @@ export default async function AdminReportsPage({
     });
   }
 
+  const settlementBookings = [...bookings];
+
   if (selectedPayment === "paid") {
     bookings = bookings.filter((booking) => booking.is_paid);
   } else if (selectedPayment === "unpaid") {
@@ -533,29 +695,34 @@ export default async function AdminReportsPage({
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
   );
   const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  const buildReportItem = (booking: ReportBooking): ReportItem | null => {
+    const slot = slotsById.get(booking.slot_id);
+    if (!slot) return null;
+
+    const scheduleDay = scheduleDaysById.get(slot.schedule_day_id);
+    const lessonType = lessonTypesById.get(slot.lesson_type_id);
+    const instructor = instructorsById.get(slot.instructor_id);
+    if (!scheduleDay || !lessonType || !instructor) return null;
+    const access = booking.student_access_id
+      ? studentAccessesById.get(booking.student_access_id)
+      : null;
+
+    return {
+      ...booking,
+      slot,
+      scheduleDay,
+      lessonType,
+      instructor,
+      school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
+    };
+  };
   const reportItems = bookings
-    .map((booking): ReportItem | null => {
-      const slot = slotsById.get(booking.slot_id);
-      if (!slot) return null;
-
-      const scheduleDay = scheduleDaysById.get(slot.schedule_day_id);
-      const lessonType = lessonTypesById.get(slot.lesson_type_id);
-      const instructor = instructorsById.get(slot.instructor_id);
-      if (!scheduleDay || !lessonType || !instructor) return null;
-      const access = booking.student_access_id
-        ? studentAccessesById.get(booking.student_access_id)
-        : null;
-
-      return {
-        ...booking,
-        slot,
-        scheduleDay,
-        lessonType,
-        instructor,
-        school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
-      };
-    })
+    .map(buildReportItem)
     .filter((item): item is ReportItem => Boolean(item));
+  const settlementItems = settlementBookings
+    .map(buildReportItem)
+    .filter((item): item is ReportItem => Boolean(item))
+    .filter((item) => item.lesson_state === "completed");
 
   const byLessonType = new Map<string, ReportGroup>();
   const byBookingCategory = new Map<string, ReportGroup>();
@@ -659,6 +826,44 @@ export default async function AdminReportsPage({
   const debtGroups = [...debtGroupsByStudent.values()].sort(
     (first, second) => second.amount - first.amount,
   );
+  const sourceSettlementsById = new Map<string, SourceSettlementGroup>();
+
+  for (const item of settlementItems) {
+    const sourceId = item.school?.id ?? "without-source";
+    const current =
+      sourceSettlementsById.get(sourceId) ??
+      ({
+        id: sourceId,
+        label: item.school?.name ?? "Без источника",
+        color: item.school?.color,
+        completedCount: 0,
+        debtCount: 0,
+        earnedAmount: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+        missingPriceCount: 0,
+      } satisfies SourceSettlementGroup);
+
+    current.completedCount += 1;
+    current.earnedAmount += item.price_amount ?? 0;
+    current.paidAmount += getItemPaidAmount(item);
+    const itemDebt = getItemDebtAmount(item);
+    current.debtAmount += itemDebt;
+
+    if (itemDebt > 0) {
+      current.debtCount += 1;
+    }
+
+    if (item.price_amount === null) {
+      current.missingPriceCount += 1;
+    }
+
+    sourceSettlementsById.set(sourceId, current);
+  }
+
+  const sourceSettlementGroups = [...sourceSettlementsById.values()].sort(
+    (first, second) => second.debtAmount - first.debtAmount,
+  );
 
   // Sort report items by date desc for the booking list
   const sortedReportItems = [...reportItems].sort(
@@ -696,31 +901,6 @@ export default async function AdminReportsPage({
             Не удалось загрузить отчёт: {loadError.message}
           </div>
         )}
-
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard
-            label="План"
-            value={formatMoney(plannedAmount)}
-            hint={`${plannedItems.length} запланированных занятий`}
-          />
-          <SummaryCard
-            label="Заработано"
-            value={formatMoney(earnedAmount)}
-            hint={`${completedItems.length} проведённых занятий`}
-          />
-          <SummaryCard
-            label="Получено"
-            value={formatMoney(paidAmount)}
-            hint={`${paidCount} записей с оплатой`}
-            tone="emerald"
-          />
-          <SummaryCard
-            label="Долг"
-            value={formatMoney(debtAmount)}
-            hint={`${debtItems.length} записей с долгом`}
-            tone="amber"
-          />
-        </section>
 
         <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -860,6 +1040,38 @@ export default async function AdminReportsPage({
             </form>
           </details>
         </section>
+
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <SummaryCard
+            label="План"
+            value={formatMoney(plannedAmount)}
+            hint={`${plannedItems.length} запланированных занятий`}
+          />
+          <SummaryCard
+            label="Заработано"
+            value={formatMoney(earnedAmount)}
+            hint={`${completedItems.length} проведённых занятий`}
+          />
+          <SummaryCard
+            label="Получено"
+            value={formatMoney(paidAmount)}
+            hint={`${paidCount} записей с оплатой`}
+            tone="emerald"
+          />
+          <SummaryCard
+            label="Долг"
+            value={formatMoney(debtAmount)}
+            hint={`${debtItems.length} записей с долгом`}
+            tone="amber"
+          />
+        </section>
+
+        <SourceSettlementsCard
+          groups={sourceSettlementGroups}
+          from={from}
+          to={to}
+          instructorId={selectedInstructor?.id ?? ""}
+        />
 
         {missingPriceCount > 0 && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

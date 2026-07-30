@@ -41,6 +41,7 @@ const ACTION_LABELS: Record<string, string> = {
   "booking.cancelled": "Запись отменена",
   "booking.payment_toggled": "Оплата переключена",
   "booking.payment_updated": "Оплата изменена",
+  "booking.source_settlement_completed": "Расчёт с источником закрыт",
   "booking.lesson_state_updated": "Факт занятия изменён",
   "booking.assigned_by_instructor": "Ученик записан инструктором",
   "student_access.deleted": "Ученик удалён",
@@ -65,6 +66,7 @@ const ACTION_LABELS: Record<string, string> = {
 const ENTITY_LABELS: Record<string, string> = {
   slot: "Слот",
   booking: "Запись",
+  school: "Источник",
   student_access: "Ученик",
   staff_invitation: "Приглашение сотрудника",
   instructor: "Сотрудник",

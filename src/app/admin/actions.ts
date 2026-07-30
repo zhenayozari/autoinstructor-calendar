@@ -55,6 +55,12 @@ export type BookingPaymentActionState = {
   message: string;
 };
 
+export type SourceSettlementActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+  updatedCount: number;
+};
+
 export type BookingCategoryActionState = {
   status: "idle" | "success" | "error";
   message: string;
@@ -287,6 +293,16 @@ function readOptionalInteger(
     throw new Error(
       `Поле «${field}» должно быть целым числом от ${minimum} до ${maximum}`,
     );
+  }
+
+  return value;
+}
+
+function readRequiredDateValue(formData: FormData, field: string) {
+  const value = readRequiredString(formData, field);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Поле «${field}» должно быть датой`);
   }
 
   return value;
@@ -2492,6 +2508,225 @@ export async function updateBookingPaymentAction(
     return {
       status: "error",
       message: getErrorMessage(error),
+    };
+  }
+}
+
+type SettlementBookingRow = {
+  id: string;
+  slot_id: string;
+  price_amount: number | null;
+  paid_amount: number | null;
+  student_access_id: string | null;
+};
+
+type SettlementSlotRow = {
+  id: string;
+  instructor_id: string;
+  schedule_day_id: string;
+};
+
+export async function settleSourcePaymentsAction(
+  previousState: SourceSettlementActionState,
+  formData: FormData,
+): Promise<SourceSettlementActionState> {
+  void previousState;
+  await requireActiveOrganizationMember();
+
+  try {
+    const instructorId = readRequiredString(formData, "instructor_id");
+    const schoolId = readRequiredString(formData, "school_id");
+    const from = readRequiredDateValue(formData, "from");
+    const to = readRequiredDateValue(formData, "to");
+    const expectedCount = readInteger(formData, "expected_count", 1, 10_000);
+    const expectedAmount = readInteger(
+      formData,
+      "expected_amount",
+      0,
+      100_000_000,
+    );
+    const sourceLabel = readRequiredString(formData, "source_label");
+
+    if (from > to) {
+      throw new Error("Дата начала не может быть позже даты окончания");
+    }
+
+    if (schoolId === "without-source") {
+      throw new Error("Массовый расчёт доступен только для выбранной автошколы или источника");
+    }
+
+    const membership = await requireInstructorAccess(instructorId);
+    const supabase = createAdminClient();
+    const { data: school, error: schoolError } = await supabase
+      .from("schools")
+      .select("id, name")
+      .eq("id", schoolId)
+      .eq("organization_id", membership.organizationId)
+      .maybeSingle();
+
+    if (schoolError || !school) {
+      throw new Error("Источник не найден");
+    }
+
+    const { data: days, error: daysError } = await supabase
+      .from("schedule_days")
+      .select("id")
+      .eq("instructor_id", instructorId)
+      .gte("date", from)
+      .lte("date", to);
+
+    if (daysError) {
+      throw new Error(daysError.message);
+    }
+
+    const dayIds = (days ?? []).map((day) => day.id as string);
+
+    if (dayIds.length === 0) {
+      return {
+        status: "error",
+        message: "За выбранный период нет дней расписания",
+        updatedCount: 0,
+      };
+    }
+
+    const { data: slots, error: slotsError } = await supabase
+      .from("slots")
+      .select("id, instructor_id, schedule_day_id")
+      .eq("instructor_id", instructorId)
+      .in("schedule_day_id", dayIds)
+      .neq("status", "cancelled");
+
+    if (slotsError) {
+      throw new Error(slotsError.message);
+    }
+
+    const slotIds = ((slots ?? []) as SettlementSlotRow[]).map((slot) => slot.id);
+
+    if (slotIds.length === 0) {
+      return {
+        status: "error",
+        message: "За выбранный период нет слотов",
+        updatedCount: 0,
+      };
+    }
+
+    const { data: accessRows, error: accessError } = await supabase
+      .from("student_accesses")
+      .select("id")
+      .eq("instructor_id", instructorId)
+      .eq("school_id", schoolId);
+
+    if (accessError) {
+      throw new Error(accessError.message);
+    }
+
+    const accessIds = (accessRows ?? []).map((access) => access.id as string);
+
+    if (accessIds.length === 0) {
+      return {
+        status: "error",
+        message: "У этого источника нет учеников в выбранном периоде",
+        updatedCount: 0,
+      };
+    }
+
+    const { data: bookings, error: bookingsError } = await supabase
+      .from("bookings")
+      .select("id, slot_id, price_amount, paid_amount, student_access_id")
+      .in("slot_id", slotIds)
+      .in("student_access_id", accessIds)
+      .eq("status", "confirmed")
+      .eq("lesson_state", "completed");
+
+    if (bookingsError) {
+      throw new Error(bookingsError.message);
+    }
+
+    const payableBookings = ((bookings ?? []) as SettlementBookingRow[]).filter(
+      (booking) => {
+        const priceAmount = booking.price_amount ?? 0;
+        const paidAmount = booking.paid_amount ?? 0;
+
+        return priceAmount > paidAmount;
+      },
+    );
+    const actualCount = payableBookings.length;
+    const actualAmount = payableBookings.reduce(
+      (sum, booking) =>
+        sum + Math.max((booking.price_amount ?? 0) - (booking.paid_amount ?? 0), 0),
+      0,
+    );
+
+    if (actualCount === 0) {
+      return {
+        status: "error",
+        message: "Нет проведённых занятий с остатком к выплате",
+        updatedCount: 0,
+      };
+    }
+
+    if (actualCount !== expectedCount || actualAmount !== expectedAmount) {
+      return {
+        status: "error",
+        message: "Данные изменились. Обновите отчёт и попробуйте ещё раз.",
+        updatedCount: 0,
+      };
+    }
+
+    const paidAt = new Date().toISOString();
+    const paymentNote = `Расчёт с ${school.name ?? sourceLabel} за период ${from} — ${to}`;
+
+    for (const booking of payableBookings) {
+      const { error: updateError } = await supabase
+        .from("bookings")
+        .update({
+          paid_amount: booking.price_amount ?? 0,
+          is_paid: true,
+          paid_at: paidAt,
+          payment_note: paymentNote,
+        })
+        .eq("id", booking.id)
+        .eq("status", "confirmed");
+
+      if (updateError) {
+        throw new Error(updateError.message);
+      }
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "booking.source_settlement_completed",
+      entityType: "school",
+      entityId: schoolId,
+      metadata: {
+        instructor_id: instructorId,
+        school_id: schoolId,
+        source_label: school.name ?? sourceLabel,
+        from,
+        to,
+        booking_count: actualCount,
+        amount: actualAmount,
+      },
+    });
+
+    revalidateAdminCrmPaths();
+    revalidatePath("/admin/bookings");
+    revalidatePath("/student");
+    revalidatePath("/director");
+    revalidatePath("/director/reports");
+
+    return {
+      status: "success",
+      message: `Расчёт закрыт: ${actualCount} занятий на сумму ${actualAmount} ₽`,
+      updatedCount: actualCount,
+    };
+  } catch (error) {
+    console.error("settleSourcePaymentsAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+      updatedCount: 0,
     };
   }
 }

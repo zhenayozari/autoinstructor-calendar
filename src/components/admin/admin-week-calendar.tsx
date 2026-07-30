@@ -99,6 +99,58 @@ function getShortLessonName(name: string) {
   return name.length > 12 ? `${name.slice(0, 11)}…` : name;
 }
 
+function getLessonStateBadge(booking: Booking) {
+  if (booking.lesson_state === "completed") {
+    return {
+      label: "Проведено",
+      className: "bg-emerald-100 text-emerald-800",
+    };
+  }
+
+  if (booking.lesson_state === "no_show") {
+    return {
+      label: "Неявка",
+      className: "bg-rose-100 text-rose-800",
+    };
+  }
+
+  return {
+    label: "План",
+    className: "bg-zinc-100 text-zinc-700",
+  };
+}
+
+function getPaymentBadge(booking: Booking) {
+  const priceAmount = booking.price_amount ?? null;
+  const paidAmount = booking.paid_amount ?? 0;
+
+  if (priceAmount === null) {
+    return {
+      label: "Без цены",
+      className: "bg-zinc-100 text-zinc-700",
+    };
+  }
+
+  if (priceAmount !== null && paidAmount >= priceAmount) {
+    return {
+      label: "Оплачено",
+      className: "bg-emerald-100 text-emerald-800",
+    };
+  }
+
+  if (priceAmount !== null && paidAmount > 0) {
+    return {
+      label: "Частично",
+      className: "bg-blue-100 text-blue-800",
+    };
+  }
+
+  return {
+    label: "Долг",
+    className: "bg-amber-100 text-amber-800",
+  };
+}
+
 function formatMobileWeekday(value: string) {
   return new Intl.DateTimeFormat("ru-RU", {
     weekday: "short",
@@ -595,6 +647,8 @@ function SlotCardContent({
   timezone: string;
 }) {
   const isBlocked = slot.status === "blocked";
+  const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
+  const paymentBadge = booking ? getPaymentBadge(booking) : null;
 
   return (
     <>
@@ -615,21 +669,27 @@ function SlotCardContent({
       </div>
 
       <div className="mt-1 flex items-center gap-1.5">
-        <Badge
-          className={`px-1.5 py-0 text-[10px] ${
-            isBlocked
-              ? "bg-zinc-200 text-zinc-700"
-              : booking
-                ? "bg-amber-100 text-amber-800"
+        {booking && lessonStateBadge && paymentBadge ? (
+          <>
+            <Badge className={`px-1.5 py-0 text-[10px] ${lessonStateBadge.className}`}>
+              {lessonStateBadge.label}
+            </Badge>
+            <span
+              className={`rounded-full px-1.5 py-0 text-[10px] font-semibold ${paymentBadge.className}`}
+            >
+              {paymentBadge.label}
+            </span>
+          </>
+        ) : (
+          <Badge
+            className={`px-1.5 py-0 text-[10px] ${
+              isBlocked
+                ? "bg-zinc-200 text-zinc-700"
                 : "bg-emerald-100 text-emerald-800"
-          }`}
-        >
-          {isBlocked ? "Блок" : booking ? "Занят" : "Свободен"}
-        </Badge>
-        {booking?.is_paid && (
-          <span className="rounded-full bg-emerald-100 px-1.5 py-0 text-[10px] font-semibold text-emerald-700">
-            ₽✓
-          </span>
+            }`}
+          >
+            {isBlocked ? "Блок" : "Свободен"}
+          </Badge>
         )}
       </div>
 
@@ -885,6 +945,8 @@ function MobileSlotRow({
 }) {
   const isBlocked = slot.status === "blocked";
   const visibleNote = getVisibleSlotNote(slot.note);
+  const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
+  const paymentBadge = booking ? getPaymentBadge(booking) : null;
   return (
     <details
       className={`group rounded-lg border bg-white ${
@@ -923,17 +985,30 @@ function MobileSlotRow({
             )}
           </span>
         </span>
-        <span
-          className={`rounded-full px-2 py-1 text-[10px] font-bold ${
-            isBlocked
-              ? "bg-zinc-200 text-zinc-700"
-              : booking
-                ? "bg-amber-100 text-amber-800"
+        {booking && lessonStateBadge && paymentBadge ? (
+          <span className="flex flex-col items-end gap-1">
+            <span
+              className={`rounded-full px-2 py-1 text-[10px] font-bold ${lessonStateBadge.className}`}
+            >
+              {lessonStateBadge.label}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${paymentBadge.className}`}
+            >
+              {paymentBadge.label}
+            </span>
+          </span>
+        ) : (
+          <span
+            className={`rounded-full px-2 py-1 text-[10px] font-bold ${
+              isBlocked
+                ? "bg-zinc-200 text-zinc-700"
                 : "bg-emerald-100 text-emerald-800"
-          }`}
-        >
-          {isBlocked ? "Блок" : booking ? "Занят" : "Свободен"}
-        </span>
+            }`}
+          >
+            {isBlocked ? "Блок" : "Свободен"}
+          </span>
+        )}
       </summary>
 
       <div className="space-y-3 border-t px-3 py-3">

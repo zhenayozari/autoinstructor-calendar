@@ -2,6 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import {
+  getNotificationEventsForRole,
+  type NotificationEventKey,
+} from "@/lib/notification-events";
+import { sendPushToMember } from "@/lib/push-notifications";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type PushSubscriptionInput = {
@@ -136,5 +141,98 @@ export async function disablePushSubscriptionAction(
   return {
     ok: true,
     message: "Уведомления выключены на этом устройстве.",
+  };
+}
+
+export async function sendTestPushNotificationAction(): Promise<SavePushSubscriptionState> {
+  const membership = await requireActiveOrganizationMember();
+
+  if (membership.role !== "owner" && membership.role !== "instructor") {
+    return {
+      ok: false,
+      message: "Уведомления доступны только руководителю и инструктору.",
+    };
+  }
+
+  try {
+    const result = await sendPushToMember(membership.id, {
+      title: "Автоинструктор",
+      body: "Проверка связи. Уведомления работают.",
+      url: membership.role === "owner" ? "/director" : "/admin",
+    });
+
+    if (result.sent === 0) {
+      return {
+        ok: false,
+        message: "Активных устройств не найдено. Сначала включите уведомления.",
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Тест отправлен: ${result.sent}.`,
+    };
+  } catch (error) {
+    console.error("sendTestPushNotificationAction:", error);
+
+    return {
+      ok: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Не удалось отправить тестовое уведомление.",
+    };
+  }
+}
+
+export async function updateNotificationPreferenceAction(
+  eventKey: NotificationEventKey,
+  isEnabled: boolean,
+): Promise<SavePushSubscriptionState> {
+  const membership = await requireActiveOrganizationMember();
+
+  if (membership.role !== "owner" && membership.role !== "instructor") {
+    return {
+      ok: false,
+      message: "Уведомления доступны только руководителю и инструктору.",
+    };
+  }
+
+  const eventOption = getNotificationEventsForRole(membership.role).find(
+    (option) => option.key === eventKey,
+  );
+
+  if (!eventOption) {
+    return {
+      ok: false,
+      message: "Это событие недоступно для вашей роли.",
+    };
+  }
+
+  const supabase = createAdminClient();
+  const { error } = await supabase.from("notification_preferences").upsert(
+    {
+      organization_id: membership.organizationId,
+      organization_member_id: membership.id,
+      event_key: eventKey,
+      is_enabled: isEnabled,
+    },
+    { onConflict: "organization_member_id,event_key" },
+  );
+
+  if (error) {
+    console.error("updateNotificationPreferenceAction:", error);
+    return {
+      ok: false,
+      message: "Не удалось сохранить настройку уведомлений.",
+    };
+  }
+
+  revalidatePath("/admin");
+  revalidatePath("/director");
+
+  return {
+    ok: true,
+    message: "Настройка сохранена.",
   };
 }

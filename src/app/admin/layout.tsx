@@ -5,6 +5,7 @@ import {
 } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getNotificationPreferencesForMember } from "@/lib/notification-preferences";
 import type { Instructor } from "@/lib/types";
 import { AdminShell } from "@/components/admin/admin-shell";
 
@@ -25,6 +26,7 @@ export default async function AdminLayout({
     instructors,
     membership.instructorId,
   );
+  const pushPreferences = await getNotificationPreferencesForMember(membership);
 
   return (
     <AdminShell
@@ -33,6 +35,7 @@ export default async function AdminLayout({
       instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
       showTeam={false}
       pushPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY}
+      pushPreferences={pushPreferences}
     >
       {children}
     </AdminShell>

@@ -18,6 +18,7 @@ import {
 import { useState } from "react";
 import { logoutAction } from "@/app/login/actions";
 import { PushSubscriptionControl } from "@/components/pwa/push-subscription-control";
+import type { NotificationPreference } from "@/lib/notification-events";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +27,7 @@ type DirectorShellProps = {
   email?: string | null;
   organizationName?: string | null;
   pushPublicKey?: string;
+  pushPreferences?: NotificationPreference[];
 };
 
 const bottomLinks = [
@@ -64,6 +66,7 @@ export function DirectorShell({
   email,
   organizationName,
   pushPublicKey,
+  pushPreferences,
 }: DirectorShellProps) {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -140,7 +143,10 @@ export function DirectorShell({
               </div>
 
               <div className="mt-4">
-                <PushSubscriptionControl publicKey={pushPublicKey} />
+                <PushSubscriptionControl
+                  publicKey={pushPublicKey}
+                  preferences={pushPreferences}
+                />
               </div>
             </div>
 

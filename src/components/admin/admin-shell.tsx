@@ -20,6 +20,7 @@ import { logoutAction } from "@/app/login/actions";
 import { Button } from "@/components/ui/button";
 import { PushSubscriptionControl } from "@/components/pwa/push-subscription-control";
 import { getRoleLabel } from "@/lib/formatters";
+import type { NotificationPreference } from "@/lib/notification-events";
 import { cn } from "@/lib/utils";
 
 type AdminShellProps = {
@@ -29,6 +30,7 @@ type AdminShellProps = {
   instructorName?: string | null;
   showTeam: boolean;
   pushPublicKey?: string;
+  pushPreferences?: NotificationPreference[];
 };
 
 const primaryLinks = [
@@ -59,6 +61,7 @@ export function AdminShell({
   instructorName,
   showTeam,
   pushPublicKey,
+  pushPreferences,
 }: AdminShellProps) {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -185,7 +188,10 @@ export function AdminShell({
               </div>
 
               {(role === "owner" || role === "instructor") && (
-                <PushSubscriptionControl publicKey={pushPublicKey} />
+                <PushSubscriptionControl
+                  publicKey={pushPublicKey}
+                  preferences={pushPreferences}
+                />
               )}
             </div>
 

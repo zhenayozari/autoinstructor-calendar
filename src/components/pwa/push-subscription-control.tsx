@@ -1,17 +1,21 @@
 "use client";
 
-import { Bell, BellOff } from "lucide-react";
+import { Bell, BellOff, Send } from "lucide-react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   disablePushSubscriptionAction,
   savePushSubscriptionAction,
+  sendTestPushNotificationAction,
+  updateNotificationPreferenceAction,
 } from "@/app/push-notifications/actions";
 import { Button } from "@/components/ui/button";
+import type { NotificationPreference } from "@/lib/notification-events";
 import { cn } from "@/lib/utils";
 
 type PushSubscriptionControlProps = {
   className?: string;
   publicKey?: string;
+  preferences?: NotificationPreference[];
 };
 
 type SubscriptionState =
@@ -54,9 +58,11 @@ async function getRegistration() {
 export function PushSubscriptionControl({
   className,
   publicKey,
+  preferences = [],
 }: PushSubscriptionControlProps) {
   const [state, setState] = useState<SubscriptionState>("checking");
   const [message, setMessage] = useState("");
+  const [localPreferences, setLocalPreferences] = useState(preferences);
   const [isPending, startTransition] = useTransition();
 
   const isAvailable = useMemo(() => {
@@ -192,6 +198,36 @@ export function PushSubscriptionControl({
     });
   }
 
+  function sendTest() {
+    startTransition(async () => {
+      setMessage("");
+      const result = await sendTestPushNotificationAction();
+      setMessage(result.message);
+    });
+  }
+
+  function updatePreference(key: string, isEnabled: boolean) {
+    const previousPreferences = localPreferences;
+    setLocalPreferences((current) =>
+      current.map((preference) =>
+        preference.key === key ? { ...preference, isEnabled } : preference,
+      ),
+    );
+
+    startTransition(async () => {
+      const result = await updateNotificationPreferenceAction(
+        key as NotificationPreference["key"],
+        isEnabled,
+      );
+
+      setMessage(result.message);
+
+      if (!result.ok) {
+        setLocalPreferences(previousPreferences);
+      }
+    });
+  }
+
   return (
     <div
       className={cn(
@@ -204,36 +240,84 @@ export function PushSubscriptionControl({
           <p className="font-semibold text-zinc-950">{label}</p>
           {hint ? <p className="mt-1 text-xs text-zinc-500">{hint}</p> : null}
         </div>
-        {state === "enabled" ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={unsubscribe}
-            disabled={isPending}
-          >
-            <BellOff className="size-4" />
-            Выкл.
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={subscribe}
-            disabled={
-              isPending ||
-              state === "checking" ||
-              state === "unsupported" ||
-              state === "missing-key" ||
-              state === "blocked"
-            }
-          >
-            <Bell className="size-4" />
-            Вкл.
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {state === "enabled" ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={sendTest}
+                disabled={isPending}
+              >
+                <Send className="size-4" />
+                Тест
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={unsubscribe}
+                disabled={isPending}
+              >
+                <BellOff className="size-4" />
+                Выкл.
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={subscribe}
+              disabled={
+                isPending ||
+                state === "checking" ||
+                state === "unsupported" ||
+                state === "missing-key" ||
+                state === "blocked"
+              }
+            >
+              <Bell className="size-4" />
+              Вкл.
+            </Button>
+          )}
+        </div>
       </div>
+
+      {localPreferences.length > 0 ? (
+        <div className="mt-3 border-t pt-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">
+            События
+          </p>
+          <div className="mt-2 space-y-2">
+            {localPreferences.map((preference) => (
+              <label
+                key={preference.key}
+                className="flex gap-3 rounded-lg border bg-white p-2"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1 size-4"
+                  checked={preference.isEnabled}
+                  disabled={isPending}
+                  onChange={(event) =>
+                    updatePreference(preference.key, event.target.checked)
+                  }
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-zinc-950">
+                    {preference.label}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-zinc-500">
+                    {preference.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

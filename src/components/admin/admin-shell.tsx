@@ -18,6 +18,7 @@ import {
 import { useState } from "react";
 import { logoutAction } from "@/app/login/actions";
 import { Button } from "@/components/ui/button";
+import { PushSubscriptionControl } from "@/components/pwa/push-subscription-control";
 import { getRoleLabel } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,7 @@ type AdminShellProps = {
   email?: string | null;
   instructorName?: string | null;
   showTeam: boolean;
+  pushPublicKey?: string;
 };
 
 const primaryLinks = [
@@ -56,6 +58,7 @@ export function AdminShell({
   email,
   instructorName,
   showTeam,
+  pushPublicKey,
 }: AdminShellProps) {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -180,6 +183,10 @@ export function AdminShell({
                   </Link>
                 )}
               </div>
+
+              {(role === "owner" || role === "instructor") && (
+                <PushSubscriptionControl publicKey={pushPublicKey} />
+              )}
             </div>
 
             <div className="border-t p-4">

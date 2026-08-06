@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { logoutAction } from "@/app/login/actions";
+import { PushSubscriptionControl } from "@/components/pwa/push-subscription-control";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,7 @@ type DirectorShellProps = {
   children: React.ReactNode;
   email?: string | null;
   organizationName?: string | null;
+  pushPublicKey?: string;
 };
 
 const bottomLinks = [
@@ -61,6 +63,7 @@ export function DirectorShell({
   children,
   email,
   organizationName,
+  pushPublicKey,
 }: DirectorShellProps) {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -134,6 +137,10 @@ export function DirectorShell({
                     {label}
                   </Link>
                 ))}
+              </div>
+
+              <div className="mt-4">
+                <PushSubscriptionControl publicKey={pushPublicKey} />
               </div>
             </div>
 

@@ -32,6 +32,7 @@ export default async function AdminLayout({
       email={membership.user.email}
       instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
       showTeam={false}
+      pushPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY}
     >
       {children}
     </AdminShell>

@@ -10,6 +10,7 @@
     "import:sheet-demo": "tsx scripts/import-instructor-sheet-demo.ts",
     "migrate:excel-to-main:dry": "tsx scripts/migrate-excel-schedule-to-main.ts",
     "migrate:excel-to-main": "tsx scripts/migrate-excel-schedule-to-main.ts --apply",
+    "generate:vapid": "tsx scripts/generate-vapid-keys.ts",
     "seed:catalog": "tsx scripts/seed-instructor-catalog.ts"
   },
   "dependencies": {

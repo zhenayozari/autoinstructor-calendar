@@ -30,6 +30,7 @@ export default async function DirectorLayout({
     <DirectorShell
       email={membership.user.email}
       organizationName={organization?.name}
+      pushPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY}
     >
       {children}
     </DirectorShell>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, BellOff, Send } from "lucide-react";
+import { Bell, BellOff, ChevronDown, Send } from "lucide-react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   disablePushSubscriptionAction,
@@ -63,6 +63,7 @@ export function PushSubscriptionControl({
   const [state, setState] = useState<SubscriptionState>("checking");
   const [message, setMessage] = useState("");
   const [localPreferences, setLocalPreferences] = useState(preferences);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const isAvailable = useMemo(() => {
@@ -115,13 +116,6 @@ export function PushSubscriptionControl({
     };
   }, [isAvailable, publicKey]);
 
-  const label =
-    state === "enabled"
-      ? "Уведомления включены"
-      : state === "blocked"
-        ? "Уведомления заблокированы"
-        : "Включить уведомления";
-
   const hint =
     state === "missing-key"
       ? "Нужен публичный ключ уведомлений в настройках проекта."
@@ -132,6 +126,15 @@ export function PushSubscriptionControl({
           : state === "checking"
             ? "Проверяем поддержку на этом устройстве..."
             : message;
+
+  const statusLabel =
+    state === "enabled"
+      ? "Включены"
+      : state === "blocked"
+        ? "Запрещены"
+        : state === "checking"
+          ? "Проверка"
+          : "Выключены";
 
   function subscribe() {
     startTransition(async () => {
@@ -231,39 +234,55 @@ export function PushSubscriptionControl({
   return (
     <div
       className={cn(
-        "rounded-xl border bg-zinc-50 p-3 text-sm text-zinc-700",
+        "rounded-2xl border bg-white p-2 text-sm text-zinc-700 shadow-sm",
         className,
       )}
     >
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-semibold text-zinc-950">{label}</p>
-          {hint ? <p className="mt-1 text-xs text-zinc-500">{hint}</p> : null}
-        </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-zinc-50"
+          onClick={() => setIsExpanded((current) => !current)}
+          aria-expanded={isExpanded}
+        >
+          <span
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-xl",
+              state === "enabled"
+                ? "bg-zinc-900 text-white"
+                : "bg-zinc-100 text-zinc-600",
+            )}
+          >
+            <Bell className="size-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-semibold text-zinc-950">
+              Уведомления
+            </span>
+            <span className="block truncate text-xs text-zinc-500">
+              {statusLabel}
+            </span>
+          </span>
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-zinc-400 transition-transform",
+              isExpanded && "rotate-180",
+            )}
+          />
+        </button>
+
         <div className="flex shrink-0 items-center gap-1.5">
           {state === "enabled" ? (
-            <>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={sendTest}
-                disabled={isPending}
-              >
-                <Send className="size-4" />
-                Тест
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={unsubscribe}
-                disabled={isPending}
-              >
-                <BellOff className="size-4" />
-                Выкл.
-              </Button>
-            </>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={unsubscribe}
+              disabled={isPending}
+            >
+              <BellOff className="size-4" />
+              Выкл.
+            </Button>
           ) : (
             <Button
               type="button"
@@ -285,37 +304,56 @@ export function PushSubscriptionControl({
         </div>
       </div>
 
-      {localPreferences.length > 0 ? (
-        <div className="mt-3 border-t pt-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">
-            События
-          </p>
-          <div className="mt-2 space-y-2">
-            {localPreferences.map((preference) => (
-              <label
-                key={preference.key}
-                className="flex gap-3 rounded-lg border bg-white p-2"
-              >
-                <input
-                  type="checkbox"
-                  className="mt-1 size-4"
-                  checked={preference.isEnabled}
-                  disabled={isPending}
-                  onChange={(event) =>
-                    updatePreference(preference.key, event.target.checked)
-                  }
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-zinc-950">
-                    {preference.label}
-                  </span>
-                  <span className="mt-0.5 block text-xs text-zinc-500">
-                    {preference.description}
-                  </span>
-                </span>
-              </label>
-            ))}
-          </div>
+      {isExpanded ? (
+        <div className="mt-2 space-y-3 border-t px-2 pt-3">
+          {hint ? <p className="text-xs text-zinc-500">{hint}</p> : null}
+
+          {state === "enabled" ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 w-full"
+              onClick={sendTest}
+              disabled={isPending}
+            >
+              <Send className="size-4" />
+              Отправить тест
+            </Button>
+          ) : null}
+
+          {localPreferences.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">
+                События
+              </p>
+              <div className="mt-2 space-y-1.5">
+                {localPreferences.map((preference) => (
+                  <label
+                    key={preference.key}
+                    className="flex gap-3 rounded-xl bg-zinc-50 p-2.5"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1 size-4"
+                      checked={preference.isEnabled}
+                      disabled={isPending}
+                      onChange={(event) =>
+                        updatePreference(preference.key, event.target.checked)
+                      }
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-zinc-950">
+                        {preference.label}
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+                        {preference.description}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

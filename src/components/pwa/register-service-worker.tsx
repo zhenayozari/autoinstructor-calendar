@@ -8,11 +8,22 @@ export function RegisterServiceWorker() {
       return;
     }
 
-    window.addEventListener("load", () => {
+    const register = () => {
       navigator.serviceWorker.register("/sw.js").catch(() => {
         // Installation support is optional; the app must keep working without it.
       });
-    });
+    };
+
+    if (document.readyState === "complete") {
+      register();
+      return;
+    }
+
+    window.addEventListener("load", register, { once: true });
+
+    return () => {
+      window.removeEventListener("load", register);
+    };
   }, []);
 
   return null;

@@ -42,6 +42,12 @@ async function getRegistration() {
     return null;
   }
 
+  const existingRegistration = await navigator.serviceWorker.getRegistration("/");
+
+  if (!existingRegistration) {
+    await navigator.serviceWorker.register("/sw.js");
+  }
+
   return navigator.serviceWorker.ready;
 }
 
@@ -117,7 +123,9 @@ export function PushSubscriptionControl({
         ? "Этот браузер не поддерживает push-уведомления."
         : state === "blocked"
           ? "Разрешение выключено в настройках браузера."
-          : message;
+          : state === "checking"
+            ? "Проверяем поддержку на этом устройстве..."
+            : message;
 
   function subscribe() {
     startTransition(async () => {

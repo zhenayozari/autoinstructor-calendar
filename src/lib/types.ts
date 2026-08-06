@@ -1,4 +1,5 @@
 export type OrganizationRole = "owner" | "admin" | "instructor";
+export type SchoolPaymentRule = "manual" | "prepaid" | "settle_later";
 
 export type School = {
   id: string;
@@ -6,6 +7,7 @@ export type School = {
   name: string;
   color: string;
   default_price: number | null;
+  payment_rule?: SchoolPaymentRule;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -85,6 +87,8 @@ export type Booking = {
   slot_id: string;
   student_label: string;
   created_at: string;
+  school_id?: string | null;
+  student_lesson_package_id?: string | null;
   price_amount?: number | null;
   paid_amount?: number | null;
   is_paid: boolean;
@@ -121,6 +125,22 @@ export type StudentAccess = {
   school_id: string | null;
   is_archived: boolean;
   archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+  lesson_type_ids: string[];
+};
+
+export type StudentLessonPackage = {
+  id: string;
+  student_access_id: string;
+  organization_id: string;
+  instructor_id: string;
+  school_id: string | null;
+  booking_category: BookingCategory;
+  total_lesson_limit: number | null;
+  weekly_lesson_limit: number | null;
+  is_active: boolean;
+  sort_order: number;
   created_at: string;
   updated_at: string;
   lesson_type_ids: string[];

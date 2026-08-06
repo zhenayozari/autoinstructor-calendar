@@ -12,6 +12,7 @@ import {
   formatMoney,
   getLocalDate,
 } from "@/lib/formatters";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -98,9 +99,10 @@ export default async function DirectorOverviewPage() {
       supabase,
       membership,
       "id, name, slug, public_name, timezone, is_active",
-    );
+  );
   const instructors = (instructorData ?? []) as Instructor[];
   const instructorIds = instructors.map((instructor) => instructor.id);
+  await autoCompletePastBookings({ instructorIds });
   const timezone = instructors[0]?.timezone ?? "Asia/Irkutsk";
   const today = getLocalDate(timezone);
   const tomorrow = getLocalDate(timezone, 1);

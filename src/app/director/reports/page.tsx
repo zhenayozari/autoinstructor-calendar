@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { requireDirectorAccess } from "@/lib/director-auth";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import {
   formatDateValue,
   formatHours,
@@ -49,6 +50,7 @@ type ReportSlot = Pick<
 
 type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   student_access_id: string | null;
+  school_id: string | null;
   price_amount: number | null;
   paid_amount: number | null;
   is_paid: boolean;
@@ -348,6 +350,7 @@ export default async function DirectorReportsPage({
   const reportInstructorIds = selectedInstructor
     ? [selectedInstructor.id]
     : instructors.map((instructor) => instructor.id);
+  await autoCompletePastBookings({ instructorIds: reportInstructorIds });
 
   const [
     { data: schoolData, error: schoolError },
@@ -394,7 +397,7 @@ export default async function DirectorReportsPage({
     slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, booking_category, lesson_state")
+          .select("id, slot_id, student_label, student_access_id, school_id, price_amount, paid_amount, is_paid, booking_category, lesson_state")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
@@ -442,7 +445,11 @@ export default async function DirectorReportsPage({
         slot,
         scheduleDay,
         instructor,
-        school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
+        school: booking.school_id
+          ? schoolsById.get(booking.school_id) ?? null
+          : access?.school_id
+            ? schoolsById.get(access.school_id) ?? null
+            : null,
       };
     })
     .filter((item): item is ReportItem => Boolean(item));

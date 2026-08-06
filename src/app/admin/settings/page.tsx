@@ -93,7 +93,7 @@ export default async function AdminSettingsPage() {
       ? supabase
           .from("schools")
           .select(
-            "id, organization_id, name, color, default_price, is_active, created_at, updated_at",
+            "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
           )
           .eq("organization_id", membership.organizationId)
           .order("name")

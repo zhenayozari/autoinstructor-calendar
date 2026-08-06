@@ -13,6 +13,7 @@ import {
   selectClassName,
 } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { getBookingCategoryLabel } from "@/lib/booking-categories";
 import type {
   Booking,
@@ -64,6 +65,7 @@ type ReportSlot = Pick<
 
 type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   student_access_id: string | null;
+  school_id: string | null;
   price_amount: number | null;
   paid_amount: number | null;
   is_paid: boolean;
@@ -564,6 +566,7 @@ export default async function AdminReportsPage({
         : firstInstructor
           ? [firstInstructor.id]
           : [];
+  await autoCompletePastBookings({ instructorIds: reportInstructorIds });
 
   const [
     { data: lessonTypeData, error: lessonTypeError },
@@ -635,7 +638,7 @@ export default async function AdminReportsPage({
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, price_amount, paid_amount, is_paid, paid_at, booking_category, lesson_state, completed_at")
+          .select("id, slot_id, student_label, student_access_id, school_id, price_amount, paid_amount, is_paid, paid_at, booking_category, lesson_state, completed_at")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };
@@ -653,12 +656,13 @@ export default async function AdminReportsPage({
 
   if (selectedSchoolId !== "all") {
     bookings = bookings.filter((booking) => {
-      if (!booking.student_access_id) return false;
+      const bookingSchoolId =
+        booking.school_id ??
+        (booking.student_access_id
+          ? studentAccessesById.get(booking.student_access_id)?.school_id
+          : null);
 
-      return (
-        studentAccessesById.get(booking.student_access_id)?.school_id ===
-        selectedSchoolId
-      );
+      return bookingSchoolId === selectedSchoolId;
     });
   }
 
@@ -713,7 +717,11 @@ export default async function AdminReportsPage({
       scheduleDay,
       lessonType,
       instructor,
-      school: access?.school_id ? schoolsById.get(access.school_id) ?? null : null,
+      school: booking.school_id
+        ? schoolsById.get(booking.school_id) ?? null
+        : access?.school_id
+          ? schoolsById.get(access.school_id) ?? null
+          : null,
     };
   };
   const reportItems = bookings

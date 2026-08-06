@@ -22,6 +22,7 @@ import type {
   StudentAccess,
 } from "@/lib/types";
 import { AdminScheduleWorkspace } from "@/components/admin/admin-schedule-workspace";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +57,7 @@ export default async function AdminSchedulePage({
     membership.instructorId,
   );
   const instructorIds = instructors.map((instructor) => instructor.id);
+  await autoCompletePastBookings({ instructorIds });
   const [
     { data: lessonTypeData, error: lessonTypeError },
     { data: schoolData, error: schoolError },
@@ -134,7 +136,7 @@ export default async function AdminSchedulePage({
     adminEnabled && slotIds.length > 0
       ? await supabase
           .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, completed_at, instructor_note")
+          .select("id, slot_id, student_label, student_access_id, student_lesson_package_id, school_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, completed_at, instructor_note")
           .in("slot_id", slotIds)
           .eq("status", "confirmed")
       : { data: [], error: null };

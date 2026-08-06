@@ -38,6 +38,7 @@ import {
   getUtcWeekStart,
 } from "@/lib/formatters";
 import { getPublicOrigin } from "@/lib/public-origin";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type {
@@ -431,6 +432,9 @@ export default async function DirectorStaffPage({
     .eq("organization_id", membership.organizationId)
     .order("name");
   const instructors = (instructorData ?? []) as StaffInstructor[];
+  await autoCompletePastBookings({
+    instructorIds: instructors.map((instructor) => instructor.id),
+  });
   const instructorIds = instructors.map((instructor) => instructor.id);
   const [
     { data: studentAccessData, error: studentAccessError },

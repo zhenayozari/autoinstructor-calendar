@@ -59,6 +59,7 @@ async function loadLandingData() {
       "id, organization_id, name, slug, public_name, timezone, is_active, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
     )
     .eq("is_active", true)
+    .eq("public_is_visible", true)
     .order("public_name", { nullsFirst: false })
     .order("name");
   const { data: instructorSettingsData } = organization
@@ -287,7 +288,6 @@ function InstructorCard({ instructor }: { instructor: LandingInstructor }) {
 
 export default async function Home() {
   const {
-    organization,
     siteSettings,
     instructors,
     hasInstructorSiteSettings,
@@ -335,6 +335,7 @@ export default async function Home() {
         {content.hero.enabled && (
         <section className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_75%_20%,rgba(163,230,53,0.24),transparent_30%),linear-gradient(135deg,#050505_0%,#111827_52%,#0b2216_100%)] text-white shadow-2xl shadow-black/30">
           <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(0deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:48px_48px] opacity-30" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={content.media.heroImageUrl}
             alt={content.media.heroImageAlt}

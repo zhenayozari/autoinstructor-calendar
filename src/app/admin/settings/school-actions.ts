@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SchoolPaymentRule } from "@/lib/types";
 
 export type SchoolActionState = {
   status: "idle" | "success" | "error";
@@ -45,6 +46,20 @@ function validateSchoolFields(name: string, color: string) {
   }
 }
 
+function readPaymentRule(formData: FormData): SchoolPaymentRule {
+  const value = formData.get("payment_rule");
+
+  if (
+    value === "manual" ||
+    value === "prepaid" ||
+    value === "settle_later"
+  ) {
+    return value;
+  }
+
+  return "manual";
+}
+
 export async function createSchoolAction(
   previousState: SchoolActionState,
   formData: FormData,
@@ -55,6 +70,7 @@ export async function createSchoolAction(
     const membership = await requireSchoolManager();
     const name = readRequiredString(formData, "name");
     const color = readRequiredString(formData, "color");
+    const paymentRule = readPaymentRule(formData);
     const isActive = formData.get("is_active") === "on";
 
     validateSchoolFields(name, color);
@@ -64,6 +80,7 @@ export async function createSchoolAction(
       organization_id: membership.organizationId,
       name,
       color,
+      payment_rule: paymentRule,
       is_active: isActive,
     });
 
@@ -94,6 +111,7 @@ export async function updateSchoolAction(
     const schoolId = readRequiredString(formData, "school_id");
     const name = readRequiredString(formData, "name");
     const color = readRequiredString(formData, "color");
+    const paymentRule = readPaymentRule(formData);
     const isActive = formData.get("is_active") === "on";
 
     validateSchoolFields(name, color);
@@ -101,7 +119,12 @@ export async function updateSchoolAction(
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("schools")
-      .update({ name, color, is_active: isActive })
+      .update({
+        name,
+        color,
+        payment_rule: paymentRule,
+        is_active: isActive,
+      })
       .eq("id", schoolId)
       .eq("organization_id", membership.organizationId);
 

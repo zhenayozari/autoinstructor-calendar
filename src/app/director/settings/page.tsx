@@ -14,7 +14,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import { isMissingPricingTableError } from "@/lib/pricing";
+import {
+  isMissingPricingTableError,
+  normalizeSchoolPaymentRule,
+} from "@/lib/pricing";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
@@ -90,6 +93,14 @@ function CatalogItem({
   );
 }
 
+function getPaymentRuleLabel(value: School["payment_rule"]) {
+  const rule = normalizeSchoolPaymentRule(value);
+
+  if (rule === "prepaid") return "предоплата";
+  if (rule === "settle_later") return "расчёт позже";
+  return "вручную";
+}
+
 function getLessonKindLabel(lessonType: LessonType) {
   if (lessonType.kind === "theory") return "Теория";
   if (lessonType.tags?.includes("gift")) return "Подарочное";
@@ -115,7 +126,7 @@ export default async function DirectorSettingsPage() {
     supabase
       .from("schools")
       .select(
-        "id, organization_id, name, color, default_price, is_active, created_at, updated_at",
+        "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
       )
       .eq("organization_id", membership.organizationId)
       .order("name"),
@@ -226,7 +237,7 @@ export default async function DirectorSettingsPage() {
                     subtitle="Источник ученика"
                     color={school.color}
                     isActive={school.is_active}
-                    meta="Используется в карточках учеников и отчётах"
+                    meta={`Оплата: ${getPaymentRuleLabel(school.payment_rule)}`}
                   />
                 ))
               )}

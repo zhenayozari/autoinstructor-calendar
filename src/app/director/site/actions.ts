@@ -10,6 +10,12 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 
 const SITE_MEDIA_BUCKET = "public-site";
+const ALLOWED_SITE_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
 
 export type DirectorSiteActionState = {
   status: "idle" | "success" | "error";
@@ -93,7 +99,7 @@ function readStringList(formData: FormData, prefix: string, fallback: string[]) 
 function getFileExtension(file: File) {
   const [, extension = "png"] = file.name.toLowerCase().match(/\.([a-z0-9]+)$/) ?? [];
 
-  if (["jpg", "jpeg", "png", "webp", "gif", "svg"].includes(extension)) {
+  if (["jpg", "jpeg", "png", "webp", "gif"].includes(extension)) {
     return extension;
   }
 
@@ -107,8 +113,8 @@ function readImageFile(formData: FormData, key: string) {
     return null;
   }
 
-  if (!value.type.startsWith("image/")) {
-    throw new Error("Загружать можно только изображения.");
+  if (!ALLOWED_SITE_IMAGE_TYPES.has(value.type)) {
+    throw new Error("Загрузите изображение в формате JPEG, PNG, WebP или GIF.");
   }
 
   if (value.size > 4 * 1024 * 1024) {
@@ -142,7 +148,6 @@ async function uploadSiteImage({
           "image/png",
           "image/webp",
           "image/gif",
-          "image/svg+xml",
         ],
       },
     );

@@ -9,6 +9,7 @@ import {
   updateSchoolAction,
   type SchoolActionState,
 } from "@/app/admin/settings/school-actions";
+import { selectClassName } from "@/lib/formatters";
 import type { School } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,12 @@ function StateMessage({ state }: { state: SchoolActionState }) {
       {state.message}
     </div>
   );
+}
+
+function getPaymentRuleLabel(rule: School["payment_rule"]) {
+  if (rule === "prepaid") return "Предоплата";
+  if (rule === "settle_later") return "Расчёт позже";
+  return "Вручную";
 }
 
 function SchoolFields({
@@ -81,6 +88,23 @@ function SchoolFields({
             Используется в карточках учеников и отчётах.
           </span>
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-payment-rule`}>Правило оплаты</Label>
+        <select
+          id={`${idPrefix}-payment-rule`}
+          name="payment_rule"
+          defaultValue={school?.payment_rule ?? "manual"}
+          className={selectClassName}
+        >
+          <option value="manual">Вручную</option>
+          <option value="prepaid">Предоплата</option>
+          <option value="settle_later">Расчёт позже</option>
+        </select>
+        <p className="text-xs leading-5 text-zinc-500">
+          При предоплате новая запись сразу считается полностью оплаченной.
+        </p>
       </div>
 
       <div className="flex items-end">
@@ -259,6 +283,9 @@ export function SchoolsSettings({
                         <p className="truncate font-semibold">{school.name}</p>
                         <p className="text-muted-foreground text-xs">
                           Источник ученика
+                        </p>
+                        <p className="mt-1 text-xs font-medium text-zinc-700">
+                          Оплата: {getPaymentRuleLabel(school.payment_rule)}
                         </p>
                       </div>
                     </div>

@@ -16,6 +16,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { formatMoney, selectClassName } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
@@ -288,9 +289,10 @@ export default async function DirectorStudentsPage({
       supabase,
       membership,
       "id, name, slug, public_name, timezone, is_active",
-    );
+  );
   const instructors = (instructorData ?? []) as Instructor[];
   const instructorIds = instructors.map((instructor) => instructor.id);
+  await autoCompletePastBookings({ instructorIds });
   const [
     { data: schoolData, error: schoolError },
     { data: accessData, error: accessError },

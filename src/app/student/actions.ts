@@ -6,8 +6,15 @@ import {
   clearStudentSession,
   requireCurrentStudentAccess,
 } from "@/lib/student-session";
-import { getConfiguredLessonPriceAmount } from "@/lib/pricing";
+import {
+  getEffectiveBookingPriceAmount,
+  getConfiguredLessonPriceAmount,
+  getInitialBookingPaymentFields,
+  getSchoolPaymentRule,
+} from "@/lib/pricing";
+import { selectStudentLessonPackageForBooking } from "@/lib/student-lesson-packages";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { BookingCategory } from "@/lib/types";
 
 export type StudentBookingActionState = {
   status: "idle" | "success" | "error";
@@ -23,27 +30,6 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error
     ? error.message
     : "Не удалось выполнить операцию";
-}
-
-function parseDate(value: string) {
-  return new Date(`${value}T00:00:00Z`);
-}
-
-function formatDateValue(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function getWeekStart(value: string) {
-  const date = parseDate(value);
-  const weekday = date.getUTCDay();
-  date.setUTCDate(date.getUTCDate() + (weekday === 0 ? -6 : 1 - weekday));
-  return formatDateValue(date);
-}
-
-function addDays(value: string, days: number) {
-  const date = parseDate(value);
-  date.setUTCDate(date.getUTCDate() + days);
-  return formatDateValue(date);
 }
 
 function isMissingColumnError(error: { code?: string; message?: string } | null) {
@@ -63,14 +49,27 @@ async function insertStudentBooking({
   slotId,
   accessId,
   studentLabel,
+  packageId,
+  schoolId,
+  bookingCategory,
   priceAmount,
+  paymentRule,
 }: {
   supabase: ReturnType<typeof createAdminClient>;
   slotId: string;
   accessId: string;
   studentLabel: string;
+  packageId: string | null;
+  schoolId: string | null;
+  bookingCategory: BookingCategory;
   priceAmount: number | null;
+  paymentRule: Awaited<ReturnType<typeof getSchoolPaymentRule>>;
 }) {
+  const paymentFields = getInitialBookingPaymentFields({
+    priceAmount,
+    paymentRule,
+    bookingCategory,
+  });
   const payload = {
     slot_id: slotId,
     student_access_id: accessId,
@@ -79,8 +78,11 @@ async function insertStudentBooking({
   };
   const extendedPayload = {
     ...payload,
+    student_lesson_package_id: packageId,
+    school_id: schoolId,
     price_amount: priceAmount,
-    booking_category: "regular",
+    ...paymentFields,
+    booking_category: bookingCategory,
   };
   const { error } = await supabase.from("bookings").insert(extendedPayload);
 
@@ -91,6 +93,7 @@ async function insertStudentBooking({
   const { error: priceOnlyError } = await supabase.from("bookings").insert({
     ...payload,
     price_amount: priceAmount,
+    ...paymentFields,
   });
 
   if (!priceOnlyError || !isMissingColumnError(priceOnlyError)) {
@@ -102,76 +105,6 @@ async function insertStudentBooking({
     .insert(payload);
 
   return fallbackError;
-}
-
-async function countConfirmedBookingsForAccess(accessId: string) {
-  const supabase = createAdminClient();
-  const { count, error } = await supabase
-    .from("bookings")
-    .select("id", { count: "exact", head: true })
-    .eq("student_access_id", accessId)
-    .eq("status", "confirmed");
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return count ?? 0;
-}
-
-async function countConfirmedBookingsForAccessInWeek({
-  accessId,
-  weekStart,
-  weekEnd,
-}: {
-  accessId: string;
-  weekStart: string;
-  weekEnd: string;
-}) {
-  const supabase = createAdminClient();
-  const { data: dayData, error: dayError } = await supabase
-    .from("schedule_days")
-    .select("id")
-    .gte("date", weekStart)
-    .lte("date", weekEnd);
-
-  if (dayError) {
-    throw new Error(dayError.message);
-  }
-
-  const dayIds = (dayData ?? []).map((day) => day.id);
-
-  if (dayIds.length === 0) {
-    return 0;
-  }
-
-  const { data: slotData, error: slotError } = await supabase
-    .from("slots")
-    .select("id")
-    .in("schedule_day_id", dayIds);
-
-  if (slotError) {
-    throw new Error(slotError.message);
-  }
-
-  const slotIds = (slotData ?? []).map((slot) => slot.id);
-
-  if (slotIds.length === 0) {
-    return 0;
-  }
-
-  const { count, error } = await supabase
-    .from("bookings")
-    .select("id", { count: "exact", head: true })
-    .eq("student_access_id", accessId)
-    .eq("status", "confirmed")
-    .in("slot_id", slotIds);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return count ?? 0;
 }
 
 export async function studentBookSlotAction(
@@ -213,48 +146,46 @@ export async function studentBookSlotAction(
       throw new Error("Этот слот уже занят");
     }
 
-    if (!access.lessonTypeIds.includes(slot.lesson_type_id)) {
-      throw new Error("Этот тип занятия вам недоступен");
-    }
+    const selectedPackage = await selectStudentLessonPackageForBooking({
+      supabase,
+      access: {
+        id: access.id,
+        organization_id: access.organizationId,
+        instructor_id: access.instructorId,
+        school_id: access.schoolId,
+        total_lesson_limit: access.totalLessonLimit,
+        weekly_lesson_limit: access.weeklyLessonLimit,
+      },
+      lessonTypeId: slot.lesson_type_id,
+      lessonDate: slot.date,
+      legacyLessonTypeIds: access.lessonTypeIds,
+    });
 
-    if (access.totalLessonLimit !== null) {
-      const totalUsed = await countConfirmedBookingsForAccess(access.id);
-
-      if (totalUsed >= access.totalLessonLimit) {
-        throw new Error(
-          "Общий лимит занятий закончился. Свяжитесь с инструктором",
-        );
-      }
-    }
-
-    if (access.weeklyLessonLimit !== null) {
-      const weekStart = getWeekStart(slot.date);
-      const weekEnd = addDays(weekStart, 6);
-      const weeklyUsed = await countConfirmedBookingsForAccessInWeek({
-        accessId: access.id,
-        weekStart,
-        weekEnd,
-      });
-
-      if (weeklyUsed >= access.weeklyLessonLimit) {
-        throw new Error(
-          "Лимит занятий на эту неделю закончился. Выберите другую неделю или свяжитесь с инструктором",
-        );
-      }
-    }
-
-    const priceAmount = await getConfiguredLessonPriceAmount({
+    const configuredPriceAmount = await getConfiguredLessonPriceAmount({
       supabase,
       organizationId: access.organizationId,
-      schoolId: access.schoolId,
+      schoolId: selectedPackage.schoolId,
       lessonTypeId: slot.lesson_type_id,
+    });
+    const priceAmount = getEffectiveBookingPriceAmount({
+      priceAmount: configuredPriceAmount,
+      bookingCategory: selectedPackage.bookingCategory,
+    });
+    const paymentRule = await getSchoolPaymentRule({
+      supabase,
+      organizationId: access.organizationId,
+      schoolId: selectedPackage.schoolId,
     });
     const error = await insertStudentBooking({
       supabase,
       slotId: slot.id,
       accessId: access.id,
       studentLabel: access.displayLabel,
+      packageId: selectedPackage.id,
+      schoolId: selectedPackage.schoolId,
+      bookingCategory: selectedPackage.bookingCategory,
       priceAmount,
+      paymentRule,
     });
 
     if (error) {

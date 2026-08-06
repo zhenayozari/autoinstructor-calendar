@@ -11,6 +11,7 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import type {
   Booking,
   Instructor,
@@ -18,6 +19,7 @@ import type {
   School,
   Slot,
   InstructorSetting,
+  StudentLessonPackage,
   StudentRegistrationRequest,
 } from "@/lib/types";
 import {
@@ -26,6 +28,7 @@ import {
   type StudentAccessCrmSummary,
 } from "@/components/admin/student-accesses-panel";
 import { getPublicOrigin } from "@/lib/public-origin";
+import { isMissingPricingTableError } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 
@@ -56,11 +59,20 @@ type StudentAccessLessonTypeRow = {
   lesson_type_id: string;
 };
 
+type StudentLessonPackageRow = Omit<StudentLessonPackage, "lesson_type_ids">;
+
+type StudentLessonPackageTypeRow = {
+  package_id: string;
+  lesson_type_id: string;
+};
+
 type StudentBookingRow = Pick<
   Booking,
   | "id"
   | "slot_id"
   | "student_access_id"
+  | "student_lesson_package_id"
+  | "school_id"
   | "price_amount"
   | "paid_amount"
   | "is_paid"
@@ -100,6 +112,7 @@ export default async function AdminStudentsPage({
     selectedInstructorId,
   );
   const selectedInstructorIds = selectedInstructor ? [selectedInstructor.id] : [];
+  await autoCompletePastBookings({ instructorIds: selectedInstructorIds });
 
   const [
     { data: lessonTypeData, error: lessonTypeError },
@@ -163,12 +176,34 @@ export default async function AdminStudentsPage({
 
   const accessLessonTypes = (accessLessonTypeData ??
     []) as StudentAccessLessonTypeRow[];
+  const { data: packageData, error: packageError } =
+    adminEnabled && accessIds.length > 0
+      ? await supabase
+          .from("student_lesson_packages")
+          .select(
+            "id, student_access_id, organization_id, instructor_id, school_id, booking_category, total_lesson_limit, weekly_lesson_limit, is_active, sort_order, created_at, updated_at",
+          )
+          .in("student_access_id", accessIds)
+          .order("sort_order")
+          .order("created_at")
+      : { data: [], error: null };
+  const packages = (packageData ?? []) as StudentLessonPackageRow[];
+  const packageIds = packages.map((item) => item.id);
+  const { data: packageLessonTypeData, error: packageLessonTypeError } =
+    adminEnabled && packageIds.length > 0
+      ? await supabase
+          .from("student_lesson_package_types")
+          .select("package_id, lesson_type_id")
+          .in("package_id", packageIds)
+      : { data: [], error: null };
+  const packageLessonTypes = (packageLessonTypeData ??
+    []) as StudentLessonPackageTypeRow[];
   const { data: bookingData, error: bookingError } =
     adminEnabled && accessIds.length > 0
       ? await supabase
           .from("bookings")
           .select(
-            "id, slot_id, student_access_id, price_amount, paid_amount, is_paid, lesson_state",
+            "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state",
           )
           .in("student_access_id", accessIds)
           .eq("status", "confirmed")
@@ -200,6 +235,12 @@ export default async function AdminStudentsPage({
     requestError ??
     settingError ??
     accessLessonTypeError ??
+    (packageError && !isMissingPricingTableError(packageError)
+      ? packageError
+      : null) ??
+    (packageLessonTypeError && !isMissingPricingTableError(packageLessonTypeError)
+      ? packageLessonTypeError
+      : null) ??
     bookingError ??
     slotError;
   const lessonTypes = (lessonTypeData ?? []) as LessonType[];
@@ -224,11 +265,33 @@ export default async function AdminStudentsPage({
   );
   const slotsById = new Map(studentSlots.map((slot) => [slot.id, slot]));
   const bookingsByAccessId = new Map<string, StudentBookingRow[]>();
+  const packageLessonTypeIdsByPackageId = new Map<string, string[]>();
+  const packagesByAccessId = new Map<string, StudentLessonPackageRow[]>();
+  const bookingsByPackageId = new Map<string, StudentBookingRow[]>();
 
   for (const booking of studentBookings) {
     const items = bookingsByAccessId.get(booking.student_access_id) ?? [];
     items.push(booking);
     bookingsByAccessId.set(booking.student_access_id, items);
+
+    if (booking.student_lesson_package_id) {
+      const packageBookings =
+        bookingsByPackageId.get(booking.student_lesson_package_id) ?? [];
+      packageBookings.push(booking);
+      bookingsByPackageId.set(booking.student_lesson_package_id, packageBookings);
+    }
+  }
+
+  for (const item of packageLessonTypes) {
+    const ids = packageLessonTypeIdsByPackageId.get(item.package_id) ?? [];
+    ids.push(item.lesson_type_id);
+    packageLessonTypeIdsByPackageId.set(item.package_id, ids);
+  }
+
+  for (const item of packages) {
+    const items = packagesByAccessId.get(item.student_access_id) ?? [];
+    items.push(item);
+    packagesByAccessId.set(item.student_access_id, items);
   }
 
   const panelAccesses: StudentAccessCrm[] = accesses.map((access) => {
@@ -300,6 +363,15 @@ export default async function AdminStudentsPage({
       school: access.school_id ? schoolsById.get(access.school_id) ?? null : null,
       crm,
       lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
+      packages: (packagesByAccessId.get(access.id) ?? []).map((item) => ({
+        ...item,
+        school: item.school_id ? schoolsById.get(item.school_id) ?? null : null,
+        lesson_type_ids: packageLessonTypeIdsByPackageId.get(item.id) ?? [],
+        lessonTypes: (packageLessonTypeIdsByPackageId.get(item.id) ?? [])
+          .map((lessonTypeId) => lessonTypesById.get(lessonTypeId))
+          .filter((lessonType): lessonType is LessonType => Boolean(lessonType)),
+        usedCount: (bookingsByPackageId.get(item.id) ?? []).length,
+      })),
     };
   });
   const activeAccesses = panelAccesses.filter((a) => !a.is_archived);

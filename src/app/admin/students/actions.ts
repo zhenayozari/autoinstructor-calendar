@@ -14,6 +14,8 @@ import {
   STUDENT_SECRET_MIN_LENGTH,
 } from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isMissingPricingTableError } from "@/lib/pricing";
+import type { BookingCategory } from "@/lib/types";
 
 export type StudentAccessActionState = {
   status: "idle" | "success" | "error";
@@ -62,6 +64,16 @@ function readLessonTypeIds(formData: FormData) {
   return formData
     .getAll("lesson_type_ids")
     .filter((value): value is string => typeof value === "string" && Boolean(value));
+}
+
+function readBookingCategory(formData: FormData): BookingCategory {
+  const value = formData.get("booking_category");
+
+  if (value === "extra" || value === "gift") {
+    return value;
+  }
+
+  return "regular";
 }
 
 function getErrorMessage(error: unknown) {
@@ -151,6 +163,230 @@ async function validateSchoolId(
   return schoolId;
 }
 
+async function validateRequiredSchoolId(formData: FormData, organizationId: string) {
+  return validateSchoolId(
+    readRequiredString(formData, "school_id"),
+    organizationId,
+  );
+}
+
+async function replaceAccessLessonTypes({
+  supabase,
+  accessId,
+  lessonTypeIds,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  accessId: string;
+  lessonTypeIds: string[];
+}) {
+  const { error: deleteError } = await supabase
+    .from("student_access_lesson_types")
+    .delete()
+    .eq("student_access_id", accessId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  if (lessonTypeIds.length === 0) {
+    return;
+  }
+
+  const { error: insertError } = await supabase
+    .from("student_access_lesson_types")
+    .insert(
+      lessonTypeIds.map((lessonTypeId) => ({
+        student_access_id: accessId,
+        lesson_type_id: lessonTypeId,
+      })),
+    );
+
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+}
+
+async function replacePackageLessonTypes({
+  supabase,
+  packageId,
+  lessonTypeIds,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  packageId: string;
+  lessonTypeIds: string[];
+}) {
+  const { error: deleteError } = await supabase
+    .from("student_lesson_package_types")
+    .delete()
+    .eq("package_id", packageId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  if (lessonTypeIds.length === 0) {
+    return;
+  }
+
+  const { error: insertError } = await supabase
+    .from("student_lesson_package_types")
+    .insert(
+      lessonTypeIds.map((lessonTypeId) => ({
+        package_id: packageId,
+        lesson_type_id: lessonTypeId,
+      })),
+    );
+
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+}
+
+async function syncPrimaryStudentLessonPackage({
+  supabase,
+  accessId,
+  organizationId,
+  instructorId,
+  schoolId,
+  totalLessonLimit,
+  weeklyLessonLimit,
+  isActive,
+  lessonTypeIds,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  accessId: string;
+  organizationId: string;
+  instructorId: string;
+  schoolId: string | null;
+  totalLessonLimit: number | null;
+  weeklyLessonLimit: number | null;
+  isActive: boolean;
+  lessonTypeIds: string[];
+}) {
+  const { data: existingPackage, error: packageLookupError } = await supabase
+    .from("student_lesson_packages")
+    .select("id")
+    .eq("student_access_id", accessId)
+    .eq("sort_order", 100)
+    .maybeSingle();
+
+  if (packageLookupError) {
+    if (isMissingPricingTableError(packageLookupError)) {
+      return null;
+    }
+
+    throw new Error(packageLookupError.message);
+  }
+
+  let packageId = existingPackage?.id as string | undefined;
+
+  if (packageId) {
+    const { error } = await supabase
+      .from("student_lesson_packages")
+      .update({
+        organization_id: organizationId,
+        instructor_id: instructorId,
+        school_id: schoolId,
+        booking_category: "regular",
+        total_lesson_limit: totalLessonLimit,
+        weekly_lesson_limit: weeklyLessonLimit,
+        is_active: isActive,
+      })
+      .eq("id", packageId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  } else {
+    const { data, error } = await supabase
+      .from("student_lesson_packages")
+      .insert({
+        student_access_id: accessId,
+        organization_id: organizationId,
+        instructor_id: instructorId,
+        school_id: schoolId,
+        booking_category: "regular",
+        total_lesson_limit: totalLessonLimit,
+        weekly_lesson_limit: weeklyLessonLimit,
+        is_active: isActive,
+        sort_order: 100,
+      })
+      .select("id")
+      .single();
+
+    if (error || !data) {
+      if (isMissingPricingTableError(error)) {
+        return null;
+      }
+
+      throw new Error(error?.message ?? "Не удалось создать доступ к занятиям");
+    }
+
+    packageId = data.id as string;
+  }
+
+  await replacePackageLessonTypes({
+    supabase,
+    packageId,
+    lessonTypeIds,
+  });
+
+  return packageId;
+}
+
+async function syncAccessLessonTypesFromPackages({
+  supabase,
+  accessId,
+  fallbackLessonTypeIds,
+}: {
+  supabase: ReturnType<typeof createAdminClient>;
+  accessId: string;
+  fallbackLessonTypeIds: string[];
+}) {
+  const { data: packages, error: packageError } = await supabase
+    .from("student_lesson_packages")
+    .select("id")
+    .eq("student_access_id", accessId)
+    .eq("is_active", true);
+
+  if (packageError) {
+    if (isMissingPricingTableError(packageError)) {
+      await replaceAccessLessonTypes({
+        supabase,
+        accessId,
+        lessonTypeIds: fallbackLessonTypeIds,
+      });
+      return;
+    }
+
+    throw new Error(packageError.message);
+  }
+
+  const packageIds = (packages ?? []).map((item) => item.id as string);
+  const lessonTypeIds = new Set(fallbackLessonTypeIds);
+
+  if (packageIds.length > 0) {
+    const { data: packageTypes, error: packageTypesError } = await supabase
+      .from("student_lesson_package_types")
+      .select("lesson_type_id")
+      .in("package_id", packageIds);
+
+    if (packageTypesError) {
+      throw new Error(packageTypesError.message);
+    }
+
+    for (const item of packageTypes ?? []) {
+      lessonTypeIds.add(item.lesson_type_id as string);
+    }
+  }
+
+  await replaceAccessLessonTypes({
+    supabase,
+    accessId,
+    lessonTypeIds: [...lessonTypeIds],
+  });
+}
+
 async function getManageableAccess(accessId: string) {
   const membership = await requireActiveOrganizationMember();
   const supabase = createAdminClient();
@@ -174,6 +410,44 @@ async function getManageableAccess(accessId: string) {
       instructor_id: string;
       organization_id: string;
       login: string;
+    },
+  };
+}
+
+async function getManageableStudentLessonPackage(packageId: string) {
+  const membership = await requireActiveOrganizationMember();
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("student_lesson_packages")
+    .select("id, student_access_id, instructor_id, organization_id, sort_order")
+    .eq("id", packageId)
+    .eq("organization_id", membership.organizationId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingPricingTableError(error)) {
+      throw new Error(
+        "Сначала примените миграцию для пакетов занятий в Supabase",
+      );
+    }
+
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Доступ к занятиям не найден");
+  }
+
+  await requireInstructorAccess(data.instructor_id as string);
+
+  return {
+    membership,
+    packageRow: data as {
+      id: string;
+      student_access_id: string;
+      instructor_id: string;
+      organization_id: string;
+      sort_order: number;
     },
   };
 }
@@ -311,8 +585,8 @@ export async function createStudentAccessAction(
       "weekly_lesson_limit",
       50,
     );
-    const schoolId = await validateSchoolId(
-      readOptionalString(formData, "school_id"),
+    const schoolId = await validateRequiredSchoolId(
+      formData,
       membership.organizationId,
     );
     const isActive = formData.get("is_active") === "on";
@@ -353,18 +627,26 @@ export async function createStudentAccessAction(
       throw new Error(error?.message ?? "Не удалось добавить ученика");
     }
 
-    const { error: lessonTypesError } = await supabase
-      .from("student_access_lesson_types")
-      .insert(
-        lessonTypeIds.map((lessonTypeId) => ({
-          student_access_id: access.id,
-          lesson_type_id: lessonTypeId,
-        })),
-      );
-
-    if (lessonTypesError) {
+    try {
+      await replaceAccessLessonTypes({
+        supabase,
+        accessId: access.id,
+        lessonTypeIds,
+      });
+      await syncPrimaryStudentLessonPackage({
+        supabase,
+        accessId: access.id,
+        organizationId: membership.organizationId,
+        instructorId,
+        schoolId,
+        totalLessonLimit,
+        weeklyLessonLimit,
+        isActive,
+        lessonTypeIds,
+      });
+    } catch (lessonTypesError) {
       await supabase.from("student_accesses").delete().eq("id", access.id);
-      throw new Error(lessonTypesError.message);
+      throw lessonTypesError;
     }
 
     revalidatePath("/admin/students");
@@ -408,8 +690,8 @@ export async function approveStudentRegistrationRequestAction(
       "weekly_lesson_limit",
       50,
     );
-    const schoolId = await validateSchoolId(
-      readOptionalString(formData, "school_id"),
+    const schoolId = await validateRequiredSchoolId(
+      formData,
       request.organization_id,
     );
     const isActive = formData.get("is_active") === "on";
@@ -464,18 +746,26 @@ export async function approveStudentRegistrationRequestAction(
       throw new Error(error?.message ?? "Не удалось подтвердить ученика");
     }
 
-    const { error: lessonTypesError } = await supabase
-      .from("student_access_lesson_types")
-      .insert(
-        lessonTypeIds.map((lessonTypeId) => ({
-          student_access_id: access.id,
-          lesson_type_id: lessonTypeId,
-        })),
-      );
-
-    if (lessonTypesError) {
+    try {
+      await replaceAccessLessonTypes({
+        supabase,
+        accessId: access.id,
+        lessonTypeIds,
+      });
+      await syncPrimaryStudentLessonPackage({
+        supabase,
+        accessId: access.id,
+        organizationId: request.organization_id,
+        instructorId: request.instructor_id,
+        schoolId,
+        totalLessonLimit,
+        weeklyLessonLimit,
+        isActive,
+        lessonTypeIds,
+      });
+    } catch (lessonTypesError) {
       await supabase.from("student_accesses").delete().eq("id", access.id);
-      throw new Error(lessonTypesError.message);
+      throw lessonTypesError;
     }
 
     const { error: requestError } = await supabase
@@ -649,27 +939,22 @@ export async function updateStudentAccessAction(
       throw new Error(error.message);
     }
 
-    const { error: deleteError } = await supabase
-      .from("student_access_lesson_types")
-      .delete()
-      .eq("student_access_id", access.id);
-
-    if (deleteError) {
-      throw new Error(deleteError.message);
-    }
-
-    const { error: insertError } = await supabase
-      .from("student_access_lesson_types")
-      .insert(
-        lessonTypeIds.map((lessonTypeId) => ({
-          student_access_id: access.id,
-          lesson_type_id: lessonTypeId,
-        })),
-      );
-
-    if (insertError) {
-      throw new Error(insertError.message);
-    }
+    await syncPrimaryStudentLessonPackage({
+      supabase,
+      accessId: access.id,
+      organizationId: access.organization_id,
+      instructorId: access.instructor_id,
+      schoolId,
+      totalLessonLimit,
+      weeklyLessonLimit,
+      isActive,
+      lessonTypeIds,
+    });
+    await syncAccessLessonTypesFromPackages({
+      supabase,
+      accessId: access.id,
+      fallbackLessonTypeIds: lessonTypeIds,
+    });
 
     await logAuditEvent({
       membership,
@@ -694,6 +979,86 @@ export async function updateStudentAccessAction(
     };
   } catch (error) {
     console.error("updateStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function updateStudentAccessDetailsAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    const displayLabel = readRequiredString(formData, "display_label");
+    const login = readRequiredString(formData, "login");
+    const studentPhone = readOptionalString(formData, "student_phone");
+    const newSecret = readOptionalString(formData, "new_secret");
+    const { membership, access } = await getManageableAccess(accessId);
+
+    if (displayLabel.length > 80) {
+      throw new Error("Метка ученика должна быть не длиннее 80 символов");
+    }
+
+    validateLogin(login);
+
+    const updates: {
+      display_label: string;
+      login: string;
+      student_phone: string | null;
+      password_hash?: string;
+    } = {
+      display_label: displayLabel,
+      login,
+      student_phone: studentPhone,
+    };
+
+    if (newSecret) {
+      validateSecret(newSecret);
+      updates.password_hash = hashStudentAccessSecret(newSecret);
+    }
+
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from("student_accesses")
+      .update(updates)
+      .eq("id", access.id)
+      .eq("instructor_id", access.instructor_id);
+
+    if (error) {
+      if (error.code === "23505") {
+        throw new Error("Такой логин уже используется");
+      }
+
+      throw new Error(error.message);
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.details_updated",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        secret_changed: Boolean(newSecret),
+      },
+    });
+
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: newSecret
+        ? "Данные обновлены. Не забудьте передать ученику новый ПИН-код/пароль."
+        : "Данные ученика обновлены",
+    };
+  } catch (error) {
+    console.error("updateStudentAccessDetailsAction:", error);
 
     return {
       status: "error",
@@ -830,6 +1195,290 @@ export async function toggleStudentAccessAction(
     };
   } catch (error) {
     console.error("toggleStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function addStudentLessonPackageAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    const { membership, access } = await getManageableAccess(accessId);
+    const schoolId = await validateRequiredSchoolId(
+      formData,
+      access.organization_id,
+    );
+    const bookingCategory = readBookingCategory(formData);
+    const totalLessonLimit = readOptionalLimit(
+      formData,
+      "total_lesson_limit",
+      500,
+    );
+    const weeklyLessonLimit = readOptionalLimit(
+      formData,
+      "weekly_lesson_limit",
+      50,
+    );
+    const isActive = formData.get("is_active") === "on";
+    const lessonTypeIds = await validateLessonTypes(
+      readLessonTypeIds(formData),
+    );
+    const supabase = createAdminClient();
+    const { data: lastPackage, error: lastPackageError } = await supabase
+      .from("student_lesson_packages")
+      .select("sort_order")
+      .eq("student_access_id", access.id)
+      .order("sort_order", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (lastPackageError) {
+      if (isMissingPricingTableError(lastPackageError)) {
+        throw new Error(
+          "Сначала примените миграцию для пакетов занятий в Supabase",
+        );
+      }
+
+      throw new Error(lastPackageError.message);
+    }
+
+    const sortOrder =
+      typeof lastPackage?.sort_order === "number"
+        ? Math.max(lastPackage.sort_order + 10, 200)
+        : 200;
+    const { data: packageRow, error: packageError } = await supabase
+      .from("student_lesson_packages")
+      .insert({
+        student_access_id: access.id,
+        organization_id: membership.organizationId,
+        instructor_id: access.instructor_id,
+        school_id: schoolId,
+        booking_category: bookingCategory,
+        total_lesson_limit: totalLessonLimit,
+        weekly_lesson_limit: weeklyLessonLimit,
+        is_active: isActive,
+        sort_order: sortOrder,
+      })
+      .select("id")
+      .single();
+
+    if (packageError || !packageRow) {
+      throw new Error(packageError?.message ?? "Не удалось добавить пакет");
+    }
+
+    try {
+      await replacePackageLessonTypes({
+        supabase,
+        packageId: packageRow.id as string,
+        lessonTypeIds,
+      });
+      await syncAccessLessonTypesFromPackages({
+        supabase,
+        accessId: access.id,
+        fallbackLessonTypeIds: lessonTypeIds,
+      });
+    } catch (packageTypesError) {
+      await supabase
+        .from("student_lesson_packages")
+        .delete()
+        .eq("id", packageRow.id);
+      throw packageTypesError;
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "student_lesson_package.created",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        school_id: schoolId,
+        booking_category: bookingCategory,
+        lesson_type_count: lessonTypeIds.length,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+
+    return {
+      status: "success",
+      message: "Дополнительный доступ добавлен",
+    };
+  } catch (error) {
+    console.error("addStudentLessonPackageAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function updateStudentLessonPackageAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const packageId = readRequiredString(formData, "student_lesson_package_id");
+    const { membership, packageRow } =
+      await getManageableStudentLessonPackage(packageId);
+
+    if (packageRow.sort_order <= 100) {
+      throw new Error("Основной доступ редактируется в карточке ученика");
+    }
+
+    const schoolId = await validateRequiredSchoolId(
+      formData,
+      packageRow.organization_id,
+    );
+    const bookingCategory = readBookingCategory(formData);
+    const totalLessonLimit = readOptionalLimit(
+      formData,
+      "total_lesson_limit",
+      500,
+    );
+    const weeklyLessonLimit = readOptionalLimit(
+      formData,
+      "weekly_lesson_limit",
+      50,
+    );
+    const isActive = formData.get("is_active") === "on";
+    const lessonTypeIds = await validateLessonTypes(
+      readLessonTypeIds(formData),
+    );
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from("student_lesson_packages")
+      .update({
+        school_id: schoolId,
+        booking_category: bookingCategory,
+        total_lesson_limit: totalLessonLimit,
+        weekly_lesson_limit: weeklyLessonLimit,
+        is_active: isActive,
+      })
+      .eq("id", packageRow.id)
+      .eq("organization_id", membership.organizationId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    await replacePackageLessonTypes({
+      supabase,
+      packageId: packageRow.id,
+      lessonTypeIds,
+    });
+    await syncAccessLessonTypesFromPackages({
+      supabase,
+      accessId: packageRow.student_access_id,
+      fallbackLessonTypeIds: lessonTypeIds,
+    });
+    await logAuditEvent({
+      membership,
+      action: "student_lesson_package.updated",
+      entityType: "student_access",
+      entityId: packageRow.student_access_id,
+      metadata: {
+        package_id: packageRow.id,
+        instructor_id: packageRow.instructor_id,
+        school_id: schoolId,
+        booking_category: bookingCategory,
+        is_active: isActive,
+        lesson_type_count: lessonTypeIds.length,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+
+    return {
+      status: "success",
+      message: "Дополнительный доступ обновлён",
+    };
+  } catch (error) {
+    console.error("updateStudentLessonPackageAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function deleteStudentLessonPackageAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const packageId = readRequiredString(formData, "student_lesson_package_id");
+    const { membership, packageRow } =
+      await getManageableStudentLessonPackage(packageId);
+
+    if (packageRow.sort_order <= 100) {
+      throw new Error("Основной доступ нельзя удалить отдельно от ученика");
+    }
+
+    const supabase = createAdminClient();
+    const { count, error: bookingCountError } = await supabase
+      .from("bookings")
+      .select("id", { count: "exact", head: true })
+      .eq("student_lesson_package_id", packageRow.id);
+
+    if (bookingCountError) {
+      throw new Error(bookingCountError.message);
+    }
+
+    if ((count ?? 0) > 0) {
+      throw new Error(
+        "По этому доступу уже есть записи. Его можно отключить, но не удалить.",
+      );
+    }
+
+    const { error } = await supabase
+      .from("student_lesson_packages")
+      .delete()
+      .eq("id", packageRow.id)
+      .eq("organization_id", membership.organizationId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    await syncAccessLessonTypesFromPackages({
+      supabase,
+      accessId: packageRow.student_access_id,
+      fallbackLessonTypeIds: [],
+    });
+    await logAuditEvent({
+      membership,
+      action: "student_lesson_package.deleted",
+      entityType: "student_access",
+      entityId: packageRow.student_access_id,
+      metadata: {
+        package_id: packageRow.id,
+        instructor_id: packageRow.instructor_id,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+
+    return {
+      status: "success",
+      message: "Дополнительный доступ удалён",
+    };
+  } catch (error) {
+    console.error("deleteStudentLessonPackageAction:", error);
 
     return {
       status: "error",

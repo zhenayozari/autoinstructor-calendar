@@ -26,6 +26,7 @@ import {
   getSelectedInstructorId,
 } from "@/lib/queries";
 
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { createClient } from "@/lib/supabase/server";
 import { getVisibleSlotNote } from "@/lib/slot-notes";
 import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
@@ -228,6 +229,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const allowedInstructorIds = selectedInstructor
     ? [selectedInstructor.id]
     : [];
+  await autoCompletePastBookings({ instructorIds: allowedInstructorIds });
   const timezone = selectedInstructor?.timezone ?? "Asia/Irkutsk";
   const today = getLocalDate(timezone);
   const tomorrow = getLocalDate(timezone, 1);

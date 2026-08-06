@@ -17,6 +17,7 @@ import {
   getLocalDate,
   getUtcWeekStart,
 } from "@/lib/formatters";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -144,6 +145,7 @@ export default async function DirectorSchedulePage({
   const instructorIds = selectedInstructorId
     ? [selectedInstructorId]
     : instructors.map((instructor) => instructor.id);
+  await autoCompletePastBookings({ instructorIds });
   const timezone =
     selectedInstructor?.timezone ?? instructors[0]?.timezone ?? "Asia/Irkutsk";
   const currentDate = getLocalDate(timezone);

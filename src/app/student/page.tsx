@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { studentLogoutAction } from "@/app/student/actions";
 import { LessonReviewForm } from "@/components/student/lesson-review-form";
+import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StudentBookingButton } from "@/components/student/student-booking-button";
@@ -577,6 +578,10 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   const access = await requireCurrentStudentAccess();
   const params = searchParams ? await searchParams : {};
   const supabase = createAdminClient();
+  await autoCompletePastBookings({
+    instructorIds: [access.instructorId],
+    studentAccessId: access.id,
+  });
   const { data: instructor } = await supabase
     .from("instructors")
     .select("id, name, public_name, timezone")

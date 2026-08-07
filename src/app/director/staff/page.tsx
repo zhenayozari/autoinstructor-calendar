@@ -419,7 +419,7 @@ export default async function DirectorStaffPage({
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
   const origin = getPublicOrigin(requestHeaders);
-  const timezone = "Asia/Irkutsk";
+  const timezone = "Europe/Moscow";
   const currentDate = getLocalDate(timezone);
   const weekStart = getUtcWeekStart(currentDate);
   const weekEnd = addUtcDays(weekStart, 6);

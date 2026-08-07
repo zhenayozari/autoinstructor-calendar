@@ -230,7 +230,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     ? [selectedInstructor.id]
     : [];
   await autoCompletePastBookings({ instructorIds: allowedInstructorIds });
-  const timezone = selectedInstructor?.timezone ?? "Asia/Irkutsk";
+  const timezone = selectedInstructor?.timezone ?? "Europe/Moscow";
   const today = getLocalDate(timezone);
   const tomorrow = getLocalDate(timezone, 1);
 

@@ -163,7 +163,7 @@ export default async function AdminSchedulePage({
     );
   }
 
-  const defaultWeekDate = getLocalDate("Asia/Irkutsk");
+  const defaultWeekDate = getLocalDate("Europe/Moscow");
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">

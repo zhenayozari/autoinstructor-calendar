@@ -333,7 +333,7 @@ export default async function DirectorReportsPage({
       "id, name, slug, public_name, timezone, is_active",
     );
   const instructors = (instructorData ?? []) as Instructor[];
-  const timezone = instructors[0]?.timezone ?? "Asia/Irkutsk";
+  const timezone = instructors[0]?.timezone ?? "Europe/Moscow";
   const selectedPeriod =
     params.period === "day" ||
     params.period === "week" ||

@@ -308,7 +308,7 @@ export default async function Home() {
             name: "Вячеслав",
             slug: "vyacheslav",
             public_name: "Вячеслав",
-            timezone: "Asia/Irkutsk",
+            timezone: "Europe/Moscow",
             is_active: true,
             photo_url: null,
             short_bio:

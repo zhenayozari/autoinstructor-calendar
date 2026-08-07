@@ -188,7 +188,7 @@ export default async function AdminRatingPage({
     selectedInstructorId,
   );
   const ratingFilter = getRatingFilter(params.rating);
-  const timezone = selectedInstructor?.timezone ?? "Asia/Irkutsk";
+  const timezone = selectedInstructor?.timezone ?? "Europe/Moscow";
 
   const { data: reviewData, error: reviewError } =
     selectedInstructor && adminEnabled

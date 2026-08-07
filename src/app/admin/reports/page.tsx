@@ -723,7 +723,7 @@ export default async function AdminReportsPage({
     await buildActiveInstructorsQuery(supabase, membership);
   const instructors = (instructorData ?? []) as Instructor[];
   const firstInstructor = instructors[0] ?? null;
-  const timezone = firstInstructor?.timezone ?? "Asia/Irkutsk";
+  const timezone = firstInstructor?.timezone ?? "Europe/Moscow";
   const selectedPeriod =
     params.period === "day" || params.period === "week" || params.period === "custom"
       ? params.period

@@ -103,7 +103,7 @@ export default async function DirectorOverviewPage() {
   const instructors = (instructorData ?? []) as Instructor[];
   const instructorIds = instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds });
-  const timezone = instructors[0]?.timezone ?? "Asia/Irkutsk";
+  const timezone = instructors[0]?.timezone ?? "Europe/Moscow";
   const today = getLocalDate(timezone);
   const tomorrow = getLocalDate(timezone, 1);
 

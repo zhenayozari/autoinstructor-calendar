@@ -81,7 +81,7 @@ type LessonReviewRow = {
   created_at: string;
 };
 
-const DEFAULT_TIMEZONE = "Asia/Irkutsk";
+const DEFAULT_TIMEZONE = "Europe/Moscow";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ANCHOR = "student-schedule";
 

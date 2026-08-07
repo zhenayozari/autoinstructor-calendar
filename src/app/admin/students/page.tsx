@@ -35,6 +35,7 @@ export const dynamic = "force-dynamic";
 type AdminStudentsPageProps = {
   searchParams?: Promise<{
     instructor?: string;
+    student?: string;
   }>;
 };
 
@@ -447,6 +448,7 @@ export default async function AdminStudentsPage({
               registrationSettings?.student_registration_token_updated_at ?? null
             }
             canDeleteStudents={membership.role === "owner"}
+            highlightedStudentAccessId={params.student ?? null}
           />
         ) : (
           <div className="rounded-2xl border border-dashed bg-white px-4 py-10 text-center text-sm text-zinc-500">

@@ -1,3 +1,5 @@
+import Link from "next/link";
+import type { ReactNode } from "react";
 import { ChevronDown, TrendingUp } from "lucide-react";
 import {
   createAdminClient,
@@ -94,6 +96,12 @@ type ReportGroup = {
   id: string;
   label: string;
   color?: string;
+  studentAccessId?: string | null;
+  sourceSummaries: {
+    id: string;
+    label: string;
+    color?: string;
+  }[];
   count: number;
   hours: number;
   amount: number;
@@ -104,6 +112,12 @@ type ReportGroup = {
 type DebtGroup = {
   id: string;
   label: string;
+  studentAccessId?: string | null;
+  sourceSummaries: {
+    id: string;
+    label: string;
+    color?: string;
+  }[];
   amount: number;
   count: number;
 };
@@ -215,6 +229,7 @@ function addToGroup(
   label: string,
   item: ReportItem,
   color?: string,
+  options?: { studentAccessId?: string | null },
 ) {
   const current =
     map.get(key) ??
@@ -222,12 +237,23 @@ function addToGroup(
       id: key,
       label,
       color,
+      studentAccessId: options?.studentAccessId,
+      sourceSummaries: [],
       count: 0,
       hours: 0,
       amount: 0,
       missingPriceCount: 0,
       paidCount: 0,
     } satisfies ReportGroup);
+
+  const sourceId = item.school?.id ?? "without-source";
+  if (!current.sourceSummaries.some((source) => source.id === sourceId)) {
+    current.sourceSummaries.push({
+      id: sourceId,
+      label: item.school?.name ?? "Без источника",
+      color: item.school?.color,
+    });
+  }
 
   current.count += 1;
   if (item.lesson_state === "completed") {
@@ -317,6 +343,29 @@ function HiddenFilterFields({
   );
 }
 
+function StudentCardLink({
+  studentAccessId,
+  className,
+  children,
+}: {
+  studentAccessId?: string | null;
+  className?: string;
+  children: ReactNode;
+}) {
+  if (!studentAccessId) {
+    return <span className={className}>{children}</span>;
+  }
+
+  return (
+    <Link
+      href={`/admin/students?student=${encodeURIComponent(studentAccessId)}`}
+      className={`${className ?? ""} underline-offset-4 hover:underline`}
+    >
+      {children}
+    </Link>
+  );
+}
+
 function PeriodButton({
   value,
   label,
@@ -345,10 +394,12 @@ function GroupTable({
   title,
   description,
   groups,
+  showSources = false,
 }: {
   title: string;
   description: string;
   groups: ReportGroup[];
+  showSources?: boolean;
 }) {
   return (
     <Card>
@@ -378,14 +429,39 @@ function GroupTable({
                 {groups.map((group) => (
                   <tr key={group.id} className="border-b last:border-0">
                     <td className="py-3 pr-3">
-                      <div className="flex items-center gap-2">
-                        {group.color && (
-                          <span
-                            className="size-3 rounded-full border border-black/10"
-                            style={{ backgroundColor: group.color }}
-                          />
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          {group.color && (
+                            <span
+                              className="size-3 rounded-full border border-black/10"
+                              style={{ backgroundColor: group.color }}
+                            />
+                          )}
+                          <StudentCardLink
+                            studentAccessId={group.studentAccessId}
+                            className="font-semibold"
+                          >
+                            {group.label}
+                          </StudentCardLink>
+                        </div>
+                        {showSources && group.sourceSummaries.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {group.sourceSummaries.map((source) => (
+                              <span
+                                key={source.id}
+                                className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700"
+                              >
+                                {source.color && (
+                                  <span
+                                    className="size-1.5 rounded-full"
+                                    style={{ backgroundColor: source.color }}
+                                  />
+                                )}
+                                {source.label}
+                              </span>
+                            ))}
+                          </div>
                         )}
-                        <span className="font-semibold">{group.label}</span>
                       </div>
                     </td>
                     <td className="py-3 pr-3 text-right tabular-nums">
@@ -433,7 +509,12 @@ function ReportItemRow({
           style={{ backgroundColor: item.lessonType.color }}
         />
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{item.student_label}</p>
+          <StudentCardLink
+            studentAccessId={item.student_access_id}
+            className="block truncate text-sm font-semibold"
+          >
+            {item.student_label}
+          </StudentCardLink>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
             <span className="text-muted-foreground">{item.lessonType.name}</span>
             <span className="text-zinc-300">·</span>
@@ -876,7 +957,14 @@ export default async function AdminReportsPage({
       getBookingCategoryLabel(item.booking_category),
       item,
     );
-    addToGroup(byStudent, item.student_label, item.student_label, item);
+    addToGroup(
+      byStudent,
+      item.student_access_id ?? item.student_label,
+      item.student_label,
+      item,
+      undefined,
+      { studentAccessId: item.student_access_id },
+    );
     addToGroup(
       bySchool,
       item.school?.id ?? "private",
@@ -942,17 +1030,28 @@ export default async function AdminReportsPage({
     }
 
     const current =
-      debtGroupsByStudent.get(item.student_label) ??
+      debtGroupsByStudent.get(item.student_access_id ?? item.student_label) ??
       ({
-        id: item.student_label,
+        id: item.student_access_id ?? item.student_label,
         label: item.student_label,
+        studentAccessId: item.student_access_id,
+        sourceSummaries: [],
         amount: 0,
         count: 0,
       } satisfies DebtGroup);
 
+    const sourceId = item.school?.id ?? "without-source";
+    if (!current.sourceSummaries.some((source) => source.id === sourceId)) {
+      current.sourceSummaries.push({
+        id: sourceId,
+        label: item.school?.name ?? "Без источника",
+        color: item.school?.color,
+      });
+    }
+
     current.amount += itemDebt;
     current.count += 1;
-    debtGroupsByStudent.set(item.student_label, current);
+    debtGroupsByStudent.set(item.student_access_id ?? item.student_label, current);
   }
 
   const debtGroups = [...debtGroupsByStudent.values()].sort(
@@ -1329,10 +1428,33 @@ export default async function AdminReportsPage({
                     className="flex items-center justify-between gap-3 px-3 py-3 text-sm"
                   >
                     <div className="min-w-0">
-                      <p className="truncate font-semibold">{group.label}</p>
+                      <StudentCardLink
+                        studentAccessId={group.studentAccessId}
+                        className="block truncate font-semibold"
+                      >
+                        {group.label}
+                      </StudentCardLink>
                       <p className="text-muted-foreground mt-0.5 text-xs">
                         {group.count} неоплаченных занятий
                       </p>
+                      {group.sourceSummaries.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {group.sourceSummaries.map((source) => (
+                            <span
+                              key={source.id}
+                              className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700"
+                            >
+                              {source.color && (
+                                <span
+                                  className="size-1.5 rounded-full"
+                                  style={{ backgroundColor: source.color }}
+                                />
+                              )}
+                              {source.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <p className="shrink-0 font-semibold text-amber-900">
                       {formatMoney(group.amount)}
@@ -1374,6 +1496,7 @@ export default async function AdminReportsPage({
           title="По ученикам"
           description="По метке ученика или учебному доступу."
           groups={studentGroups}
+          showSources
         />
 
         <Card>

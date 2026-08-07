@@ -1230,11 +1230,13 @@ function StudentAccessCard({
   lessonTypes,
   schools,
   canDeleteStudents,
+  isHighlighted = false,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
   canDeleteStudents: boolean;
+  isHighlighted?: boolean;
 }) {
   const [updateState, updateAction, isUpdatePending] = useActionState(
     updateStudentAccessDetailsAction,
@@ -1246,7 +1248,14 @@ function StudentAccessCard({
   );
 
   return (
-    <details className="rounded-2xl border border-zinc-200 bg-white shadow-sm transition open:border-zinc-500 open:bg-zinc-50/70 open:shadow-md">
+    <details
+      id={`student-access-${access.id}`}
+      className={`scroll-mt-24 rounded-2xl border bg-white shadow-sm transition open:bg-zinc-50/70 open:shadow-md ${
+        isHighlighted
+          ? "border-emerald-400 ring-4 ring-emerald-100"
+          : "border-zinc-200 open:border-zinc-500"
+      }`}
+    >
       <summary className="cursor-pointer list-none px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -1779,17 +1788,26 @@ function ArchivedAccessCard({
   access,
   lessonTypes,
   canDeleteStudents,
+  isHighlighted = false,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   canDeleteStudents: boolean;
+  isHighlighted?: boolean;
 }) {
   const allowedTypes = lessonTypes.filter((lt) =>
     access.lesson_type_ids.includes(lt.id),
   );
 
   return (
-    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-4 sm:px-5">
+    <div
+      id={`student-access-${access.id}`}
+      className={`scroll-mt-24 rounded-2xl border bg-zinc-50 px-4 py-4 sm:px-5 ${
+        isHighlighted
+          ? "border-emerald-400 ring-4 ring-emerald-100"
+          : "border-zinc-200"
+      }`}
+    >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -1969,6 +1987,7 @@ export function StudentAccessesPanel({
   registrationLink,
   registrationLinkUpdatedAt,
   canDeleteStudents = false,
+  highlightedStudentAccessId,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
@@ -1982,6 +2001,7 @@ export function StudentAccessesPanel({
   registrationLink: string | null;
   registrationLinkUpdatedAt: string | null;
   canDeleteStudents?: boolean;
+  highlightedStudentAccessId?: string | null;
 }) {
   const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
     pendingRequests.length > 0 ? "pending" : "active",
@@ -1989,6 +2009,40 @@ export function StudentAccessesPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [debtFilter, setDebtFilter] = useState("all");
+
+  useEffect(() => {
+    if (!highlightedStudentAccessId) {
+      return;
+    }
+
+    const isArchived = archivedAccesses.some(
+      (access) => access.id === highlightedStudentAccessId,
+    );
+
+    const timeoutId = window.setTimeout(() => {
+      setTab(isArchived ? "archive" : "active");
+      setSearchQuery("");
+      setSourceFilter("all");
+      setDebtFilter("all");
+
+      window.setTimeout(() => {
+        const element = document.getElementById(
+          `student-access-${highlightedStudentAccessId}`,
+        );
+
+        if (element instanceof HTMLDetailsElement) {
+          element.open = true;
+        }
+
+        element?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 120);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [accesses, archivedAccesses, highlightedStudentAccessId]);
 
   const filteredAccesses = accesses.filter(
     (access) =>
@@ -2128,6 +2182,7 @@ export function StudentAccessesPanel({
                   lessonTypes={lessonTypes}
                   schools={schools}
                   canDeleteStudents={canDeleteStudents}
+                  isHighlighted={access.id === highlightedStudentAccessId}
                 />
               ))}
             </div>
@@ -2170,6 +2225,7 @@ export function StudentAccessesPanel({
                   access={access}
                   lessonTypes={lessonTypes}
                   canDeleteStudents={canDeleteStudents}
+                  isHighlighted={access.id === highlightedStudentAccessId}
                 />
               ))}
             </div>

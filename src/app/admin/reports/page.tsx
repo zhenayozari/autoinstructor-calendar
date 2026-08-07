@@ -14,7 +14,11 @@ import {
 } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
-import { getBookingCategoryLabel } from "@/lib/booking-categories";
+import { getSchedulableLessonTypes } from "@/lib/lesson-types";
+import {
+  bookingCategoryOptions,
+  getBookingCategoryLabel,
+} from "@/lib/booking-categories";
 import type {
   Booking,
   BookingCategory,
@@ -50,6 +54,7 @@ type AdminReportsPageProps = {
     student?: string;
     payment?: string;
     lessonState?: string;
+    bookingCategory?: string;
   }>;
 };
 
@@ -115,6 +120,16 @@ type SourceSettlementGroup = {
   missingPriceCount: number;
 };
 
+type ReportItemSourceGroup = {
+  id: string;
+  label: string;
+  color?: string;
+  items: ReportItem[];
+  amount: number;
+  paidAmount: number;
+  debtAmount: number;
+};
+
 function getMonthBounds(dateValue: string) {
   const [year, month] = dateValue.split("-").map(Number);
   const start = new Date(Date.UTC(year, month - 1, 1));
@@ -153,6 +168,27 @@ function getDateBounds(period: string | undefined, currentDate: string) {
 
 function isDateValue(value: string | undefined) {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+}
+
+function formatReportDate(value: string) {
+  const [year, month, day] = value.split("-");
+
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  return `${day}.${month}.${year}`;
+}
+
+function formatReportDateTime(value: string, timezone: string) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: timezone,
+  }).format(new Date(value));
 }
 
 function getDurationHours(slot: ReportSlot) {
@@ -256,12 +292,14 @@ function HiddenFilterFields({
   selectedStudentId,
   selectedPayment,
   selectedLessonState,
+  selectedBookingCategory,
 }: {
   selectedLessonTypeId: string;
   selectedSchoolId: string;
   selectedStudentId: string;
   selectedPayment: string;
   selectedLessonState: string;
+  selectedBookingCategory: string;
 }) {
   return (
     <>
@@ -270,6 +308,11 @@ function HiddenFilterFields({
       <input type="hidden" name="student" value={selectedStudentId} />
       <input type="hidden" name="payment" value={selectedPayment} />
       <input type="hidden" name="lessonState" value={selectedLessonState} />
+      <input
+        type="hidden"
+        name="bookingCategory"
+        value={selectedBookingCategory}
+      />
     </>
   );
 }
@@ -373,6 +416,72 @@ function GroupTable({
   );
 }
 
+function ReportItemRow({
+  item,
+  showSource = true,
+}: {
+  item: ReportItem;
+  showSource?: boolean;
+}) {
+  const debt = getItemDebtAmount(item);
+
+  return (
+    <div className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-start gap-3">
+        <span
+          className="mt-1 size-2.5 shrink-0 rounded-full border border-black/10"
+          style={{ backgroundColor: item.lessonType.color }}
+        />
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{item.student_label}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-muted-foreground">{item.lessonType.name}</span>
+            <span className="text-zinc-300">·</span>
+            <span className="text-muted-foreground">
+              {formatReportDateTime(
+                item.slot.start_time,
+                item.instructor.timezone,
+              )}
+            </span>
+            <span className="rounded-full bg-zinc-100 px-2 py-0.5 font-medium text-zinc-700">
+              {getBookingCategoryLabel(item.booking_category)}
+            </span>
+            {showSource && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 font-medium text-zinc-700">
+                {item.school?.color && (
+                  <span
+                    className="size-1.5 rounded-full"
+                    style={{ backgroundColor: item.school.color }}
+                  />
+                )}
+                {item.school?.name ?? "Без источника"}
+              </span>
+            )}
+          </div>
+          {item.price_amount !== null && (
+            <p className="mt-1 text-xs font-medium text-zinc-600">
+              К оплате: {formatMoney(item.price_amount)}
+              {" · "}
+              Получено: {formatMoney(item.paid_amount ?? 0)}
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="pl-5 text-xs font-semibold sm:pl-0">
+        {debt > 0 ? (
+          <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800">
+            Долг {formatMoney(debt)}
+          </span>
+        ) : (
+          <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-800">
+            Долга нет
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SourceSettlementsCard({
   groups,
   from,
@@ -400,8 +509,9 @@ function SourceSettlementsCard({
       <CardHeader className="pb-3">
         <CardTitle>Расчёты с автошколами</CardTitle>
         <CardDescription>
-          Проведённые занятия по источникам за период {from} — {to}. Здесь видно,
-          кто уже рассчитался и какой остаток к выплате.
+          Проведённые занятия по источникам за период {formatReportDate(from)} —{" "}
+          {formatReportDate(to)}. Здесь видно, кто уже рассчитался и какой
+          остаток к выплате.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -554,6 +664,12 @@ export default async function AdminReportsPage({
     params.lessonState === "no_show"
       ? params.lessonState
       : "all";
+  const selectedBookingCategory =
+    params.bookingCategory === "regular" ||
+    params.bookingCategory === "extra" ||
+    params.bookingCategory === "gift"
+      ? params.bookingCategory
+      : "all";
   const selectedInstructorId = membership.instructorId ?? firstInstructor?.id;
   const selectedInstructor =
     selectedInstructorId && selectedInstructorId !== "all"
@@ -576,7 +692,7 @@ export default async function AdminReportsPage({
   ] = await Promise.all([
     supabase
       .from("lesson_types")
-      .select("id, code, name, color, kind")
+      .select("id, code, name, color, kind, tags")
       .order("sort_order")
       .order("name"),
     supabase
@@ -602,7 +718,9 @@ export default async function AdminReportsPage({
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  const lessonTypes = (lessonTypeData ?? []) as LessonType[];
+  const lessonTypes = getSchedulableLessonTypes(
+    (lessonTypeData ?? []) as LessonType[],
+  );
   const schools = (schoolData ?? []) as School[];
   const studentAccesses = (studentAccessData ?? []) as {
     id: string;
@@ -664,6 +782,12 @@ export default async function AdminReportsPage({
 
       return bookingSchoolId === selectedSchoolId;
     });
+  }
+
+  if (selectedBookingCategory !== "all") {
+    bookings = bookings.filter(
+      (booking) => booking.booking_category === selectedBookingCategory,
+    );
   }
 
   const settlementBookings = [...bookings];
@@ -880,6 +1004,74 @@ export default async function AdminReportsPage({
       new Date(a.slot.start_time).getTime(),
   );
 
+  const selectedLessonTypeLabel =
+    selectedLessonTypeId === "all"
+      ? "Все типы слотов"
+      : lessonTypes.find((lessonType) => lessonType.id === selectedLessonTypeId)
+          ?.name ?? "Тип не найден";
+  const selectedBookingCategoryLabel =
+    selectedBookingCategory === "all"
+      ? "Все категории"
+      : getBookingCategoryLabel(selectedBookingCategory as BookingCategory);
+  const selectedSchool = schools.find((school) => school.id === selectedSchoolId);
+  const selectedSchoolLabel =
+    selectedSchoolId === "all"
+      ? "Все автошколы"
+      : selectedSchool?.name ?? "Источник не найден";
+  const selectedStudentLabel =
+    selectedStudentId === "all"
+      ? "Все ученики"
+      : studentAccesses.find((student) => student.id === selectedStudentId)
+          ?.display_label ?? "Ученик не найден";
+  const selectedPaymentLabel =
+    selectedPayment === "paid"
+      ? "Только оплаченные"
+      : selectedPayment === "unpaid"
+        ? "Только долги"
+        : "Все оплаты";
+  const selectedLessonStateLabel =
+    selectedLessonState === "scheduled"
+      ? "Запланированные"
+      : selectedLessonState === "completed"
+        ? "Проведённые"
+        : selectedLessonState === "no_show"
+          ? "Неявки"
+          : "Все занятия";
+  const filterChips = [
+    `Тип слота: ${selectedLessonTypeLabel}`,
+    `Категория: ${selectedBookingCategoryLabel}`,
+    `Автошкола: ${selectedSchoolLabel}`,
+    `Ученик: ${selectedStudentLabel}`,
+    `Оплата: ${selectedPaymentLabel}`,
+    `Статус: ${selectedLessonStateLabel}`,
+  ];
+  const reportItemGroupsBySource = [
+    ...sortedReportItems
+      .reduce((map, item) => {
+        const sourceId = item.school?.id ?? "without-source";
+        const current =
+          map.get(sourceId) ??
+          ({
+            id: sourceId,
+            label: item.school?.name ?? "Без источника",
+            color: item.school?.color,
+            items: [],
+            amount: 0,
+            paidAmount: 0,
+            debtAmount: 0,
+          } satisfies ReportItemSourceGroup);
+
+        current.items.push(item);
+        current.amount += item.price_amount ?? 0;
+        current.paidAmount += getItemPaidAmount(item);
+        current.debtAmount += getItemDebtAmount(item);
+        map.set(sourceId, current);
+
+        return map;
+      }, new Map<string, ReportItemSourceGroup>())
+      .values(),
+  ].sort((first, second) => first.label.localeCompare(second.label, "ru"));
+
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-6xl space-y-4 sm:space-y-6">
@@ -915,8 +1107,18 @@ export default async function AdminReportsPage({
             <div>
               <h2 className="text-lg font-semibold">Период</h2>
               <p className="text-muted-foreground mt-1 text-sm">
-                {from} — {to}
+                {formatReportDate(from)} — {formatReportDate(to)}
               </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {filterChips.map((chip) => (
+                  <span
+                    key={chip}
+                    className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-700"
+                  >
+                    {chip}
+                  </span>
+                ))}
+              </div>
             </div>
             <form className="flex gap-2 sm:min-w-[360px]">
               <HiddenFilterFields
@@ -925,6 +1127,7 @@ export default async function AdminReportsPage({
                 selectedStudentId={selectedStudentId}
                 selectedPayment={selectedPayment}
                 selectedLessonState={selectedLessonState}
+                selectedBookingCategory={selectedBookingCategory}
               />
               <PeriodButton
                 value="day"
@@ -962,17 +1165,34 @@ export default async function AdminReportsPage({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="report-lesson-type">Тип занятия</Label>
+                <Label htmlFor="report-lesson-type">Тип слота</Label>
                 <select
                   id="report-lesson-type"
                   name="lessonType"
                   className={selectClassName}
                   defaultValue={selectedLessonTypeId}
                 >
-                  <option value="all">Все типы занятий</option>
+                  <option value="all">Все типы слотов</option>
                   {lessonTypes.map((lessonType) => (
                     <option key={lessonType.id} value={lessonType.id}>
                       {lessonType.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="report-booking-category">Категория записи</Label>
+                <select
+                  id="report-booking-category"
+                  name="bookingCategory"
+                  className={selectClassName}
+                  defaultValue={selectedBookingCategory}
+                >
+                  <option value="all">Все категории</option>
+                  {bookingCategoryOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
@@ -1168,53 +1388,56 @@ export default async function AdminReportsPage({
               <div className="rounded-2xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">
                 Нет записей за выбранный период.
               </div>
-            ) : (
-              <div className="divide-y">
-                {sortedReportItems.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+            ) : selectedSchoolId === "all" ? (
+              <div className="space-y-3">
+                {reportItemGroupsBySource.map((group) => (
+                  <section
+                    key={group.id}
+                    className="overflow-hidden rounded-2xl border bg-zinc-50/70"
                   >
-                    <div className="flex min-w-0 items-start gap-3">
-                      <span
-                        className="mt-1 size-2.5 shrink-0 rounded-full border border-black/10"
-                        style={{ backgroundColor: item.lessonType.color }}
-                      />
+                    <div className="flex flex-wrap items-start justify-between gap-2 border-b bg-white px-3 py-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold">
-                          {item.student_label}
+                        <div className="flex items-center gap-2">
+                          {group.color && (
+                            <span
+                              className="size-2.5 rounded-full border border-black/10"
+                              style={{ backgroundColor: group.color }}
+                            />
+                          )}
+                          <h3 className="truncate text-sm font-semibold">
+                            {group.label}
+                          </h3>
+                        </div>
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {group.items.length} записей
                         </p>
-                        <p className="text-muted-foreground mt-0.5 text-xs">
-                          {item.lessonType.name} ·{" "}
-                          {new Intl.DateTimeFormat("ru-RU", {
-                            day: "numeric",
-                            month: "short",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            timeZone: item.instructor.timezone,
-                          }).format(new Date(item.slot.start_time))}
-                        </p>
-                        {item.price_amount !== null && (
-                          <p className="mt-0.5 text-xs font-medium text-zinc-600">
-                            К оплате: {formatMoney(item.price_amount)}
-                            {" · "}
-                            Получено: {formatMoney(item.paid_amount ?? 0)}
-                          </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 text-xs font-medium">
+                        <span className="rounded-full bg-zinc-100 px-2 py-1 text-zinc-700">
+                          К оплате {formatMoney(group.amount)}
+                        </span>
+                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-800">
+                          Получено {formatMoney(group.paidAmount)}
+                        </span>
+                        {group.debtAmount > 0 && (
+                          <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800">
+                            Долг {formatMoney(group.debtAmount)}
+                          </span>
                         )}
                       </div>
                     </div>
-                    <div className="pl-5 text-xs font-semibold sm:pl-0">
-                      {getItemDebtAmount(item) > 0 ? (
-                        <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800">
-                          Долг {formatMoney(getItemDebtAmount(item))}
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-800">
-                          Долга нет
-                        </span>
-                      )}
+                    <div className="divide-y bg-white">
+                      {group.items.map((item) => (
+                        <ReportItemRow key={item.id} item={item} />
+                      ))}
                     </div>
-                  </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <div className="divide-y">
+                {sortedReportItems.map((item) => (
+                  <ReportItemRow key={item.id} item={item} />
                 ))}
               </div>
             )}

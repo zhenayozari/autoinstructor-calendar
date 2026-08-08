@@ -115,7 +115,7 @@ export default async function InstructorProfilePage({
                   {profile?.profile_updated_at
                     ? `Последнее обновление: ${formatUpdatedAt(
                         profile.profile_updated_at,
-                        "Europe/Moscow",
+                        "Asia/Irkutsk",
                       )}`
                     : "Профиль ещё не обновлялся"}
                 </CardDescription>

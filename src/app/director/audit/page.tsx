@@ -239,7 +239,7 @@ export default async function DirectorAuditPage() {
   const instructorsById = new Map(
     instructors.map((instructor) => [instructor.id, instructor]),
   );
-  const timezone = instructors[0]?.timezone ?? "Europe/Moscow";
+  const timezone = instructors[0]?.timezone ?? "Asia/Irkutsk";
 
   return (
     <main className="mx-auto max-w-6xl space-y-4 px-4 py-4 sm:px-6">

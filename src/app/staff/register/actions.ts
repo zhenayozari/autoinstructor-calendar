@@ -153,7 +153,7 @@ export async function submitStaffRegistrationAction(
         name,
         slug: createEmployeeSlug(),
         public_name: name,
-        timezone: "Europe/Moscow",
+        timezone: "Asia/Irkutsk",
         is_active: false,
         public_is_visible: false,
         contact_text: phone,

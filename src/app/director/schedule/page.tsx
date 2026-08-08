@@ -147,7 +147,7 @@ export default async function DirectorSchedulePage({
     : instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds });
   const timezone =
-    selectedInstructor?.timezone ?? instructors[0]?.timezone ?? "Europe/Moscow";
+    selectedInstructor?.timezone ?? instructors[0]?.timezone ?? "Asia/Irkutsk";
   const currentDate = getLocalDate(timezone);
   const baseDate = isDateValue(params.week) ? params.week! : currentDate;
   const weekStart = getUtcWeekStart(baseDate);

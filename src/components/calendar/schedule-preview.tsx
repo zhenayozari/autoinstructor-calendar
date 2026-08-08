@@ -15,7 +15,7 @@ type PreviewSlot = {
   is_booked: boolean;
 };
 
-const DEFAULT_TIMEZONE = "Europe/Moscow";
+const DEFAULT_TIMEZONE = "Asia/Irkutsk";
 
 function getCurrentDate() {
   return new Intl.DateTimeFormat("en-CA", {

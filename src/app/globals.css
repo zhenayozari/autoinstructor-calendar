@@ -70,6 +70,8 @@ a {
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
@@ -134,6 +136,22 @@ a {
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+.app-safe-top {
+  padding-top: var(--app-safe-top);
+}
+
+.app-safe-bottom {
+  padding-bottom: var(--app-safe-bottom);
+}
+
+.app-bottom-nav {
+  bottom: calc(0.75rem + var(--app-safe-bottom));
+}
+
+.app-main-with-bottom-nav {
+  padding-bottom: calc(6rem + var(--app-safe-bottom));
 }
 
 @layer base {

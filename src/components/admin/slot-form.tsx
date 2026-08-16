@@ -7,6 +7,7 @@ import {
   addUtcDays,
   formatDateValue,
   formatDayTitle,
+  formatNumericDate,
   formatTime,
   getUtcWeekStart,
   parseUtcDate,
@@ -173,7 +174,8 @@ export function SlotForm({
           <div className="text-center">
             <p className="text-xs font-medium text-zinc-500">Выберите день</p>
             <p className="text-sm font-semibold">
-              {weekDates[0]} — {weekDates[6]}
+              {formatNumericDate(weekDates[0] ?? "")} —{" "}
+              {formatNumericDate(weekDates[6] ?? "")}
             </p>
           </div>
           <Button
@@ -242,7 +244,7 @@ export function SlotForm({
               </p>
             </div>
             <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-zinc-600">
-              {selectedDate}
+              {formatNumericDate(selectedDate)}
             </span>
           </div>
 

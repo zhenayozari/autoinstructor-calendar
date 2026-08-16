@@ -30,6 +30,16 @@ export function formatDateValue(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
+export function formatNumericDate(value: string) {
+  const [year, month, day] = value.split("-");
+
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  return `${day}.${month}.${year}`;
+}
+
 export function addUtcDays(date: Date, days: number) {
   const result = new Date(date);
   result.setUTCDate(result.getUTCDate() + days);

@@ -12,6 +12,7 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
   Instructor,
@@ -163,7 +164,10 @@ export default async function AdminSchedulePage({
     );
   }
 
-  const defaultWeekDate = getLocalDate("Asia/Irkutsk");
+  const defaultWeekDate = getLocalDate(
+    instructors.find((instructor) => instructor.id === initialInstructorId)
+      ?.timezone ?? DEFAULT_TIMEZONE,
+  );
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">

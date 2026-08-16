@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, CalendarDays, Clock3, UserRound } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
 type PreviewSlot = {
   id: string;
@@ -14,8 +15,6 @@ type PreviewSlot = {
   status: "available" | "blocked";
   is_booked: boolean;
 };
-
-const DEFAULT_TIMEZONE = "Asia/Irkutsk";
 
 function getCurrentDate() {
   return new Intl.DateTimeFormat("en-CA", {

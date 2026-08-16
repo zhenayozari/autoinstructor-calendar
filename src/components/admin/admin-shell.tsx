@@ -68,7 +68,7 @@ export function AdminShell({
 
   return (
     <div className="min-h-screen bg-zinc-100">
-      <div className="sticky top-0 z-40 border-b bg-white/95 backdrop-blur">
+      <div className="app-safe-top sticky top-0 z-40 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="min-w-0">
             <p className="truncate text-base font-semibold text-zinc-950 sm:text-lg">
@@ -98,7 +98,7 @@ export function AdminShell({
             onClick={() => setIsMenuOpen(false)}
             aria-label="Закрыть меню"
           />
-          <div className="absolute inset-y-0 right-0 flex w-[min(86vw,380px)] flex-col bg-white shadow-2xl">
+          <div className="app-safe-bottom app-safe-top absolute inset-y-0 right-0 flex w-[min(86vw,380px)] flex-col bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-3 border-b px-4 py-4">
               <div className="min-w-0">
                 <p className="font-semibold text-zinc-950">
@@ -207,9 +207,9 @@ export function AdminShell({
         </div>
       )}
 
-      <div className="pb-24">{children}</div>
+      <div className="app-main-with-bottom-nav">{children}</div>
 
-      <nav className="fixed inset-x-3 bottom-3 z-40 mx-auto grid max-w-2xl grid-cols-4 gap-1 rounded-2xl border bg-white/95 p-1.5 shadow-2xl shadow-zinc-950/15 backdrop-blur">
+      <nav className="app-bottom-nav fixed inset-x-3 z-40 mx-auto grid max-w-2xl grid-cols-4 gap-1 rounded-2xl border bg-white/95 p-1.5 shadow-2xl shadow-zinc-950/15 backdrop-blur">
         {primaryLinks.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}

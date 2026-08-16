@@ -8,7 +8,7 @@ const DEFAULT_SPREADSHEET_ID =
 const DEFAULT_SHEET_GID = 0;
 const DEMO_INSTRUCTOR_SLUG = "demo-sheet-import";
 const DEMO_SOURCE = "demo-sheet-import";
-const DEFAULT_TIMEZONE = "Asia/Irkutsk";
+const DEFAULT_TIMEZONE = "Europe/Moscow";
 const BATCH_SIZE = 250;
 
 type RgbColor = {

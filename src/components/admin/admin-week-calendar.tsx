@@ -38,6 +38,7 @@ import {
   formatDateTime,
   formatDateValue,
   formatDayTitle,
+  formatNumericDate,
   formatTime,
   getTransmissionLabel,
   getUtcWeekStart,
@@ -1520,7 +1521,8 @@ export function AdminWeekCalendar({
       </div>
 
       <div className="rounded-xl bg-zinc-100 px-4 py-2.5 text-center text-sm font-medium">
-        {weekDates[0]} — {weekDates[6]}
+        {formatNumericDate(weekDates[0] ?? "")} —{" "}
+        {formatNumericDate(weekDates[6] ?? "")}
       </div>
 
       <div className="hidden rounded-xl border bg-white p-3 shadow-sm lg:block">
@@ -1695,7 +1697,7 @@ export function AdminWeekCalendar({
                 <p className="text-muted-foreground mt-0.5 text-[11px]">
                   {scheduleDay
                     ? `${getTransmissionLabel(scheduleDay.transmission)} · ${occupiedCount}/${daySlots.length} занято · ${freeCount} свободно`
-                    : date}
+                    : formatNumericDate(date)}
                 </p>
               </div>
 

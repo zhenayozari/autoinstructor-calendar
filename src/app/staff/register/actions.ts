@@ -2,6 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
 export type StaffRegistrationActionState = {
   status: "idle" | "success" | "error";
@@ -153,7 +154,7 @@ export async function submitStaffRegistrationAction(
         name,
         slug: createEmployeeSlug(),
         public_name: name,
-        timezone: "Asia/Irkutsk",
+        timezone: DEFAULT_TIMEZONE,
         is_active: false,
         public_is_visible: false,
         contact_text: phone,

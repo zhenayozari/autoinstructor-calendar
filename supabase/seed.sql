@@ -18,7 +18,7 @@ select
   organizations.id,
   'Основной инструктор',
   'main-instructor',
-  'Asia/Irkutsk',
+  'Europe/Moscow',
   true,
   'Основной инструктор',
   'Практические и теоретические занятия для уверенного и безопасного вождения.',

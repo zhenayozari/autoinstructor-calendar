@@ -5,7 +5,7 @@ import {
   settleSourcePaymentsAction,
   type SourceSettlementActionState,
 } from "@/app/admin/actions";
-import { formatMoney } from "@/lib/formatters";
+import { formatMoney, formatNumericDate } from "@/lib/formatters";
 import { Button } from "@/components/ui/button";
 
 const INITIAL_STATE: SourceSettlementActionState = {
@@ -44,7 +44,7 @@ export function SourceSettlementButton({
       className="space-y-2"
       onSubmit={(event) => {
         const confirmed = window.confirm(
-          `Закрыть расчёт с «${sourceLabel}» за период ${from} — ${to}?\n\nБудет отмечено ${expectedCount} занятий на сумму ${formatMoney(expectedAmount)}.`,
+          `Закрыть расчёт с «${sourceLabel}» за период ${formatNumericDate(from)} — ${formatNumericDate(to)}?\n\nБудет отмечено ${expectedCount} занятий на сумму ${formatMoney(expectedAmount)}.`,
         );
 
         if (!confirmed) {

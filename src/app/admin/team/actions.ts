@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOrganizationManager } from "@/lib/organization-access";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
 export type CreateInstructorActionState = {
   status: "idle" | "success" | "error";
@@ -190,7 +191,7 @@ export async function createInstructorAction(
         name,
         slug,
         public_name: publicName,
-        timezone: "Asia/Irkutsk",
+        timezone: DEFAULT_TIMEZONE,
         is_active: isActive,
         public_is_visible: publicIsVisible,
         profile_updated_at: new Date().toISOString(),
@@ -724,7 +725,7 @@ export async function createTeamMemberAction(
           name: internalName,
           slug,
           public_name: publicName,
-          timezone: "Asia/Irkutsk",
+          timezone: DEFAULT_TIMEZONE,
           is_active: isActive,
           public_is_visible: publicIsVisible,
           profile_updated_at: new Date().toISOString(),

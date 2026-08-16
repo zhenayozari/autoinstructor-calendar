@@ -2,6 +2,7 @@ import { UserRoundPen } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { formatUpdatedAt, selectClassName } from "@/lib/formatters";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { InstructorProfile } from "@/lib/types";
 import { ProfileForm } from "@/components/admin/profile-form";
 import { Button } from "@/components/ui/button";
@@ -115,7 +116,7 @@ export default async function InstructorProfilePage({
                   {profile?.profile_updated_at
                     ? `Последнее обновление: ${formatUpdatedAt(
                         profile.profile_updated_at,
-                        "Asia/Irkutsk",
+                        DEFAULT_TIMEZONE,
                       )}`
                     : "Профиль ещё не обновлялся"}
                 </CardDescription>

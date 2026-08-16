@@ -12,6 +12,7 @@ import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StudentBookingButton } from "@/components/student/student-booking-button";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -81,7 +82,6 @@ type LessonReviewRow = {
   created_at: string;
 };
 
-const DEFAULT_TIMEZONE = "Asia/Irkutsk";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ANCHOR = "student-schedule";
 

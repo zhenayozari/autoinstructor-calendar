@@ -8,6 +8,7 @@ import {
   type PublicationActionState,
 } from "@/app/admin/actions";
 import {
+  formatNumericDate,
   formatPrettyDateTime,
   formatShortDay,
   getUtcWeekDates,
@@ -165,7 +166,9 @@ export function SchedulePublicationPanel({
                   <p className="text-sm font-semibold capitalize">
                     {formatShortDay(date)}
                   </p>
-                  <p className="text-muted-foreground text-xs">{date}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {formatNumericDate(date)}
+                  </p>
                 </div>
 
                 {day ? (

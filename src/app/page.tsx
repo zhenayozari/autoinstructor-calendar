@@ -18,6 +18,7 @@ import {
 } from "@/lib/landing-content";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { InstructorProfile, InstructorSiteSettings } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -308,7 +309,7 @@ export default async function Home() {
             name: "Вячеслав",
             slug: "vyacheslav",
             public_name: "Вячеслав",
-            timezone: "Asia/Irkutsk",
+            timezone: DEFAULT_TIMEZONE,
             is_active: true,
             photo_url: null,
             short_bio:

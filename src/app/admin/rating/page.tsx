@@ -20,6 +20,7 @@ import {
 } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
   Instructor,
@@ -188,7 +189,7 @@ export default async function AdminRatingPage({
     selectedInstructorId,
   );
   const ratingFilter = getRatingFilter(params.rating);
-  const timezone = selectedInstructor?.timezone ?? "Asia/Irkutsk";
+  const timezone = selectedInstructor?.timezone ?? DEFAULT_TIMEZONE;
 
   const { data: reviewData, error: reviewError } =
     selectedInstructor && adminEnabled

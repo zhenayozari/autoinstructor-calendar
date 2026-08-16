@@ -17,6 +17,7 @@ import {
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import {
   bookingCategoryOptions,
   getBookingCategoryLabel,
@@ -723,7 +724,7 @@ export default async function AdminReportsPage({
     await buildActiveInstructorsQuery(supabase, membership);
   const instructors = (instructorData ?? []) as Instructor[];
   const firstInstructor = instructors[0] ?? null;
-  const timezone = firstInstructor?.timezone ?? "Asia/Irkutsk";
+  const timezone = firstInstructor?.timezone ?? DEFAULT_TIMEZONE;
   const selectedPeriod =
     params.period === "day" || params.period === "week" || params.period === "custom"
       ? params.period

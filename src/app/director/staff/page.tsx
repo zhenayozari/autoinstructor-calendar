@@ -41,6 +41,7 @@ import { getPublicOrigin } from "@/lib/public-origin";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
   Instructor,
@@ -419,7 +420,7 @@ export default async function DirectorStaffPage({
   const adminEnabled = hasSupabaseAdminKey();
   const supabase = adminEnabled ? createAdminClient() : await createClient();
   const origin = getPublicOrigin(requestHeaders);
-  const timezone = "Asia/Irkutsk";
+  const timezone = DEFAULT_TIMEZONE;
   const currentDate = getLocalDate(timezone);
   const weekStart = getUtcWeekStart(currentDate);
   const weekEnd = addUtcDays(weekStart, 6);

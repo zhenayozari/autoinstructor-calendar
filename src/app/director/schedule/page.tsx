@@ -21,6 +21,7 @@ import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -147,7 +148,7 @@ export default async function DirectorSchedulePage({
     : instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds });
   const timezone =
-    selectedInstructor?.timezone ?? instructors[0]?.timezone ?? "Asia/Irkutsk";
+    selectedInstructor?.timezone ?? instructors[0]?.timezone ?? DEFAULT_TIMEZONE;
   const currentDate = getLocalDate(timezone);
   const baseDate = isDateValue(params.week) ? params.week! : currentDate;
   const weekStart = getUtcWeekStart(baseDate);

@@ -15,6 +15,7 @@ import {
   formatDateValue,
   formatHours,
   formatMoney,
+  formatNumericDate,
   getLocalDate,
   selectClassName,
 } from "@/lib/formatters";
@@ -22,6 +23,7 @@ import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { getBookingCategoryLabel } from "@/lib/booking-categories";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
   BookingCategory,
@@ -333,7 +335,7 @@ export default async function DirectorReportsPage({
       "id, name, slug, public_name, timezone, is_active",
     );
   const instructors = (instructorData ?? []) as Instructor[];
-  const timezone = instructors[0]?.timezone ?? "Asia/Irkutsk";
+  const timezone = instructors[0]?.timezone ?? DEFAULT_TIMEZONE;
   const selectedPeriod =
     params.period === "day" ||
     params.period === "week" ||
@@ -535,7 +537,8 @@ export default async function DirectorReportsPage({
             Итоги школы
           </h1>
           <p className="text-muted-foreground mt-2 text-sm">
-            Деньги и занятия за период: {from} - {to}.
+            Деньги и занятия за период: {formatNumericDate(from)} -{" "}
+            {formatNumericDate(to)}.
           </p>
         </header>
 

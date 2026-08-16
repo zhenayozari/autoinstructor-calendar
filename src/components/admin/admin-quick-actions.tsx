@@ -125,16 +125,16 @@ export function AdminQuickActions({
                 key={action.id}
                 type="button"
                 variant={isActive ? "default" : "outline"}
-                className="h-auto min-h-12 justify-start px-3 py-2 text-left"
+                className="h-auto min-h-12 min-w-0 justify-start gap-2 overflow-hidden whitespace-normal px-3 py-2 text-left"
                 onClick={() =>
                   setCurrentActiveAction(
                     currentActiveAction === action.id ? null : action.id,
                   )
                 }
               >
-                <Icon className="shrink-0" />
+                <Icon className="size-5 shrink-0" />
                 <span className="min-w-0">
-                  <span className="block font-semibold leading-5">
+                  <span className="block break-words text-[13px] font-semibold leading-4 sm:text-sm sm:leading-5">
                     {action.label}
                   </span>
                   <span className="hidden truncate text-xs opacity-70 sm:block">

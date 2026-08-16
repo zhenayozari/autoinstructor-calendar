@@ -23,6 +23,14 @@ pnpm install
 pnpm dev
 ```
 
+## Деплой
+
+Production-сервер `auto-legenda.ru` обновляется вручную через SSH: код лежит в
+`/var/www/autoinstructor-calendar`, Caddy проксирует запросы на Next.js через
+`localhost:3000`, процесс держит PM2.
+
+Пошаговая инструкция: [DEPLOY.md](DEPLOY.md).
+
 ## Структура
 
 ```text

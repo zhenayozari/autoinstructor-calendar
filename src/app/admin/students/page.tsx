@@ -348,7 +348,7 @@ export default async function AdminStudentsPage({
           sum + Math.max((booking.price_amount ?? 0) - (booking.paid_amount ?? 0), 0),
         0,
       ),
-      lastLessons: lessons.slice(0, 5).map(({ booking, slot, lessonType }) => ({
+      lastLessons: lessons.map(({ booking, slot, lessonType }) => ({
         id: booking.id,
         startsAt: slot.start_time,
         lessonTypeName: lessonType?.name ?? "Занятие",

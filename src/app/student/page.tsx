@@ -461,7 +461,7 @@ function StudentLessonsSection({
 
           {upcomingLessons.length > 0 ? (
             <div className="mt-4 space-y-3">
-              {upcomingLessons.slice(0, 4).map((lesson) => (
+              {upcomingLessons.map((lesson) => (
                 <StudentLessonCard
                   key={lesson.booking.id}
                   lesson={lesson}
@@ -478,9 +478,9 @@ function StudentLessonsSection({
 
           {historyLessons.length > 0 && (
             <div className="mt-5">
-              <p className="text-sm font-semibold">Последние занятия</p>
+              <p className="text-sm font-semibold">История занятий</p>
               <div className="mt-2 space-y-2">
-                {historyLessons.slice(0, 5).map((lesson) => (
+                {historyLessons.map((lesson) => (
                   <StudentLessonCard
                     key={lesson.booking.id}
                     lesson={lesson}

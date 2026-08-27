@@ -1239,8 +1239,25 @@ function StudentAccessCard({
   canDeleteStudents: boolean;
   isHighlighted?: boolean;
 }) {
+  const [newSecret, setNewSecret] = useState("");
+  const [savedSecretForCopy, setSavedSecretForCopy] = useState<
+    string | undefined
+  >();
   const [updateState, updateAction, isUpdatePending] = useActionState(
-    updateStudentAccessDetailsAction,
+    async (previousState: StudentAccessActionState, formData: FormData) => {
+      const secretToCopy = newSecret.trim();
+      const result = await updateStudentAccessDetailsAction(
+        previousState,
+        formData,
+      );
+
+      if (result.status === "success" && secretToCopy) {
+        setSavedSecretForCopy(secretToCopy);
+        setNewSecret("");
+      }
+
+      return result;
+    },
     INITIAL_STATE,
   );
   const [, toggleAction, isTogglePending] = useActionState(
@@ -1467,6 +1484,11 @@ function StudentAccessCard({
                 <Input
                   id={`new-secret-${access.id}`}
                   name="new_secret"
+                  value={newSecret}
+                  onChange={(event) => {
+                    setNewSecret(event.target.value);
+                    setSavedSecretForCopy(undefined);
+                  }}
                   placeholder={`Оставьте пустым, если не меняете. Новый минимум ${STUDENT_SECRET_MIN_LENGTH} символов`}
                 />
               </div>
@@ -1501,7 +1523,11 @@ function StudentAccessCard({
               <Pencil />
               {isUpdatePending ? "Сохраняем…" : "Сохранить изменения"}
             </Button>
-            <CopyAccessButton label={access.display_label} login={access.login} />
+            <CopyAccessButton
+              label={access.display_label}
+              login={access.login}
+              secret={savedSecretForCopy}
+            />
           </div>
         </form>
 

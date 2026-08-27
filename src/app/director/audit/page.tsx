@@ -48,6 +48,7 @@ const ACTION_LABELS: Record<string, string> = {
   "student_access.deleted": "Ученик удалён",
   "student_access.updated": "Доступ ученика изменён",
   "student_access.archived": "Ученик отправлен в архив",
+  "student_access.restored": "Ученик восстановлен из архива",
   "student_access.enabled": "Доступ ученика включён",
   "student_access.disabled": "Доступ ученика отключён",
   "student_registration.approved": "Заявка ученика подтверждена",

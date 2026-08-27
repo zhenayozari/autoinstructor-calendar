@@ -522,6 +522,36 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
   revalidateStudentAccessPaths();
 }
 
+async function restoreStudentAccessById(accessId: string) {
+  const { membership, access } = await getManageableAccess(accessId);
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("student_accesses")
+    .update({
+      is_archived: false,
+      archived_at: null,
+      is_active: true,
+    })
+    .eq("id", access.id)
+    .eq("instructor_id", access.instructor_id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await logAuditEvent({
+    membership,
+    action: "student_access.restored",
+    entityType: "student_access",
+    entityId: access.id,
+    metadata: {
+      instructor_id: access.instructor_id,
+    },
+  });
+
+  revalidateStudentAccessPaths();
+}
+
 async function getManageableRegistrationRequest(requestId: string) {
   const membership = await requireActiveOrganizationMember();
   const supabase = createAdminClient();
@@ -1101,7 +1131,7 @@ export async function archiveStudentAccessAction(
       },
     });
 
-    revalidatePath("/admin/students");
+    revalidateStudentAccessPaths();
 
     return {
       status: "success",
@@ -1109,6 +1139,30 @@ export async function archiveStudentAccessAction(
     };
   } catch (error) {
     console.error("archiveStudentAccessAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function restoreStudentAccessAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    await restoreStudentAccessById(accessId);
+
+    return {
+      status: "success",
+      message: "Ученик восстановлен из архива",
+    };
+  } catch (error) {
+    console.error("restoreStudentAccessAction:", error);
 
     return {
       status: "error",
@@ -1153,6 +1207,22 @@ export async function deleteStudentAccessDirectAction(formData: FormData) {
   }
 
   redirect(`/director/students?delete_status=${status}`);
+}
+
+export async function restoreStudentAccessDirectAction(formData: FormData) {
+  let status = "student-restored";
+  let targetStatus = "active";
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    await restoreStudentAccessById(accessId);
+  } catch (error) {
+    console.error("restoreStudentAccessDirectAction:", error);
+    status = "restore-error";
+    targetStatus = "archived";
+  }
+
+  redirect(`/director/students?status=${targetStatus}&restore_status=${status}`);
 }
 
 export async function toggleStudentAccessAction(

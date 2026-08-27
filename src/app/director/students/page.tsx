@@ -3,11 +3,15 @@ import {
   Archive,
   CircleDollarSign,
   Filter,
+  RefreshCw,
   Trash2,
   UserRoundCheck,
   UsersRound,
 } from "lucide-react";
-import { deleteStudentAccessDirectAction } from "@/app/admin/students/actions";
+import {
+  deleteStudentAccessDirectAction,
+  restoreStudentAccessDirectAction,
+} from "@/app/admin/students/actions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -33,6 +37,7 @@ type DirectorStudentsPageProps = {
     status?: string;
     debt?: string;
     delete_status?: string;
+    restore_status?: string;
   }>;
 };
 
@@ -99,8 +104,18 @@ function MetricCard({
   );
 }
 
-function getDeleteStatusMessage(status?: string) {
+function getActionStatusMessage(status?: string) {
   switch (status) {
+    case "student-restored":
+      return {
+        tone: "success" as const,
+        text: "Ученик восстановлен из архива.",
+      };
+    case "restore-error":
+      return {
+        tone: "error" as const,
+        text: "Не удалось восстановить ученика. Обновите страницу и попробуйте ещё раз.",
+      };
     case "student-deleted":
       return {
         tone: "success" as const,
@@ -116,8 +131,8 @@ function getDeleteStatusMessage(status?: string) {
   }
 }
 
-function DeleteStatusMessage({ status }: { status?: string }) {
-  const message = getDeleteStatusMessage(status);
+function ActionStatusMessage({ status }: { status?: string }) {
+  const message = getActionStatusMessage(status);
 
   if (!message) return null;
 
@@ -242,6 +257,20 @@ function StudentCard({ student }: { student: DirectorStudent }) {
           </p>
         </div>
       </div>
+
+      {student.is_archived && (
+        <form action={restoreStudentAccessDirectAction} className="mt-3">
+          <input type="hidden" name="student_access_id" value={student.id} />
+          <Button
+            type="submit"
+            variant="outline"
+            className="h-10 w-full border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
+          >
+            <RefreshCw className="size-4" />
+            Восстановить из архива
+          </Button>
+        </form>
+      )}
 
       <details className="mt-3 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
         <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
@@ -445,7 +474,8 @@ export default async function DirectorStudentsPage({
           </div>
         )}
 
-        <DeleteStatusMessage status={params.delete_status} />
+        <ActionStatusMessage status={params.restore_status} />
+        <ActionStatusMessage status={params.delete_status} />
 
         <section className="grid gap-2 sm:grid-cols-4">
           <MetricCard

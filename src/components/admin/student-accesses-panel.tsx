@@ -24,6 +24,7 @@ import {
   deleteStudentAccessAction,
   refreshStudentRegistrationLinkAction,
   rejectStudentRegistrationRequestAction,
+  restoreStudentAccessAction,
   toggleStudentAccessAction,
   updateStudentAccessDetailsAction,
   updateStudentLessonPackageAction,
@@ -1542,6 +1543,29 @@ function ArchiveStudentAccessForm({ accessId }: { accessId: string }) {
   );
 }
 
+function RestoreStudentAccessForm({ accessId }: { accessId: string }) {
+  const [state, formAction, isPending] = useActionState(
+    restoreStudentAccessAction,
+    INITIAL_STATE,
+  );
+
+  return (
+    <form action={formAction} className="space-y-2">
+      <input type="hidden" name="student_access_id" value={accessId} />
+      <StateMessage state={state} />
+      <Button
+        type="submit"
+        variant="outline"
+        className="border-emerald-200 text-emerald-700 hover:border-emerald-300 hover:text-emerald-800"
+        disabled={isPending}
+      >
+        <RefreshCw className="size-4" />
+        {isPending ? "Восстанавливаем..." : "Восстановить"}
+      </Button>
+    </form>
+  );
+}
+
 function DeleteStudentAccessForm({
   accessId,
   label,
@@ -1864,14 +1888,15 @@ function ArchivedAccessCard({
         </div>
       )}
 
-      {canDeleteStudents && (
-        <div className="mt-4">
+      <div className="mt-4 space-y-2">
+        <RestoreStudentAccessForm accessId={access.id} />
+        {canDeleteStudents && (
           <DeleteStudentAccessForm
             accessId={access.id}
             label={access.display_label}
           />
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

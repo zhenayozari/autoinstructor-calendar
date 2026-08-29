@@ -102,8 +102,6 @@ export default async function AdminSchedulePage({
             "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, is_active, school_id, is_archived, archived_at, created_at, updated_at",
           )
           .in("instructor_id", instructorIds)
-          .eq("is_active", true)
-          .eq("is_archived", false)
           .order("display_label")
       : Promise.resolve({ data: [], error: null }),
   ]);

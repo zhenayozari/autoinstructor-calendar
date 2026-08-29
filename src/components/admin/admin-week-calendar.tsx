@@ -3,12 +3,15 @@
 import { useActionState, useMemo, useState } from "react";
 import {
   CalendarPlus,
+  Check,
   ChevronLeft,
   ChevronRight,
   CircleX,
+  Copy,
   Eye,
   EyeOff,
   Pencil,
+  Phone,
   StickyNote,
   Trash2,
   UserRound,
@@ -150,6 +153,94 @@ function getPaymentBadge(booking: Booking) {
     label: "Долг",
     className: "bg-amber-100 text-amber-800",
   };
+}
+
+function getPhoneHref(contact: string | null | undefined) {
+  const value = contact?.trim();
+
+  if (!value || !/^[+\d\s().-]+$/.test(value)) {
+    return null;
+  }
+
+  const digits = value.replace(/\D/g, "");
+
+  if (digits.length === 10 && digits.startsWith("9")) {
+    return `tel:+7${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("8")) {
+    return `tel:+7${digits.slice(1)}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("7")) {
+    return `tel:+${digits}`;
+  }
+
+  if (value.startsWith("+") && digits.length >= 11 && digits.length <= 15) {
+    return `tel:+${digits}`;
+  }
+
+  return null;
+}
+
+function CopyContactButton({ contact }: { contact: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyContact() {
+    await navigator.clipboard.writeText(contact);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="bg-white"
+      onClick={copyContact}
+    >
+      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      {copied ? "Скопировано" : "Скопировать"}
+    </Button>
+  );
+}
+
+function StudentContactAction({
+  contact,
+}: {
+  contact: string | null | undefined;
+}) {
+  const value = contact?.trim();
+
+  if (!value) {
+    return null;
+  }
+
+  const phoneHref = getPhoneHref(value);
+  const action = phoneHref ? (
+    <a
+      href={phoneHref}
+      className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-white px-2.5 text-[0.8rem] font-medium text-emerald-700 transition hover:bg-emerald-50 hover:text-emerald-800 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <Phone className="size-3.5" />
+      Позвонить
+    </a>
+  ) : (
+    <CopyContactButton contact={value} />
+  );
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] font-medium text-zinc-500">Способ связи</p>
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <span className="max-w-full break-words rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-zinc-800 ring-1 ring-zinc-200">
+          {value}
+        </span>
+        {action}
+      </div>
+    </div>
+  );
 }
 
 function formatMobileWeekday(value: string) {
@@ -708,6 +799,7 @@ function DesktopSlotPanel({
   slot,
   lessonType,
   booking,
+  studentContact,
   scheduleDay,
   instructor,
   lessonTypes,
@@ -719,6 +811,7 @@ function DesktopSlotPanel({
   slot: Slot;
   lessonType: LessonType;
   booking: Booking | null;
+  studentContact?: string | null;
   scheduleDay: ScheduleDay | undefined;
   instructor: Instructor;
   lessonTypes: LessonType[];
@@ -823,6 +916,11 @@ function DesktopSlotPanel({
                   </p>
                 </div>
               </div>
+              {studentContact && (
+                <div className="mt-3">
+                  <StudentContactAction contact={studentContact} />
+                </div>
+              )}
               {booking.is_paid && booking.paid_at && (
                 <p className="mt-2 text-xs text-emerald-700">
                   Оплачено: {formatDateTime(booking.paid_at, instructor.timezone)}
@@ -921,6 +1019,7 @@ function MobileSlotRow({
   slot,
   lessonType,
   booking,
+  studentContact,
   scheduleDay,
   lessonTypes,
   schools,
@@ -934,6 +1033,7 @@ function MobileSlotRow({
   slot: Slot;
   lessonType: LessonType;
   booking: Booking | null;
+  studentContact?: string | null;
   scheduleDay: ScheduleDay | undefined;
   lessonTypes: LessonType[];
   schools: School[];
@@ -1035,6 +1135,11 @@ function MobileSlotRow({
             <div>
               <p className="text-zinc-400">Ученик</p>
               <p className="mt-0.5 font-semibold">{booking.student_label}</p>
+              {studentContact && (
+                <div className="mt-1.5">
+                  <StudentContactAction contact={studentContact} />
+                </div>
+              )}
             </div>
           )}
           {booking && (
@@ -1206,6 +1311,10 @@ export function AdminWeekCalendar({
     () => new Map(bookings.map((booking) => [booking.slot_id, booking])),
     [bookings],
   );
+  const studentAccessesById = useMemo(
+    () => new Map(studentAccesses.map((access) => [access.id, access])),
+    [studentAccesses],
+  );
   const daysByDate = useMemo(
     () =>
       new Map(
@@ -1253,6 +1362,9 @@ export function AdminWeekCalendar({
     : undefined;
   const selectedBooking = selectedSlot
     ? (bookingsBySlotId.get(selectedSlot.id) ?? null)
+    : null;
+  const selectedStudentContact = selectedBooking?.student_access_id
+    ? studentAccessesById.get(selectedBooking.student_access_id)?.student_phone
     : null;
   const selectedScheduleDay = selectedSlot
     ? scheduleDays.find((day) => day.id === selectedSlot.schedule_day_id)
@@ -1651,6 +1763,12 @@ export function AdminWeekCalendar({
             <div className="space-y-1.5">
               {mobileSelectedDayData.daySlots.map((slot) => {
                 const lessonType = lessonTypesById.get(slot.lesson_type_id);
+                const booking = bookingsBySlotId.get(slot.id) ?? null;
+                const studentContact = booking?.student_access_id
+                  ? studentAccessesById.get(booking.student_access_id)
+                      ?.student_phone
+                  : null;
+
                 if (!lessonType) return null;
 
                 return (
@@ -1658,7 +1776,8 @@ export function AdminWeekCalendar({
                     key={slot.id}
                     slot={slot}
                     lessonType={lessonType}
-                    booking={bookingsBySlotId.get(slot.id) ?? null}
+                    booking={booking}
+                    studentContact={studentContact}
                     scheduleDay={mobileSelectedDayData.scheduleDay}
                     lessonTypes={lessonTypes}
                     schools={schools}
@@ -1749,6 +1868,7 @@ export function AdminWeekCalendar({
             slot={selectedSlot}
             lessonType={selectedLessonType}
             booking={selectedBooking}
+            studentContact={selectedStudentContact}
             scheduleDay={selectedScheduleDay}
             instructor={selectedInstructor}
             lessonTypes={lessonTypes}

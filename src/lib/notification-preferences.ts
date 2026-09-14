@@ -6,6 +6,8 @@ import {
   type NotificationEventKey,
   type NotificationPreference,
 } from "@/lib/notification-events";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type NotificationPreferenceRow = {
@@ -21,18 +23,33 @@ export async function getNotificationPreferencesForMember(
   }
 
   const allowedEvents = getNotificationEventsForRole(membership.role);
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("notification_preferences")
-    .select("event_key, is_enabled")
-    .eq("organization_member_id", membership.id);
+  let data: NotificationPreferenceRow[] = [];
 
-  if (error) {
-    console.error("getNotificationPreferencesForMember:", error);
+  if (isPostgresBackend()) {
+    data = await queryRows<NotificationPreferenceRow>(
+      `
+        select event_key, is_enabled
+        from public.notification_preferences
+        where organization_member_id = $1
+      `,
+      [membership.id],
+    );
+  } else {
+    const supabase = createAdminClient();
+    const { data: preferenceData, error } = await supabase
+      .from("notification_preferences")
+      .select("event_key, is_enabled")
+      .eq("organization_member_id", membership.id);
+
+    if (error) {
+      console.error("getNotificationPreferencesForMember:", error);
+    }
+
+    data = (preferenceData ?? []) as NotificationPreferenceRow[];
   }
 
   const preferences = new Map(
-    ((data ?? []) as NotificationPreferenceRow[]).map((item) => [
+    data.map((item) => [
       item.event_key as NotificationEventKey,
       Boolean(item.is_enabled),
     ]),

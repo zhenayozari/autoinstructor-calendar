@@ -1,10 +1,13 @@
 import { UserRoundPen } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { formatUpdatedAt, selectClassName } from "@/lib/formatters";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { InstructorProfile } from "@/lib/types";
 import { ProfileForm } from "@/components/admin/profile-form";
+import { AccountCredentialsForm } from "@/components/account/account-credentials-form";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -32,21 +35,41 @@ export default async function InstructorProfilePage({
     : params.instructor;
   void requestedInstructorId;
 
-  const supabase = createAdminClient();
-  let instructorsQuery = supabase
-    .from("instructors")
-    .select(
-      "id, name, slug, public_name, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
-    )
-    .eq("organization_id", membership.organizationId)
-    .order("name");
+  let instructors: InstructorProfile[] = [];
+  let error: { message: string } | null = null;
 
-  if (membership.isInstructor) {
-    instructorsQuery = instructorsQuery.eq("id", membership.instructorId!);
+  if (isPostgresBackend()) {
+    instructors = await queryRows<InstructorProfile>(
+      `
+        select id, name, slug, public_name, timezone, is_active, photo_url,
+               short_bio, contact_text, car_description, experience_text,
+               public_is_visible, profile_updated_at::text as profile_updated_at
+        from public.instructors
+        where organization_id = $1
+          and ($2::uuid is null or id = $2)
+        order by name
+      `,
+      [membership.organizationId, membership.isInstructor ? membership.instructorId : null],
+    );
+  } else {
+    const supabase = createAdminClient();
+    let instructorsQuery = supabase
+      .from("instructors")
+      .select(
+        "id, name, slug, public_name, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
+      )
+      .eq("organization_id", membership.organizationId)
+      .order("name");
+
+    if (membership.isInstructor) {
+      instructorsQuery = instructorsQuery.eq("id", membership.instructorId!);
+    }
+
+    const result = await instructorsQuery;
+    instructors = (result.data ?? []) as InstructorProfile[];
+    error = result.error;
   }
 
-  const { data, error } = await instructorsQuery;
-  const instructors = (data ?? []) as InstructorProfile[];
   const defaultInstructorId =
     membership.instructorId &&
     instructors.some((instructor) => instructor.id === membership.instructorId)
@@ -137,6 +160,22 @@ export default async function InstructorProfilePage({
                 profile={profile}
               />
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Вход в аккаунт</CardTitle>
+            <CardDescription>
+              Эл. почта используется как логин. Пароль можно поменять без
+              участия руководителя.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <AccountCredentialsForm
+              email={membership.user.email ?? ""}
+              canManageCredentials={isPostgresBackend()}
+            />
           </CardContent>
         </Card>
       </div>

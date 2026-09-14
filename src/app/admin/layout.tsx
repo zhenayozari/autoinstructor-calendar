@@ -1,4 +1,6 @@
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import {
   buildActiveInstructorsQuery,
   getSelectedInstructor,
@@ -17,11 +19,31 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }>) {
   const membership = await requireActiveOrganizationMember();
-  const adminEnabled = hasSupabaseAdminKey();
-  const supabase = adminEnabled ? createAdminClient() : await createClient();
+  let instructors: Instructor[] = [];
 
-  const { data } = await buildActiveInstructorsQuery(supabase, membership);
-  const instructors = (data ?? []) as Instructor[];
+  if (isPostgresBackend()) {
+    instructors = await queryRows<Instructor>(
+      `
+        select id, name, slug, public_name, timezone
+        from public.instructors
+        where organization_id = $1
+          and is_active = true
+          and ($2::uuid is null or id = $2::uuid)
+        order by name
+      `,
+      [
+        membership.organizationId,
+        membership.isInstructor ? membership.instructorId : null,
+      ],
+    );
+  } else {
+    const adminEnabled = hasSupabaseAdminKey();
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data } = await buildActiveInstructorsQuery(supabase, membership);
+
+    instructors = (data ?? []) as Instructor[];
+  }
+
   const selectedInstructor = getSelectedInstructor(
     instructors,
     membership.instructorId,

@@ -1,5 +1,7 @@
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { getNotificationPreferencesForMember } from "@/lib/notification-preferences";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne } from "@/lib/db/postgres";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DirectorShell } from "@/components/director/director-shell";
@@ -17,15 +19,30 @@ export default async function DirectorLayout({
   children: React.ReactNode;
 }>) {
   const membership = await requireDirectorAccess();
-  const supabase = hasSupabaseAdminKey()
-    ? createAdminClient()
-    : await createClient();
-  const { data } = await supabase
-    .from("organizations")
-    .select("id, name")
-    .eq("id", membership.organizationId)
-    .maybeSingle();
-  const organization = data as OrganizationHeader | null;
+  let organization: OrganizationHeader | null = null;
+
+  if (isPostgresBackend()) {
+    organization = await queryOne<OrganizationHeader>(
+      `
+        select id, name
+        from public.organizations
+        where id = $1
+        limit 1
+      `,
+      [membership.organizationId],
+    );
+  } else {
+    const supabase = hasSupabaseAdminKey()
+      ? createAdminClient()
+      : await createClient();
+    const { data } = await supabase
+      .from("organizations")
+      .select("id, name")
+      .eq("id", membership.organizationId)
+      .maybeSingle();
+    organization = data as OrganizationHeader | null;
+  }
+
   const pushPreferences = await getNotificationPreferencesForMember(membership);
 
   return (

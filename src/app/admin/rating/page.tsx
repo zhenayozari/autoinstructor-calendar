@@ -18,6 +18,8 @@ import {
   getSelectedInstructor,
   getSelectedInstructorId,
 } from "@/lib/queries";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
@@ -175,11 +177,29 @@ export default async function AdminRatingPage({
 }: AdminRatingPageProps) {
   const params = searchParams ? await searchParams : {};
   const membership = await requireActiveOrganizationMember();
-  const adminEnabled = hasSupabaseAdminKey();
-  const supabase = adminEnabled ? createAdminClient() : await createClient();
-  const { data: instructorData, error: instructorError } =
-    await buildActiveInstructorsQuery(supabase, membership);
-  const instructors = (instructorData ?? []) as Instructor[];
+  const postgresBackend = isPostgresBackend();
+  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  let instructors: Instructor[] = [];
+  let instructorError: { message: string } | null = null;
+
+  if (postgresBackend) {
+    instructors = await queryRows<Instructor>(
+      `
+        select id, name, slug, public_name, timezone, is_active
+        from public.instructors
+        where organization_id = $1
+          and is_active = true
+        order by name
+      `,
+      [membership.organizationId],
+    );
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data, error } = await buildActiveInstructorsQuery(supabase, membership);
+    instructors = (data ?? []) as Instructor[];
+    instructorError = error;
+  }
+
   const selectedInstructorId = getSelectedInstructorId(
     membership,
     params.instructor,
@@ -191,77 +211,172 @@ export default async function AdminRatingPage({
   const ratingFilter = getRatingFilter(params.rating);
   const timezone = selectedInstructor?.timezone ?? DEFAULT_TIMEZONE;
 
-  const { data: reviewData, error: reviewError } =
-    selectedInstructor && adminEnabled
-      ? await supabase
-          .from("lesson_reviews")
-          .select(
-            "id, organization_id, instructor_id, booking_id, student_access_id, rating, comment, created_at, updated_at",
-          )
-          .eq("organization_id", membership.organizationId)
-          .eq("instructor_id", selectedInstructor.id)
-          .order("created_at", { ascending: false })
-      : { data: [], error: null };
+  let allReviews: LessonReview[] = [];
+  let reviewError: { message: string } | null = null;
 
-  const allReviews = (reviewData ?? []) as LessonReview[];
+  if (postgresBackend) {
+    allReviews = selectedInstructor
+      ? await queryRows<LessonReview>(
+          `
+            select id, organization_id, instructor_id, booking_id, student_access_id,
+                   rating, comment, created_at::text as created_at,
+                   updated_at::text as updated_at
+            from public.lesson_reviews
+            where organization_id = $1
+              and instructor_id = $2
+            order by created_at desc
+          `,
+          [membership.organizationId, selectedInstructor.id],
+        )
+      : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data, error } =
+      selectedInstructor && adminEnabled
+        ? await supabase
+            .from("lesson_reviews")
+            .select(
+              "id, organization_id, instructor_id, booking_id, student_access_id, rating, comment, created_at, updated_at",
+            )
+            .eq("organization_id", membership.organizationId)
+            .eq("instructor_id", selectedInstructor.id)
+            .order("created_at", { ascending: false })
+        : { data: [], error: null };
+    allReviews = (data ?? []) as LessonReview[];
+    reviewError = error;
+  }
+
   const reviews = ratingFilter
     ? allReviews.filter((review) => review.rating === ratingFilter)
     : allReviews;
   const bookingIds = reviews.map((review) => review.booking_id);
   const studentAccessIds = reviews.map((review) => review.student_access_id);
 
-  const { data: bookingData } =
-    bookingIds.length > 0
-      ? await supabase
-          .from("bookings")
-          .select("id, slot_id, student_access_id, student_label")
-          .in("id", bookingIds)
-      : { data: [] };
-  const bookings = (bookingData ?? []) as ReviewBooking[];
+  let bookings: ReviewBooking[] = [];
+  if (postgresBackend) {
+    bookings =
+      bookingIds.length > 0
+        ? await queryRows<ReviewBooking>(
+            `
+              select id, slot_id, student_access_id, student_label
+              from public.bookings
+              where id = any($1::uuid[])
+            `,
+            [bookingIds],
+          )
+        : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data: bookingData } =
+      bookingIds.length > 0
+        ? await supabase
+            .from("bookings")
+            .select("id, slot_id, student_access_id, student_label")
+            .in("id", bookingIds)
+        : { data: [] };
+    bookings = (bookingData ?? []) as ReviewBooking[];
+  }
   const bookingsById = new Map(bookings.map((booking) => [booking.id, booking]));
   const slotIds = bookings.map((booking) => booking.slot_id);
 
-  const { data: slotData } =
-    slotIds.length > 0
-      ? await supabase
-          .from("slots")
-          .select("id, schedule_day_id, lesson_type_id, start_time, end_time")
-          .in("id", slotIds)
-      : { data: [] };
-  const slots = (slotData ?? []) as ReviewSlot[];
+  let slots: ReviewSlot[] = [];
+  if (postgresBackend) {
+    slots =
+      slotIds.length > 0
+        ? await queryRows<ReviewSlot>(
+            `
+              select id, schedule_day_id, lesson_type_id,
+                     start_time::text as start_time, end_time::text as end_time
+              from public.slots
+              where id = any($1::uuid[])
+            `,
+            [slotIds],
+          )
+        : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data: slotData } =
+      slotIds.length > 0
+        ? await supabase
+            .from("slots")
+            .select("id, schedule_day_id, lesson_type_id, start_time, end_time")
+            .in("id", slotIds)
+        : { data: [] };
+    slots = (slotData ?? []) as ReviewSlot[];
+  }
   const slotsById = new Map(slots.map((slot) => [slot.id, slot]));
 
   const dayIds = [...new Set(slots.map((slot) => slot.schedule_day_id))];
   const lessonTypeIds = [...new Set(slots.map((slot) => slot.lesson_type_id))];
 
-  const [{ data: dayData }, { data: lessonTypeData }, { data: studentData }] =
-    await Promise.all([
-      dayIds.length > 0
-        ? supabase.from("schedule_days").select("id, date").in("id", dayIds)
-        : Promise.resolve({ data: [] }),
-      lessonTypeIds.length > 0
-        ? supabase
-            .from("lesson_types")
-            .select("id, name, color")
-            .in("id", lessonTypeIds)
-        : Promise.resolve({ data: [] }),
-      studentAccessIds.length > 0
-        ? supabase
-            .from("student_accesses")
-            .select("id, display_label")
-            .in("id", studentAccessIds)
-        : Promise.resolve({ data: [] }),
-    ]);
+  let scheduleDays: Pick<ScheduleDay, "id" | "date">[] = [];
+  let lessonTypes: Pick<LessonType, "id" | "name" | "color">[] = [];
+  let studentAccesses: Pick<StudentAccess, "id" | "display_label">[] = [];
 
-  const scheduleDays = (dayData ?? []) as Pick<ScheduleDay, "id" | "date">[];
-  const lessonTypes = (lessonTypeData ?? []) as Pick<
-    LessonType,
-    "id" | "name" | "color"
-  >[];
-  const studentAccesses = (studentData ?? []) as Pick<
-    StudentAccess,
-    "id" | "display_label"
-  >[];
+  if (postgresBackend) {
+    [scheduleDays, lessonTypes, studentAccesses] = await Promise.all([
+      dayIds.length > 0
+        ? queryRows<Pick<ScheduleDay, "id" | "date">>(
+            `
+              select id, date::text as date
+              from public.schedule_days
+              where id = any($1::uuid[])
+            `,
+            [dayIds],
+          )
+        : Promise.resolve([]),
+      lessonTypeIds.length > 0
+        ? queryRows<Pick<LessonType, "id" | "name" | "color">>(
+            `
+              select id, name, color
+              from public.lesson_types
+              where id = any($1::uuid[])
+            `,
+            [lessonTypeIds],
+          )
+        : Promise.resolve([]),
+      studentAccessIds.length > 0
+        ? queryRows<Pick<StudentAccess, "id" | "display_label">>(
+            `
+              select id, display_label
+              from public.student_accesses
+              where id = any($1::uuid[])
+            `,
+            [studentAccessIds],
+          )
+        : Promise.resolve([]),
+    ]);
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const [{ data: dayData }, { data: lessonTypeData }, { data: studentData }] =
+      await Promise.all([
+        dayIds.length > 0
+          ? supabase.from("schedule_days").select("id, date").in("id", dayIds)
+          : Promise.resolve({ data: [] }),
+        lessonTypeIds.length > 0
+          ? supabase
+              .from("lesson_types")
+              .select("id, name, color")
+              .in("id", lessonTypeIds)
+          : Promise.resolve({ data: [] }),
+        studentAccessIds.length > 0
+          ? supabase
+              .from("student_accesses")
+              .select("id, display_label")
+              .in("id", studentAccessIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+    scheduleDays = (dayData ?? []) as Pick<ScheduleDay, "id" | "date">[];
+    lessonTypes = (lessonTypeData ?? []) as Pick<
+      LessonType,
+      "id" | "name" | "color"
+    >[];
+    studentAccesses = (studentData ?? []) as Pick<
+      StudentAccess,
+      "id" | "display_label"
+    >[];
+  }
   const scheduleDaysById = new Map(scheduleDays.map((day) => [day.id, day]));
   const lessonTypesById = new Map(lessonTypes.map((type) => [type.id, type]));
   const studentAccessesById = new Map(

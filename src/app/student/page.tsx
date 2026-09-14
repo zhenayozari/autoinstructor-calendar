@@ -8,7 +8,15 @@ import {
 } from "lucide-react";
 import { studentLogoutAction } from "@/app/student/actions";
 import { LessonReviewForm } from "@/components/student/lesson-review-form";
+import { StudentProfileCompletionForm } from "@/components/student/student-profile-completion-form";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne, queryRows } from "@/lib/db/postgres";
+import {
+  getLegalDocumentPublicPath,
+  getPublishedLegalDocumentsForAudience,
+} from "@/lib/legal-documents";
+import { isStudentProfileConsentRequired } from "@/lib/student-profile-consent";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { StudentBookingButton } from "@/components/student/student-booking-button";
@@ -195,6 +203,26 @@ function getLessonStateClassName(state: StudentBookingRow["lesson_state"]) {
   return "bg-amber-100 text-amber-800";
 }
 
+function getStudentProfilePrefill(access: {
+  displayLabel: string;
+  firstName: string | null;
+  lastName: string | null;
+  studentPhone: string | null;
+}) {
+  const label = access.displayLabel.trim();
+  const isGeneratedLabel = /^Ученик\s+/i.test(label);
+  const labelParts = isGeneratedLabel ? [] : label.split(/\s+/).filter(Boolean);
+  const fallbackLastName = labelParts.length >= 2 ? labelParts[0] : "";
+  const fallbackFirstName =
+    labelParts.length >= 2 ? labelParts.slice(1).join(" ") : labelParts[0] ?? "";
+
+  return {
+    defaultFirstName: access.firstName ?? fallbackFirstName,
+    defaultLastName: access.lastName ?? fallbackLastName,
+    defaultStudentPhone: access.studentPhone ?? "",
+  };
+}
+
 function normalizeLessonState(value: unknown): StudentBookingRow["lesson_state"] {
   if (value === "completed" || value === "no_show" || value === "scheduled") {
     return value;
@@ -229,6 +257,7 @@ function getSelectedCalendarDay(
   if (
     selectedDate &&
     DATE_PATTERN.test(selectedDate) &&
+    selectedDate >= currentDate &&
     selectedDate >= firstDay &&
     selectedDate <= lastDay
   ) {
@@ -498,6 +527,37 @@ function StudentLessonsSection({
 }
 
 async function getUsedCounts(accessId: string, visibleWeekStart: string) {
+  if (isPostgresBackend()) {
+    const totalBookingData = await queryOne<{ count: string }>(
+      `
+        select count(*)::text as count
+        from public.bookings
+        where student_access_id = $1
+          and status = 'confirmed'
+      `,
+      [accessId],
+    );
+    const weekEnd = addDaysToDateValue(visibleWeekStart, 6);
+    const weekBookingData = await queryOne<{ count: string }>(
+      `
+        select count(*)::text as count
+        from public.bookings b
+        join public.slots s on s.id = b.slot_id
+        join public.schedule_days d on d.id = s.schedule_day_id
+        where b.student_access_id = $1
+          and b.status = 'confirmed'
+          and d.date >= $2::date
+          and d.date <= $3::date
+      `,
+      [accessId, visibleWeekStart, weekEnd],
+    );
+
+    return {
+      totalUsed: Number(totalBookingData?.count ?? 0),
+      weekUsed: Number(weekBookingData?.count ?? 0),
+    };
+  }
+
   const supabase = createAdminClient();
   const { data: totalBookingData, error: totalBookingError } = await supabase
     .from("bookings")
@@ -577,112 +637,269 @@ function formatRemaining(used: number, limit: number | null) {
 export default async function StudentPage({ searchParams }: StudentPageProps) {
   const access = await requireCurrentStudentAccess();
   const params = searchParams ? await searchParams : {};
-  const supabase = createAdminClient();
+
+  let currentInstructor: Instructor | null = null;
+  let studentSource: StudentSource | null = null;
+
+  if (isPostgresBackend()) {
+    currentInstructor = await queryOne<Instructor>(
+      `
+        select id, name, public_name, timezone
+        from public.instructors
+        where id = $1
+        limit 1
+      `,
+      [access.instructorId],
+    );
+    studentSource = access.schoolId
+      ? await queryOne<StudentSource>(
+          `
+            select id, name, color
+            from public.schools
+            where id = $1
+            limit 1
+          `,
+          [access.schoolId],
+        )
+      : null;
+  } else {
+    const supabase = createAdminClient();
+    const { data: instructor } = await supabase
+      .from("instructors")
+      .select("id, name, public_name, timezone")
+      .eq("id", access.instructorId)
+      .maybeSingle();
+    const { data: sourceData } = access.schoolId
+      ? await supabase
+          .from("schools")
+          .select("id, name, color")
+          .eq("id", access.schoolId)
+          .maybeSingle()
+      : { data: null };
+
+    currentInstructor = instructor as Instructor | null;
+    studentSource = sourceData as StudentSource | null;
+  }
+
+  const profileConsentRequired = isPostgresBackend()
+    ? await isStudentProfileConsentRequired(access.organizationId)
+    : false;
+
+  if (profileConsentRequired && !access.profileCompletedAt) {
+    const documents = (await getPublishedLegalDocumentsForAudience(
+      access.organizationId,
+      "student",
+    ))
+      .map((document) => {
+        const href = getLegalDocumentPublicPath(document.document_type);
+
+        return href
+          ? {
+              id: document.id,
+              title: document.title,
+              href,
+              documentType: document.document_type,
+            }
+          : null;
+      })
+      .filter((document): document is NonNullable<typeof document> =>
+        Boolean(document),
+      );
+
+    return (
+      <StudentProfileCompletionForm
+        displayLabel={access.displayLabel}
+        {...getStudentProfilePrefill(access)}
+        documents={documents}
+      />
+    );
+  }
+
   await autoCompletePastBookings({
     instructorIds: [access.instructorId],
     studentAccessId: access.id,
   });
-  const { data: instructor } = await supabase
-    .from("instructors")
-    .select("id, name, public_name, timezone")
-    .eq("id", access.instructorId)
-    .maybeSingle();
-  const { data: sourceData } = access.schoolId
-    ? await supabase
-        .from("schools")
-        .select("id, name, color")
-        .eq("id", access.schoolId)
-        .maybeSingle()
-    : { data: null };
-  const currentInstructor = instructor as Instructor | null;
-  const studentSource = sourceData as StudentSource | null;
+
   const timezone = currentInstructor?.timezone ?? DEFAULT_TIMEZONE;
-  const weekStart = getWeekStart(params.week, timezone);
+  const currentDateValue = getCurrentDate(timezone);
+  const currentWeekStart = getWeekStart(undefined, timezone);
+  const requestedWeekStart = getWeekStart(params.week, timezone);
+  const weekStart =
+    requestedWeekStart < currentWeekStart ? currentWeekStart : requestedWeekStart;
   const weekEnd = addDays(weekStart, 6);
   const visibleWeekStart = formatDateValue(weekStart);
+  const availabilityStartDate =
+    visibleWeekStart < currentDateValue ? currentDateValue : visibleWeekStart;
   const previousWeek = formatDateValue(addDays(weekStart, -7));
   const nextWeek = formatDateValue(addDays(weekStart, 7));
-  const {
-    data: bookingData,
-    error: primaryBookingError,
-  } = await supabase
-    .from("bookings")
-    .select("id, slot_id, lesson_state, created_at")
-    .eq("student_access_id", access.id)
-    .eq("status", "confirmed");
 
-  let bookingError = primaryBookingError;
-  let studentBookings = ((bookingData ?? []) as Partial<StudentBookingRow>[]).map(
-    (booking) => ({
+  let studentBookings: StudentBookingRow[] = [];
+  let bookedSlots: ScheduleSlot[] = [];
+  let reviews: LessonReviewRow[] = [];
+  let slotsData: unknown[] = [];
+  let bookingLoadError: { message: string } | null = null;
+  let slotsError: { message: string } | null = null;
+
+  if (isPostgresBackend()) {
+    studentBookings = (
+      await queryRows<Partial<StudentBookingRow>>(
+        `
+          select id, slot_id, lesson_state, created_at::text as created_at
+          from public.bookings
+          where student_access_id = $1
+            and status = 'confirmed'
+        `,
+        [access.id],
+      )
+    ).map((booking) => ({
       id: booking.id ?? "",
       slot_id: booking.slot_id ?? "",
       lesson_state: normalizeLessonState(booking.lesson_state),
       created_at: booking.created_at ?? "",
-    }),
-  );
-
-  if (primaryBookingError) {
-    const { data: fallbackBookingData, error: fallbackBookingError } =
-      await supabase
-        .from("bookings")
-        .select("id, slot_id, created_at")
-        .eq("student_access_id", access.id)
-        .eq("status", "confirmed");
-
-    bookingError = fallbackBookingError;
-    studentBookings = ((fallbackBookingData ?? []) as {
-      id: string;
-      slot_id: string;
-      created_at: string;
-    }[]).map((booking) => ({
-      id: booking.id,
-      slot_id: booking.slot_id,
-      lesson_state: "scheduled",
-      created_at: booking.created_at,
     }));
+
+    const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
+    const bookingIds = studentBookings.map((booking) => booking.id);
+
+    bookedSlots =
+      bookedSlotIds.length > 0
+        ? await queryRows<ScheduleSlot>(
+            `
+              select id, instructor_id, instructor_name, timezone,
+                     date::text as date, transmission, lesson_type_id, school_id,
+                     lesson_type_name, lesson_type_color,
+                     start_time::text as start_time, end_time::text as end_time,
+                     location_type, status, is_booked
+              from public.public_schedule_slots
+              where id = any($1::uuid[])
+            `,
+            [bookedSlotIds],
+          )
+        : [];
+    reviews =
+      bookingIds.length > 0
+        ? await queryRows<LessonReviewRow>(
+            `
+              select id, booking_id, rating, comment, created_at::text as created_at
+              from public.lesson_reviews
+              where student_access_id = $1
+                and booking_id = any($2::uuid[])
+            `,
+            [access.id, bookingIds],
+          )
+        : [];
+
+    if (access.lessonTypeIds.length > 0) {
+      slotsData = await queryRows<ScheduleSlot>(
+        `
+          select id, instructor_id, instructor_name, timezone,
+                 date::text as date, transmission, lesson_type_id, school_id,
+                 lesson_type_name, lesson_type_color,
+                 start_time::text as start_time, end_time::text as end_time,
+                 location_type, status, is_booked
+          from public.public_schedule_slots
+          where instructor_id = $1
+            and lesson_type_id = any($2::uuid[])
+            and status = 'available'
+            and is_booked = false
+            and date >= $3::date
+            and date <= $4::date
+          order by start_time
+        `,
+        [
+          access.instructorId,
+          access.lessonTypeIds,
+          availabilityStartDate,
+          formatDateValue(weekEnd),
+        ],
+      );
+    }
+  } else {
+    const supabase = createAdminClient();
+    const {
+      data: bookingData,
+      error: primaryBookingError,
+    } = await supabase
+      .from("bookings")
+      .select("id, slot_id, lesson_state, created_at")
+      .eq("student_access_id", access.id)
+      .eq("status", "confirmed");
+
+    let bookingError = primaryBookingError;
+    studentBookings = ((bookingData ?? []) as Partial<StudentBookingRow>[]).map(
+      (booking) => ({
+        id: booking.id ?? "",
+        slot_id: booking.slot_id ?? "",
+        lesson_state: normalizeLessonState(booking.lesson_state),
+        created_at: booking.created_at ?? "",
+      }),
+    );
+
+    if (primaryBookingError) {
+      const { data: fallbackBookingData, error: fallbackBookingError } =
+        await supabase
+          .from("bookings")
+          .select("id, slot_id, created_at")
+          .eq("student_access_id", access.id)
+          .eq("status", "confirmed");
+
+      bookingError = fallbackBookingError;
+      studentBookings = ((fallbackBookingData ?? []) as {
+        id: string;
+        slot_id: string;
+        created_at: string;
+      }[]).map((booking) => ({
+        id: booking.id,
+        slot_id: booking.slot_id,
+        lesson_state: "scheduled",
+        created_at: booking.created_at,
+      }));
+    }
+
+    const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
+    const bookingIds = studentBookings.map((booking) => booking.id);
+    const { data: bookedSlotData, error: bookedSlotError } =
+      bookedSlotIds.length > 0
+        ? await supabase
+            .from("public_schedule_slots")
+            .select("*")
+            .in("id", bookedSlotIds)
+        : { data: [], error: null };
+
+    bookingLoadError = bookingError ?? bookedSlotError;
+    bookedSlots = (bookedSlotData ?? []) as ScheduleSlot[];
+
+    const { data: reviewData } =
+      bookingIds.length > 0
+        ? await supabase
+            .from("lesson_reviews")
+            .select("id, booking_id, rating, comment, created_at")
+            .eq("student_access_id", access.id)
+            .in("booking_id", bookingIds)
+        : { data: [] };
+
+    reviews = (reviewData ?? []) as LessonReviewRow[];
+
+    if (access.lessonTypeIds.length > 0) {
+      const availableSlotsResult = await supabase
+        .from("public_schedule_slots")
+        .select("*")
+        .eq("instructor_id", access.instructorId)
+        .in("lesson_type_id", access.lessonTypeIds)
+        .eq("status", "available")
+        .eq("is_booked", false)
+        .gte("date", availabilityStartDate)
+        .lte("date", formatDateValue(weekEnd))
+        .order("start_time", { ascending: true });
+
+      slotsData = availableSlotsResult.data ?? [];
+      slotsError = availableSlotsResult.error;
+    }
   }
 
-  const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
-  const bookingIds = studentBookings.map((booking) => booking.id);
-  const { data: bookedSlotData, error: bookedSlotError } =
-    bookedSlotIds.length > 0
-      ? await supabase
-          .from("public_schedule_slots")
-          .select("*")
-          .in("id", bookedSlotIds)
-      : { data: [], error: null };
-  const bookedSlots = (bookedSlotData ?? []) as ScheduleSlot[];
-  const { data: reviewData } =
-    bookingIds.length > 0
-      ? await supabase
-          .from("lesson_reviews")
-          .select("id, booking_id, rating, comment, created_at")
-          .eq("student_access_id", access.id)
-          .in("booking_id", bookingIds)
-      : { data: [] };
-  const reviews = (reviewData ?? []) as LessonReviewRow[];
   const reviewsByBookingId = new Map(
     reviews.map((review) => [review.booking_id, review]),
   );
-
-  let slotsData: unknown[] = [];
-  let slotsError: { message: string } | null = null;
-
-  if (access.lessonTypeIds.length > 0) {
-    const availableSlotsResult = await supabase
-      .from("public_schedule_slots")
-      .select("*")
-      .eq("instructor_id", access.instructorId)
-      .in("lesson_type_id", access.lessonTypeIds)
-      .eq("status", "available")
-      .eq("is_booked", false)
-      .gte("date", visibleWeekStart)
-      .lte("date", formatDateValue(weekEnd))
-      .order("start_time", { ascending: true });
-
-    slotsData = availableSlotsResult.data ?? [];
-    slotsError = availableSlotsResult.error;
-  }
 
   const usage = await getUsedCounts(access.id, visibleWeekStart);
   const bookedSlotsById = new Map(bookedSlots.map((slot) => [slot.id, slot]));
@@ -703,7 +920,6 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
         new Date(first.slot.start_time).getTime() -
         new Date(second.slot.start_time).getTime(),
     );
-  const currentDateValue = getCurrentDate(timezone);
   const upcomingLessons = studentLessons.filter(
     (lesson) =>
       lesson.booking.lesson_state === "scheduled" &&
@@ -719,9 +935,8 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
       (first, second) =>
         new Date(second.slot.start_time).getTime() -
         new Date(first.slot.start_time).getTime(),
-    );
+  );
   const nextLesson = upcomingLessons[0] ?? null;
-  const bookingLoadError = bookingError ?? bookedSlotError;
   const slots = (slotsData ?? []) as ScheduleSlot[];
   const days = createCalendarDays(weekStart, slots);
   const selectedDay = getSelectedCalendarDay(

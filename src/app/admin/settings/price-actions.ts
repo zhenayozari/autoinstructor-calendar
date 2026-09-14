@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit-log";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
 import { isMissingPricingTableError } from "@/lib/pricing";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -66,6 +68,111 @@ export async function updateSchoolLessonTypePricesAction(
 
     if (lessonTypeIds.length === 0) {
       throw new Error("Нет типов занятий для сохранения");
+    }
+
+    if (isPostgresBackend()) {
+      const [school, lessonTypes] = await Promise.all([
+        queryOne<{ id: string }>(
+          `
+            select id
+            from public.schools
+            where id = $1
+              and organization_id = $2
+            limit 1
+          `,
+          [schoolId, membership.organizationId],
+        ),
+        queryRows<{ id: string }>(
+          `
+            select id
+            from public.lesson_types
+            where id = any($1::uuid[])
+          `,
+          [lessonTypeIds],
+        ),
+      ]);
+
+      if (!school) throw new Error("Источник не найден");
+
+      const validLessonTypeIds = new Set(lessonTypes.map((item) => item.id));
+      const upserts: Array<{
+        lessonTypeId: string;
+        priceAmount: number;
+      }> = [];
+      const deleteIds: string[] = [];
+
+      for (const lessonTypeId of lessonTypeIds) {
+        if (!validLessonTypeIds.has(lessonTypeId)) {
+          continue;
+        }
+
+        const priceAmount = parseOptionalPrice(
+          formData.get(`price_amount_${lessonTypeId}`),
+        );
+
+        if (priceAmount === null) {
+          deleteIds.push(lessonTypeId);
+        } else {
+          upserts.push({
+            lessonTypeId,
+            priceAmount,
+          });
+        }
+      }
+
+      if (deleteIds.length > 0) {
+        await executeQuery(
+          `
+            delete from public.school_lesson_type_prices
+            where organization_id = $1
+              and school_id = $2
+              and lesson_type_id = any($3::uuid[])
+          `,
+          [membership.organizationId, schoolId, deleteIds],
+        );
+      }
+
+      for (const item of upserts) {
+        await executeQuery(
+          `
+            insert into public.school_lesson_type_prices (
+              organization_id, school_id, lesson_type_id, price_amount,
+              updated_at
+            )
+            values ($1, $2, $3, $4, $5)
+            on conflict (organization_id, school_id, lesson_type_id) do update
+            set price_amount = excluded.price_amount,
+                updated_at = excluded.updated_at
+          `,
+          [
+            membership.organizationId,
+            schoolId,
+            item.lessonTypeId,
+            item.priceAmount,
+            new Date().toISOString(),
+          ],
+        );
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "price_matrix.updated",
+        entityType: "price_matrix",
+        entityId: schoolId,
+        metadata: {
+          configured_count: upserts.length,
+          cleared_count: deleteIds.length,
+        },
+      });
+
+      revalidatePath("/admin/settings");
+      revalidatePath("/director/settings");
+      revalidatePath("/director/audit");
+
+      return {
+        status: "success",
+        message: "Цены сохранены",
+      };
     }
 
     const supabase = createAdminClient();

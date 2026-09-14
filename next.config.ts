@@ -37,16 +37,39 @@ const securityHeaders: SecurityHeader[] = [
   },
 ];
 
+const legalFileSecurityHeaders = securityHeaders.map((header) => {
+  if (header.key === "Content-Security-Policy") {
+    return {
+      ...header,
+      value:
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'",
+    };
+  }
+
+  if (header.key === "X-Frame-Options") {
+    return {
+      ...header,
+      value: "SAMEORIGIN",
+    };
+  }
+
+  return header;
+});
+
 const nextConfig: NextConfig = {
   experimental: {
     serverActions: {
-      bodySizeLimit: "3mb",
+      bodySizeLimit: "10mb",
     },
   },
   async headers() {
     return [
       {
-        source: "/(.*)",
+        source: "/legal/:documentType/file",
+        headers: legalFileSecurityHeaders,
+      },
+      {
+        source: "/((?!legal/[^/]+/file$).*)",
         headers: securityHeaders,
       },
     ];

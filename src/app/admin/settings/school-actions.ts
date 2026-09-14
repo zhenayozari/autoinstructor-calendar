@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { SchoolPaymentRule } from "@/lib/types";
 
@@ -75,6 +77,24 @@ export async function createSchoolAction(
 
     validateSchoolFields(name, color);
 
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          insert into public.schools (
+            organization_id, name, color, payment_rule, is_active
+          )
+          values ($1, $2, $3, $4, $5)
+        `,
+        [membership.organizationId, name, color, paymentRule, isActive],
+      );
+
+      revalidatePath("/admin/settings");
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+
+      return { status: "success", message: "Источник добавлен" };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase.from("schools").insert({
       organization_id: membership.organizationId,
@@ -116,6 +136,28 @@ export async function updateSchoolAction(
 
     validateSchoolFields(name, color);
 
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.schools
+          set name = $1,
+              color = $2,
+              payment_rule = $3,
+              is_active = $4,
+              updated_at = now()
+          where id = $5
+            and organization_id = $6
+        `,
+        [name, color, paymentRule, isActive, schoolId, membership.organizationId],
+      );
+
+      revalidatePath("/admin/settings");
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+
+      return { status: "success", message: "Источник обновлён" };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("schools")
@@ -151,6 +193,25 @@ export async function toggleSchoolActiveAction(
     const membership = await requireSchoolManager();
     const schoolId = readRequiredString(formData, "school_id");
     const isActive = formData.get("is_active") === "true";
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.schools
+          set is_active = $1,
+              updated_at = now()
+          where id = $2
+            and organization_id = $3
+        `,
+        [isActive, schoolId, membership.organizationId],
+      );
+
+      revalidatePath("/admin/settings");
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("schools")
@@ -180,6 +241,26 @@ export async function deleteSchoolAction(
   try {
     const membership = await requireSchoolManager();
     const schoolId = readRequiredString(formData, "school_id");
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          delete from public.schools
+          where id = $1
+            and organization_id = $2
+        `,
+        [schoolId, membership.organizationId],
+      );
+
+      revalidatePath("/admin/settings");
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/reports");
+      revalidatePath("/admin/students");
+
+      return { status: "success", message: "Источник удалён навсегда" };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("schools")

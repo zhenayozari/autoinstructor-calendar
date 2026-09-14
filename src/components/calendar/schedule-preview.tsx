@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, CalendarDays, Clock3, UserRound } from "lucide-react";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
@@ -47,6 +49,33 @@ function formatTime(value: string, timezone: string) {
 }
 
 export async function SchedulePreview() {
+  if (isPostgresBackend()) {
+    let slots: PreviewSlot[] = [];
+    let error: unknown = null;
+
+    try {
+      slots = await queryRows<PreviewSlot>(
+        `
+          select id, instructor_name, instructor_slug, timezone, date,
+                 lesson_type_name, lesson_type_color, start_time, status,
+                 is_booked
+          from public.public_schedule_slots
+          where date >= $1
+            and start_time >= $2
+            and status = 'available'
+            and is_booked = false
+          order by date asc, start_time asc
+          limit 4
+        `,
+        [getCurrentDate(), new Date().toISOString()],
+      );
+    } catch (caughtError) {
+      error = caughtError;
+    }
+
+    return <SchedulePreviewContent slots={slots} error={error} />;
+  }
+
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("public_schedule_slots")
@@ -63,6 +92,16 @@ export async function SchedulePreview() {
 
   const slots = (data ?? []) as PreviewSlot[];
 
+  return <SchedulePreviewContent slots={slots} error={error} />;
+}
+
+function SchedulePreviewContent({
+  slots,
+  error,
+}: {
+  slots: PreviewSlot[];
+  error: unknown;
+}) {
   return (
     <section className="rounded-[2rem] bg-zinc-950 p-5 text-white shadow-xl shadow-zinc-950/10 sm:p-8">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">

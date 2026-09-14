@@ -208,6 +208,10 @@ function matchesDebtFilter(access: StudentAccessCrm, debtFilter: string) {
   return true;
 }
 
+function isStudentProfileCompleted(access: StudentAccessCrm) {
+  return Boolean(access.profile_completed_at && access.personal_data_consent_at);
+}
+
 function StateMessage({ state }: { state: StudentAccessActionState }) {
   if (!state.message) {
     return null;
@@ -1016,9 +1020,9 @@ function CreateStudentAccessForm({
     createStudentAccessAction,
     INITIAL_STATE,
   );
-  const [label, setLabel] = useState("");
   const [login, setLogin] = useState("");
   const [secret, setSecret] = useState("");
+  const accessLabel = login || "ученик";
   const activeLessonTypes = getActiveLessonTypes(lessonTypes);
   const activeSchools = getActiveSchools(schools);
   const defaultSchoolId = activeSchools[0]?.id ?? "";
@@ -1062,27 +1066,20 @@ function CreateStudentAccessForm({
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="student-access-label">Имя или метка ученика</Label>
-            <Input
-              id="student-access-label"
-              name="display_label"
-              value={label}
-              onChange={(event) => setLabel(event.target.value)}
-              placeholder="Например: Маша, ГД-07, Ученик 12"
-              maxLength={80}
-              required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="student-access-phone">Способ связи</Label>
+            <Label htmlFor="student-access-phone">
+              Номер для связи (необязательно)
+            </Label>
             <Input
               id="student-access-phone"
               name="student_phone"
               type="text"
-              placeholder="Телефон, Telegram, VK или другой контакт"
+              placeholder="Если ученик уже дал контакт вне системы"
               maxLength={200}
             />
+            <p className="text-muted-foreground text-xs">
+              Номер телефона считается персональными данными. Вносите его только
+              если ученик передал контакт и согласился на связь вне системы.
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -1131,6 +1128,12 @@ function CreateStudentAccessForm({
             </div>
           </div>
 
+        </div>
+
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-4 text-sm leading-6 text-amber-950">
+          По закону о персональных данных ученик сам заполняет имя, фамилию и
+          подтверждает согласие при первом входе. До этого расписание и запись
+          в его кабинете будут недоступны.
         </div>
 
         <div className="rounded-xl border bg-zinc-50 px-3 py-4">
@@ -1219,7 +1222,7 @@ function CreateStudentAccessForm({
             <Plus />
             {isPending ? "Добавляем…" : "Добавить ученика"}
           </Button>
-          <CopyAccessButton label={label} login={login} secret={secret} />
+          <CopyAccessButton label={accessLabel} login={login} secret={secret} />
         </div>
       </form>
     </details>
@@ -1291,6 +1294,17 @@ function StudentAccessCard({
               </p>
             )}
             <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+              <span
+                className={`rounded-full px-2 py-1 font-semibold ${
+                  isStudentProfileCompleted(access)
+                    ? "bg-emerald-100 text-emerald-800"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {isStudentProfileCompleted(access)
+                  ? "Профиль заполнен"
+                  : "Ждёт согласия"}
+              </span>
               <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold text-zinc-700">
                 План {access.crm?.plannedCount ?? 0}
               </span>
@@ -1465,18 +1479,36 @@ function StudentAccessCard({
         <form action={updateAction} className="space-y-4">
           <input type="hidden" name="student_access_id" value={access.id} />
           <section className="space-y-4 rounded-2xl border border-sky-100 bg-sky-50/50 p-4">
-            <p className="text-sm font-semibold">Данные ученика</p>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor={`label-${access.id}`}>Метка ученика</Label>
-                <Input
-                  id={`label-${access.id}`}
-                  name="display_label"
-                  defaultValue={access.display_label}
-                  maxLength={80}
-                  required
-                />
+            <div>
+              <p className="text-sm font-semibold">Доступ и данные ученика</p>
+              <p className="text-muted-foreground mt-1 text-xs leading-5">
+                Имя, фамилию и контакт ученик заполняет сам после входа и
+                согласия на обработку персональных данных.
+              </p>
+            </div>
+            {!isStudentProfileCompleted(access) ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-6 text-amber-950">
+                Кабинет ученика пока закрыт. Он откроется после того, как
+                ученик войдёт по логину и ПИН-коду, заполнит профиль и поставит
+                галочку согласия.
               </div>
+            ) : (
+              <div className="grid gap-3 rounded-xl border bg-white px-3 py-3 text-sm md:grid-cols-3">
+                <div>
+                  <p className="text-xs text-zinc-500">Фамилия</p>
+                  <p className="font-semibold">{access.last_name ?? "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Имя</p>
+                  <p className="font-semibold">{access.first_name ?? "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Контакт</p>
+                  <p className="font-semibold">{access.student_phone ?? "—"}</p>
+                </div>
+              </div>
+            )}
+            <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor={`new-secret-${access.id}`}>
                   Новый ПИН-код/пароль
@@ -1500,17 +1532,6 @@ function StudentAccessCard({
                   defaultValue={access.login}
                   placeholder="masha-01"
                   required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor={`phone-${access.id}`}>Способ связи</Label>
-                <Input
-                  id={`phone-${access.id}`}
-                  name="student_phone"
-                  type="text"
-                  defaultValue={access.student_phone ?? ""}
-                  placeholder="Телефон, Telegram, VK или другой контакт"
-                  maxLength={200}
                 />
               </div>
             </div>

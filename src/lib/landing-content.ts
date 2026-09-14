@@ -69,6 +69,7 @@ export type LandingContent = {
   };
   legal: {
     enabled: boolean;
+    documentsEnabled: boolean;
     linkLabel: string;
     title: string;
     text: string;
@@ -198,6 +199,7 @@ export const DEFAULT_LANDING_CONTENT: LandingContent = {
   },
   legal: {
     enabled: true,
+    documentsEnabled: true,
     linkLabel: "Оферта и условия",
     title: "Оферта и правовая информация",
     text:
@@ -402,6 +404,10 @@ export function normalizeLandingContent(value: unknown): LandingContent {
       enabled: readBoolean(
         legal.enabled,
         DEFAULT_LANDING_CONTENT.legal.enabled,
+      ),
+      documentsEnabled: readBoolean(
+        legal.documentsEnabled,
+        DEFAULT_LANDING_CONTENT.legal.documentsEnabled,
       ),
       linkLabel: readString(
         legal.linkLabel,

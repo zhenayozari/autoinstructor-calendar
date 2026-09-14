@@ -6,6 +6,8 @@ import {
   isLegacyStudentAccessSecretHash,
   verifyStudentAccessSecret,
 } from "@/lib/student-access";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery, queryOne } from "@/lib/db/postgres";
 import { setStudentSession } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -37,6 +39,77 @@ function isMissingAttemptsTableError(error: { code?: string; message?: string })
     error.code === "PGRST204" ||
     message.includes("student_login_attempts") ||
     message.includes("schema cache")
+  );
+}
+
+async function getPostgresLoginAttemptStatus(login: string) {
+  const attempt = await queryOne<LoginAttemptRow>(
+    `
+      select login, failed_count, locked_until, first_failed_at
+      from public.student_login_attempts
+      where login = $1
+      limit 1
+    `,
+    [login],
+  );
+  const lockedUntil = attempt?.locked_until
+    ? new Date(attempt.locked_until)
+    : null;
+
+  return {
+    isLocked: Boolean(lockedUntil && lockedUntil.getTime() > Date.now()),
+    attempt,
+  };
+}
+
+async function recordPostgresFailedLoginAttempt({
+  login,
+  attempt,
+}: {
+  login: string;
+  attempt: LoginAttemptRow | null;
+}) {
+  const now = new Date();
+  const windowStartedAt = attempt?.first_failed_at
+    ? new Date(attempt.first_failed_at)
+    : null;
+  const isSameWindow =
+    windowStartedAt &&
+    now.getTime() - windowStartedAt.getTime() <=
+      ATTEMPT_WINDOW_MINUTES * 60 * 1000;
+  const failedCount = isSameWindow && attempt ? attempt.failed_count + 1 : 1;
+  const lockedUntil =
+    failedCount >= MAX_FAILED_ATTEMPTS ? addMinutes(now, LOCK_MINUTES) : null;
+
+  await executeQuery(
+    `
+      insert into public.student_login_attempts (
+        login, failed_count, locked_until, first_failed_at, last_failed_at
+      )
+      values ($1, $2, $3, $4, $5)
+      on conflict (login) do update
+      set failed_count = excluded.failed_count,
+          locked_until = excluded.locked_until,
+          first_failed_at = excluded.first_failed_at,
+          last_failed_at = excluded.last_failed_at
+    `,
+    [
+      login,
+      failedCount,
+      lockedUntil?.toISOString() ?? null,
+      isSameWindow && attempt ? attempt.first_failed_at : now.toISOString(),
+      now.toISOString(),
+    ],
+  );
+}
+
+async function clearPostgresLoginAttempts(login: string) {
+  await executeQuery(
+    `
+      delete from public.student_login_attempts
+      where login = $1
+    `,
+    [login],
   );
 }
 
@@ -151,6 +224,74 @@ export async function studentLoginAction(
 
   const login = rawLogin.trim().toLocaleLowerCase("ru-RU");
   const secret = rawSecret.trim();
+
+  if (isPostgresBackend()) {
+    let attempt: LoginAttemptRow | null = null;
+
+    try {
+      const attemptStatus = await getPostgresLoginAttemptStatus(login);
+      attempt = attemptStatus.attempt;
+
+      if (attemptStatus.isLocked) {
+        return {
+          status: "error",
+          message: "Слишком много попыток входа. Попробуйте ещё раз через 15 минут",
+        };
+      }
+    } catch (error) {
+      console.error("studentLoginAction postgres attempts lookup:", error);
+    }
+
+    const access = await queryOne<{
+      id: string;
+      password_hash: string;
+      is_active: boolean;
+    }>(
+      `
+        select id, password_hash, is_active
+        from public.student_accesses
+        where login = $1
+        limit 1
+      `,
+      [login],
+    );
+    const isValidSecret =
+      access && verifyStudentAccessSecret(secret, access.password_hash);
+
+    if (!access || !access.is_active || !isValidSecret) {
+      try {
+        await recordPostgresFailedLoginAttempt({ login, attempt });
+      } catch (attemptError) {
+        console.error("studentLoginAction postgres failed attempt:", attemptError);
+      }
+
+      return {
+        status: "error",
+        message: "Неверный логин или ПИН-код/пароль",
+      };
+    }
+
+    if (isLegacyStudentAccessSecretHash(access.password_hash)) {
+      await executeQuery(
+        `
+          update public.student_accesses
+          set password_hash = $2
+          where id = $1
+        `,
+        [access.id, hashStudentAccessSecret(secret)],
+      );
+    }
+
+    try {
+      await clearPostgresLoginAttempts(login);
+    } catch (attemptError) {
+      console.error("studentLoginAction postgres clear attempts:", attemptError);
+    }
+
+    await setStudentSession(access.id);
+    redirect("/student");
+  }
+
   const supabase = createAdminClient();
 
   let attempt: LoginAttemptRow | null = null;

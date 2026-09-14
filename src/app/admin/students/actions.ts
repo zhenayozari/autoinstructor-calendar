@@ -7,6 +7,8 @@ import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
 } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
 import { logAuditEvent } from "@/lib/audit-log";
 import { hashStudentAccessSecret } from "@/lib/student-access";
 import {
@@ -82,6 +84,15 @@ function getErrorMessage(error: unknown) {
     : "Не удалось выполнить операцию";
 }
 
+function isPostgresErrorCode(error: unknown, code: string) {
+  return (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
 function normalizeLogin(login: string) {
   return login.trim().toLocaleLowerCase("ru-RU");
 }
@@ -119,6 +130,24 @@ async function validateLessonTypes(lessonTypeIds: string[]) {
   }
 
   const uniqueIds = [...new Set(lessonTypeIds)];
+
+  if (isPostgresBackend()) {
+    const data = await queryRows<{ id: string }>(
+      `
+        select id
+        from public.lesson_types
+        where id = any($1::uuid[])
+      `,
+      [uniqueIds],
+    );
+
+    if (data.length !== uniqueIds.length) {
+      throw new Error("Один из выбранных типов занятий не найден");
+    }
+
+    return uniqueIds;
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("lesson_types")
@@ -142,6 +171,25 @@ async function validateSchoolId(
 ) {
   if (!schoolId) {
     return null;
+  }
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{ id: string }>(
+      `
+        select id
+        from public.schools
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [schoolId, organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Автошкола не найдена");
+    }
+
+    return schoolId;
   }
 
   const supabase = createAdminClient();
@@ -175,10 +223,39 @@ async function replaceAccessLessonTypes({
   accessId,
   lessonTypeIds,
 }: {
-  supabase: ReturnType<typeof createAdminClient>;
+  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   lessonTypeIds: string[];
 }) {
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        delete from public.student_access_lesson_types
+        where student_access_id = $1
+      `,
+      [accessId],
+    );
+
+    if (lessonTypeIds.length === 0) {
+      return;
+    }
+
+    await executeQuery(
+      `
+        insert into public.student_access_lesson_types (
+          student_access_id, lesson_type_id
+        )
+        select $1::uuid, unnest($2::uuid[])
+      `,
+      [accessId, lessonTypeIds],
+    );
+    return;
+  }
+
+  if (!supabase) {
+    throw new Error("Supabase client is required");
+  }
+
   const { error: deleteError } = await supabase
     .from("student_access_lesson_types")
     .delete()
@@ -211,10 +288,39 @@ async function replacePackageLessonTypes({
   packageId,
   lessonTypeIds,
 }: {
-  supabase: ReturnType<typeof createAdminClient>;
+  supabase?: ReturnType<typeof createAdminClient>;
   packageId: string;
   lessonTypeIds: string[];
 }) {
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        delete from public.student_lesson_package_types
+        where package_id = $1
+      `,
+      [packageId],
+    );
+
+    if (lessonTypeIds.length === 0) {
+      return;
+    }
+
+    await executeQuery(
+      `
+        insert into public.student_lesson_package_types (
+          package_id, lesson_type_id
+        )
+        select $1::uuid, unnest($2::uuid[])
+      `,
+      [packageId, lessonTypeIds],
+    );
+    return;
+  }
+
+  if (!supabase) {
+    throw new Error("Supabase client is required");
+  }
+
   const { error: deleteError } = await supabase
     .from("student_lesson_package_types")
     .delete()
@@ -253,7 +359,7 @@ async function syncPrimaryStudentLessonPackage({
   isActive,
   lessonTypeIds,
 }: {
-  supabase: ReturnType<typeof createAdminClient>;
+  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   organizationId: string;
   instructorId: string;
@@ -263,6 +369,85 @@ async function syncPrimaryStudentLessonPackage({
   isActive: boolean;
   lessonTypeIds: string[];
 }) {
+  if (isPostgresBackend()) {
+    const existingPackage = await queryOne<{ id: string }>(
+      `
+        select id
+        from public.student_lesson_packages
+        where student_access_id = $1
+          and sort_order = 100
+        limit 1
+      `,
+      [accessId],
+    );
+    let packageId = existingPackage?.id;
+
+    if (packageId) {
+      await executeQuery(
+        `
+          update public.student_lesson_packages
+          set organization_id = $1,
+              instructor_id = $2,
+              school_id = $3,
+              booking_category = 'regular',
+              total_lesson_limit = $4,
+              weekly_lesson_limit = $5,
+              is_active = $6,
+              updated_at = now()
+          where id = $7
+        `,
+        [
+          organizationId,
+          instructorId,
+          schoolId,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+          packageId,
+        ],
+      );
+    } else {
+      const packageRow = await queryOne<{ id: string }>(
+        `
+          insert into public.student_lesson_packages (
+            student_access_id, organization_id, instructor_id, school_id,
+            booking_category, total_lesson_limit, weekly_lesson_limit,
+            is_active, sort_order
+          )
+          values ($1, $2, $3, $4, 'regular', $5, $6, $7, 100)
+          returning id
+        `,
+        [
+          accessId,
+          organizationId,
+          instructorId,
+          schoolId,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+        ],
+      );
+
+      if (!packageRow) {
+        throw new Error("Не удалось создать доступ к занятиям");
+      }
+
+      packageId = packageRow.id;
+    }
+
+    await replacePackageLessonTypes({
+      supabase,
+      packageId,
+      lessonTypeIds,
+    });
+
+    return packageId;
+  }
+
+  if (!supabase) {
+    throw new Error("Supabase client is required");
+  }
+
   const { data: existingPackage, error: packageLookupError } = await supabase
     .from("student_lesson_packages")
     .select("id")
@@ -339,10 +524,50 @@ async function syncAccessLessonTypesFromPackages({
   accessId,
   fallbackLessonTypeIds,
 }: {
-  supabase: ReturnType<typeof createAdminClient>;
+  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   fallbackLessonTypeIds: string[];
 }) {
+  if (isPostgresBackend()) {
+    const packages = await queryRows<{ id: string }>(
+      `
+        select id
+        from public.student_lesson_packages
+        where student_access_id = $1
+          and is_active = true
+      `,
+      [accessId],
+    );
+    const packageIds = packages.map((item) => item.id);
+    const lessonTypeIds = new Set(fallbackLessonTypeIds);
+
+    if (packageIds.length > 0) {
+      const packageTypes = await queryRows<{ lesson_type_id: string }>(
+        `
+          select lesson_type_id
+          from public.student_lesson_package_types
+          where package_id = any($1::uuid[])
+        `,
+        [packageIds],
+      );
+
+      for (const item of packageTypes) {
+        lessonTypeIds.add(item.lesson_type_id);
+      }
+    }
+
+    await replaceAccessLessonTypes({
+      supabase,
+      accessId,
+      lessonTypeIds: [...lessonTypeIds],
+    });
+    return;
+  }
+
+  if (!supabase) {
+    throw new Error("Supabase client is required");
+  }
+
   const { data: packages, error: packageError } = await supabase
     .from("student_lesson_packages")
     .select("id")
@@ -389,10 +614,43 @@ async function syncAccessLessonTypesFromPackages({
 
 async function getManageableAccess(accessId: string) {
   const membership = await requireActiveOrganizationMember();
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{
+      id: string;
+      instructor_id: string;
+      organization_id: string;
+      login: string;
+      display_label: string;
+      student_phone: string | null;
+    }>(
+      `
+        select id, instructor_id, organization_id, login, display_label,
+               student_phone
+        from public.student_accesses
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [accessId, membership.organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Учебный доступ не найден");
+    }
+
+    await requireInstructorAccess(data.instructor_id);
+
+    return {
+      membership,
+      access: data,
+    };
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_accesses")
-    .select("id, instructor_id, organization_id, login")
+    .select("id, instructor_id, organization_id, login, display_label, student_phone")
     .eq("id", accessId)
     .eq("organization_id", membership.organizationId)
     .maybeSingle();
@@ -410,12 +668,45 @@ async function getManageableAccess(accessId: string) {
       instructor_id: string;
       organization_id: string;
       login: string;
+      display_label: string;
+      student_phone: string | null;
     },
   };
 }
 
 async function getManageableStudentLessonPackage(packageId: string) {
   const membership = await requireActiveOrganizationMember();
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{
+      id: string;
+      student_access_id: string;
+      instructor_id: string;
+      organization_id: string;
+      sort_order: number;
+    }>(
+      `
+        select id, student_access_id, instructor_id, organization_id, sort_order
+        from public.student_lesson_packages
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [packageId, membership.organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Доступ к занятиям не найден");
+    }
+
+    await requireInstructorAccess(data.instructor_id);
+
+    return {
+      membership,
+      packageRow: data,
+    };
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_lesson_packages")
@@ -480,6 +771,37 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
   const { membership, access } = await getManageableAccess(accessId);
   assertOwnerCanDelete(membership);
 
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        delete from public.bookings
+        where student_access_id = $1
+      `,
+      [access.id],
+    );
+    await executeQuery(
+      `
+        delete from public.student_accesses
+        where id = $1
+          and organization_id = $2
+      `,
+      [access.id, membership.organizationId],
+    );
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.deleted",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return;
+  }
+
   const supabase = createAdminClient();
   const { error: bookingsError } = await supabase
     .from("bookings")
@@ -524,6 +846,35 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
 
 async function restoreStudentAccessById(accessId: string) {
   const { membership, access } = await getManageableAccess(accessId);
+
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        update public.student_accesses
+        set is_archived = false,
+            archived_at = null,
+            is_active = true,
+            updated_at = now()
+        where id = $1
+          and instructor_id = $2
+      `,
+      [access.id, access.instructor_id],
+    );
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.restored",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return;
+  }
+
   const supabase = createAdminClient();
   const { error } = await supabase
     .from("student_accesses")
@@ -554,6 +905,57 @@ async function restoreStudentAccessById(accessId: string) {
 
 async function getManageableRegistrationRequest(requestId: string) {
   const membership = await requireActiveOrganizationMember();
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{
+      id: string;
+      organization_id: string;
+      instructor_id: string;
+      first_name: string | null;
+      last_name: string | null;
+      student_phone: string | null;
+      login: string;
+      password_hash: string;
+      status: "pending" | "approved" | "rejected";
+      personal_data_consent_at: string | null;
+      personal_data_consent_source: string | null;
+      personal_data_consent_ip: string | null;
+      personal_data_consent_user_agent: string | null;
+      personal_data_consent_document_ids: string[];
+      personal_data_consent_document_versions: unknown;
+    }>(
+      `
+        select id, organization_id, instructor_id, first_name, last_name,
+               student_phone, login, password_hash, status,
+               personal_data_consent_at::text as personal_data_consent_at,
+               personal_data_consent_source, personal_data_consent_ip,
+               personal_data_consent_user_agent,
+               personal_data_consent_document_ids,
+               personal_data_consent_document_versions
+        from public.student_registration_requests
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [requestId, membership.organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Заявка не найдена");
+    }
+
+    await requireInstructorAccess(data.instructor_id);
+
+    if (data.status !== "pending") {
+      throw new Error("Эта заявка уже обработана");
+    }
+
+    return {
+      membership,
+      request: data,
+    };
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_registration_requests")
@@ -586,6 +988,12 @@ async function getManageableRegistrationRequest(requestId: string) {
       login: string;
       password_hash: string;
       status: "pending" | "approved" | "rejected";
+      personal_data_consent_at?: string | null;
+      personal_data_consent_source?: string | null;
+      personal_data_consent_ip?: string | null;
+      personal_data_consent_user_agent?: string | null;
+      personal_data_consent_document_ids?: string[];
+      personal_data_consent_document_versions?: unknown;
     },
   };
 }
@@ -599,11 +1007,12 @@ export async function createStudentAccessAction(
   try {
     const instructorId = readRequiredString(formData, "instructor_id");
     const membership = await requireInstructorAccess(instructorId);
-    const displayLabel = readRequiredString(formData, "display_label");
+    const login = normalizeLogin(readRequiredString(formData, "login"));
+    const displayLabel =
+      readOptionalString(formData, "display_label") ?? `Ученик ${login}`;
     const studentPhone = validateStudentPhone(
       readOptionalString(formData, "student_phone"),
     );
-    const login = normalizeLogin(readRequiredString(formData, "login"));
     const secret = readRequiredString(formData, "secret");
     const totalLessonLimit = readOptionalLimit(
       formData,
@@ -629,6 +1038,81 @@ export async function createStudentAccessAction(
 
     if (displayLabel.length > 80) {
       throw new Error("Метка ученика должна быть не длиннее 80 символов");
+    }
+
+    if (isPostgresBackend()) {
+      const access = await queryOne<{ id: string }>(
+        `
+          insert into public.student_accesses (
+            organization_id, instructor_id, display_label, student_phone,
+            login, password_hash, total_lesson_limit, weekly_lesson_limit,
+            school_id, is_active
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          returning id
+        `,
+        [
+          membership.organizationId,
+          instructorId,
+          displayLabel,
+          studentPhone,
+          login,
+          hashStudentAccessSecret(secret),
+          totalLessonLimit,
+          weeklyLessonLimit,
+          schoolId,
+          isActive,
+        ],
+      ).catch((error: unknown) => {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "23505"
+        ) {
+          throw new Error("Такой логин уже используется");
+        }
+
+        throw error;
+      });
+
+      if (!access) {
+        throw new Error("Не удалось добавить ученика");
+      }
+
+      try {
+        await replaceAccessLessonTypes({
+          accessId: access.id,
+          lessonTypeIds,
+        });
+        await syncPrimaryStudentLessonPackage({
+          accessId: access.id,
+          organizationId: membership.organizationId,
+          instructorId,
+          schoolId,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+          lessonTypeIds,
+        });
+      } catch (lessonTypesError) {
+        await executeQuery(
+          `
+            delete from public.student_accesses
+            where id = $1
+          `,
+          [access.id],
+        );
+        throw lessonTypesError;
+      }
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message:
+          "Доступ создан. Передайте ученику логин и ПИН-код: кабинет откроется после заполнения профиля и согласия.",
+      };
     }
 
     const supabase = createAdminClient();
@@ -683,7 +1167,8 @@ export async function createStudentAccessAction(
 
     return {
       status: "success",
-      message: "Ученик добавлен. Скопируйте логин и ПИН-код и передайте ученику.",
+      message:
+        "Доступ создан. Передайте ученику логин и ПИН-код: кабинет откроется после заполнения профиля и согласия.",
     };
   } catch (error) {
     console.error("createStudentAccessAction:", error);
@@ -728,12 +1213,144 @@ export async function approveStudentRegistrationRequestAction(
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
     );
+    const requestProfileCompleted = Boolean(
+      request.first_name &&
+        request.last_name &&
+        request.student_phone &&
+        request.personal_data_consent_at,
+    );
 
     if (displayLabel.length > 80) {
       throw new Error("Метка ученика должна быть не длиннее 80 символов");
     }
 
     validateLogin(login);
+
+    if (isPostgresBackend()) {
+      const existingAccess = await queryOne<{ id: string }>(
+        `
+          select id
+          from public.student_accesses
+          where organization_id = $1
+            and login = $2
+          limit 1
+        `,
+        [request.organization_id, login],
+      );
+
+      if (existingAccess) {
+        throw new Error("Такой логин уже используется активным учеником");
+      }
+
+      const access = await queryOne<{ id: string }>(
+        `
+          insert into public.student_accesses (
+            organization_id, instructor_id, display_label, first_name,
+            last_name, student_phone, login, password_hash,
+            total_lesson_limit, weekly_lesson_limit, school_id, is_active,
+            profile_completed_at, personal_data_consent_at,
+            personal_data_consent_source, personal_data_consent_ip,
+            personal_data_consent_user_agent,
+            personal_data_consent_document_ids,
+            personal_data_consent_document_versions
+          )
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18::uuid[], $19::jsonb
+          )
+          returning id
+        `,
+        [
+          request.organization_id,
+          request.instructor_id,
+          displayLabel,
+          requestProfileCompleted ? request.first_name : null,
+          requestProfileCompleted ? request.last_name : null,
+          studentPhone,
+          login,
+          request.password_hash,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          schoolId,
+          isActive,
+          requestProfileCompleted ? new Date().toISOString() : null,
+          request.personal_data_consent_at ?? null,
+          request.personal_data_consent_source ?? null,
+          request.personal_data_consent_ip ?? null,
+          request.personal_data_consent_user_agent ?? null,
+          request.personal_data_consent_document_ids ?? [],
+          JSON.stringify(request.personal_data_consent_document_versions ?? []),
+        ],
+      ).catch((error: unknown) => {
+        if (isPostgresErrorCode(error, "23505")) {
+          throw new Error("Такой логин уже используется");
+        }
+
+        throw error;
+      });
+
+      if (!access) {
+        throw new Error("Не удалось подтвердить ученика");
+      }
+
+      try {
+        await replaceAccessLessonTypes({
+          accessId: access.id,
+          lessonTypeIds,
+        });
+        await syncPrimaryStudentLessonPackage({
+          accessId: access.id,
+          organizationId: request.organization_id,
+          instructorId: request.instructor_id,
+          schoolId,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+          lessonTypeIds,
+        });
+      } catch (lessonTypesError) {
+        await executeQuery(
+          `
+            delete from public.student_accesses
+            where id = $1
+          `,
+          [access.id],
+        );
+        throw lessonTypesError;
+      }
+
+      await executeQuery(
+        `
+          update public.student_registration_requests
+          set status = 'approved',
+              reviewed_at = $1,
+              updated_at = now()
+          where id = $2
+            and status = 'pending'
+        `,
+        [new Date().toISOString(), request.id],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "student_registration.approved",
+        entityType: "student_registration_request",
+        entityId: request.id,
+        metadata: {
+          instructor_id: request.instructor_id,
+          student_access_id: access.id,
+          is_active: isActive,
+          lesson_type_count: lessonTypeIds.length,
+        },
+      });
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: "Заявка подтверждена. Ученик добавлен в активные.",
+      };
+    }
 
     const supabase = createAdminClient();
     const { data: existingAccess, error: accessCheckError } = await supabase
@@ -850,6 +1467,38 @@ export async function rejectStudentRegistrationRequestAction(
     const requestId = readRequiredString(formData, "request_id");
     const { membership, request } =
       await getManageableRegistrationRequest(requestId);
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_registration_requests
+          set status = 'rejected',
+              reviewed_at = $1,
+              updated_at = now()
+          where id = $2
+            and status = 'pending'
+        `,
+        [new Date().toISOString(), request.id],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "student_registration.rejected",
+        entityType: "student_registration_request",
+        entityId: request.id,
+        metadata: {
+          instructor_id: request.instructor_id,
+        },
+      });
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: "Заявка отклонена",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_registration_requests")
@@ -954,6 +1603,111 @@ export async function updateStudentAccessAction(
       updates.password_hash = hashStudentAccessSecret(newSecret);
     }
 
+    if (isPostgresBackend()) {
+      try {
+        if (updates.password_hash) {
+          await executeQuery(
+            `
+              update public.student_accesses
+              set display_label = $1,
+                  login = $2,
+                  student_phone = $3,
+                  total_lesson_limit = $4,
+                  weekly_lesson_limit = $5,
+                  school_id = $6,
+                  is_active = $7,
+                  password_hash = $8,
+                  updated_at = now()
+              where id = $9
+                and instructor_id = $10
+            `,
+            [
+              updates.display_label,
+              updates.login,
+              updates.student_phone,
+              updates.total_lesson_limit,
+              updates.weekly_lesson_limit,
+              updates.school_id,
+              updates.is_active,
+              updates.password_hash,
+              access.id,
+              access.instructor_id,
+            ],
+          );
+        } else {
+          await executeQuery(
+            `
+              update public.student_accesses
+              set display_label = $1,
+                  login = $2,
+                  student_phone = $3,
+                  total_lesson_limit = $4,
+                  weekly_lesson_limit = $5,
+                  school_id = $6,
+                  is_active = $7,
+                  updated_at = now()
+              where id = $8
+                and instructor_id = $9
+            `,
+            [
+              updates.display_label,
+              updates.login,
+              updates.student_phone,
+              updates.total_lesson_limit,
+              updates.weekly_lesson_limit,
+              updates.school_id,
+              updates.is_active,
+              access.id,
+              access.instructor_id,
+            ],
+          );
+        }
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23505")) {
+          throw new Error("Такой логин уже используется");
+        }
+
+        throw error;
+      }
+
+      await syncPrimaryStudentLessonPackage({
+        accessId: access.id,
+        organizationId: access.organization_id,
+        instructorId: access.instructor_id,
+        schoolId,
+        totalLessonLimit,
+        weeklyLessonLimit,
+        isActive,
+        lessonTypeIds,
+      });
+      await syncAccessLessonTypesFromPackages({
+        accessId: access.id,
+        fallbackLessonTypeIds: lessonTypeIds,
+      });
+
+      await logAuditEvent({
+        membership,
+        action: "student_access.updated",
+        entityType: "student_access",
+        entityId: access.id,
+        metadata: {
+          instructor_id: access.instructor_id,
+          is_active: isActive,
+          secret_changed: Boolean(newSecret),
+          lesson_type_count: lessonTypeIds.length,
+        },
+      });
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: newSecret
+        ? "Доступ обновлён. Не забудьте передать ученику новый ПИН-код/пароль."
+          : "Доступ обновлён",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_accesses")
@@ -1025,11 +1779,14 @@ export async function updateStudentAccessDetailsAction(
 
   try {
     const accessId = readRequiredString(formData, "student_access_id");
-    const displayLabel = readRequiredString(formData, "display_label");
-    const login = readRequiredString(formData, "login");
-    const studentPhone = readOptionalString(formData, "student_phone");
-    const newSecret = readOptionalString(formData, "new_secret");
     const { membership, access } = await getManageableAccess(accessId);
+    const displayLabel =
+      readOptionalString(formData, "display_label") ?? access.display_label;
+    const login = readRequiredString(formData, "login");
+    const studentPhone = formData.has("student_phone")
+      ? readOptionalString(formData, "student_phone")
+      : access.student_phone;
+    const newSecret = readOptionalString(formData, "new_secret");
 
     if (displayLabel.length > 80) {
       throw new Error("Метка ученика должна быть не длиннее 80 символов");
@@ -1051,6 +1808,78 @@ export async function updateStudentAccessDetailsAction(
     if (newSecret) {
       validateSecret(newSecret);
       updates.password_hash = hashStudentAccessSecret(newSecret);
+    }
+
+    if (isPostgresBackend()) {
+      try {
+        if (updates.password_hash) {
+          await executeQuery(
+            `
+              update public.student_accesses
+              set display_label = $1,
+                  login = $2,
+                  student_phone = $3,
+                  password_hash = $4,
+                  updated_at = now()
+              where id = $5
+                and instructor_id = $6
+            `,
+            [
+              updates.display_label,
+              updates.login,
+              updates.student_phone,
+              updates.password_hash,
+              access.id,
+              access.instructor_id,
+            ],
+          );
+        } else {
+          await executeQuery(
+            `
+              update public.student_accesses
+              set display_label = $1,
+                  login = $2,
+                  student_phone = $3,
+                  updated_at = now()
+              where id = $4
+                and instructor_id = $5
+            `,
+            [
+              updates.display_label,
+              updates.login,
+              updates.student_phone,
+              access.id,
+              access.instructor_id,
+            ],
+          );
+        }
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23505")) {
+          throw new Error("Такой логин уже используется");
+        }
+
+        throw error;
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "student_access.details_updated",
+        entityType: "student_access",
+        entityId: access.id,
+        metadata: {
+          instructor_id: access.instructor_id,
+          secret_changed: Boolean(newSecret),
+        },
+      });
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: newSecret
+          ? "Данные обновлены. Не забудьте передать ученику новый ПИН-код/пароль."
+          : "Данные ученика обновлены",
+      };
     }
 
     const supabase = createAdminClient();
@@ -1106,6 +1935,39 @@ export async function archiveStudentAccessAction(
   try {
     const accessId = readRequiredString(formData, "student_access_id");
     const { membership, access } = await getManageableAccess(accessId);
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_accesses
+          set is_archived = true,
+              archived_at = $1,
+              is_active = false,
+              updated_at = now()
+          where id = $2
+            and instructor_id = $3
+        `,
+        [new Date().toISOString(), access.id, access.instructor_id],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "student_access.archived",
+        entityType: "student_access",
+        entityId: access.id,
+        metadata: {
+          instructor_id: access.instructor_id,
+        },
+      });
+
+      revalidateStudentAccessPaths();
+
+      return {
+        status: "success",
+        message: "Ученик перемещён в архив",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_accesses")
@@ -1235,6 +2097,38 @@ export async function toggleStudentAccessAction(
     const accessId = readRequiredString(formData, "student_access_id");
     const isActive = formData.get("is_active") === "true";
     const { membership, access } = await getManageableAccess(accessId);
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_accesses
+          set is_active = $1,
+              updated_at = now()
+          where id = $2
+            and instructor_id = $3
+        `,
+        [isActive, access.id, access.instructor_id],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: isActive ? "student_access.enabled" : "student_access.disabled",
+        entityType: "student_access",
+        entityId: access.id,
+        metadata: {
+          instructor_id: access.instructor_id,
+          is_active: isActive,
+        },
+      });
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: isActive ? "Доступ включён" : "Доступ отключён",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_accesses")
@@ -1301,6 +2195,90 @@ export async function addStudentLessonPackageAction(
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
     );
+
+    if (isPostgresBackend()) {
+      const lastPackage = await queryOne<{ sort_order: number | null }>(
+        `
+          select sort_order
+          from public.student_lesson_packages
+          where student_access_id = $1
+          order by sort_order desc
+          limit 1
+        `,
+        [access.id],
+      );
+      const sortOrder =
+        typeof lastPackage?.sort_order === "number"
+          ? Math.max(lastPackage.sort_order + 10, 200)
+          : 200;
+      const packageRow = await queryOne<{ id: string }>(
+        `
+          insert into public.student_lesson_packages (
+            student_access_id, organization_id, instructor_id, school_id,
+            booking_category, total_lesson_limit, weekly_lesson_limit,
+            is_active, sort_order
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          returning id
+        `,
+        [
+          access.id,
+          membership.organizationId,
+          access.instructor_id,
+          schoolId,
+          bookingCategory,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+          sortOrder,
+        ],
+      );
+
+      if (!packageRow) {
+        throw new Error("Не удалось добавить пакет");
+      }
+
+      try {
+        await replacePackageLessonTypes({
+          packageId: packageRow.id,
+          lessonTypeIds,
+        });
+        await syncAccessLessonTypesFromPackages({
+          accessId: access.id,
+          fallbackLessonTypeIds: lessonTypeIds,
+        });
+      } catch (packageTypesError) {
+        await executeQuery(
+          `
+            delete from public.student_lesson_packages
+            where id = $1
+          `,
+          [packageRow.id],
+        );
+        throw packageTypesError;
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "student_lesson_package.created",
+        entityType: "student_access",
+        entityId: access.id,
+        metadata: {
+          instructor_id: access.instructor_id,
+          school_id: schoolId,
+          booking_category: bookingCategory,
+          lesson_type_count: lessonTypeIds.length,
+        },
+      });
+
+      revalidateStudentAccessPaths();
+
+      return {
+        status: "success",
+        message: "Дополнительный доступ добавлен",
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: lastPackage, error: lastPackageError } = await supabase
       .from("student_lesson_packages")
@@ -1426,6 +2404,62 @@ export async function updateStudentLessonPackageAction(
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
     );
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_lesson_packages
+          set school_id = $1,
+              booking_category = $2,
+              total_lesson_limit = $3,
+              weekly_lesson_limit = $4,
+              is_active = $5,
+              updated_at = now()
+          where id = $6
+            and organization_id = $7
+        `,
+        [
+          schoolId,
+          bookingCategory,
+          totalLessonLimit,
+          weeklyLessonLimit,
+          isActive,
+          packageRow.id,
+          membership.organizationId,
+        ],
+      );
+
+      await replacePackageLessonTypes({
+        packageId: packageRow.id,
+        lessonTypeIds,
+      });
+      await syncAccessLessonTypesFromPackages({
+        accessId: packageRow.student_access_id,
+        fallbackLessonTypeIds: lessonTypeIds,
+      });
+      await logAuditEvent({
+        membership,
+        action: "student_lesson_package.updated",
+        entityType: "student_access",
+        entityId: packageRow.student_access_id,
+        metadata: {
+          package_id: packageRow.id,
+          instructor_id: packageRow.instructor_id,
+          school_id: schoolId,
+          booking_category: bookingCategory,
+          is_active: isActive,
+          lesson_type_count: lessonTypeIds.length,
+        },
+      });
+
+      revalidateStudentAccessPaths();
+
+      return {
+        status: "success",
+        message: "Дополнительный доступ обновлён",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("student_lesson_packages")
@@ -1499,6 +2533,54 @@ export async function deleteStudentLessonPackageAction(
       throw new Error("Основной доступ нельзя удалить отдельно от ученика");
     }
 
+    if (isPostgresBackend()) {
+      const bookingCount = await queryOne<{ count: string }>(
+        `
+          select count(*)::text as count
+          from public.bookings
+          where student_lesson_package_id = $1
+        `,
+        [packageRow.id],
+      );
+
+      if (Number(bookingCount?.count ?? 0) > 0) {
+        throw new Error(
+          "По этому доступу уже есть записи. Его можно отключить, но не удалить.",
+        );
+      }
+
+      await executeQuery(
+        `
+          delete from public.student_lesson_packages
+          where id = $1
+            and organization_id = $2
+        `,
+        [packageRow.id, membership.organizationId],
+      );
+
+      await syncAccessLessonTypesFromPackages({
+        accessId: packageRow.student_access_id,
+        fallbackLessonTypeIds: [],
+      });
+      await logAuditEvent({
+        membership,
+        action: "student_lesson_package.deleted",
+        entityType: "student_access",
+        entityId: packageRow.student_access_id,
+        metadata: {
+          package_id: packageRow.id,
+          instructor_id: packageRow.instructor_id,
+        },
+      });
+
+      revalidateStudentAccessPaths();
+
+      return {
+        status: "success",
+        message: "Дополнительный доступ удалён",
+      };
+    }
+
     const supabase = createAdminClient();
     const { count, error: bookingCountError } = await supabase
       .from("bookings")
@@ -1567,6 +2649,32 @@ export async function refreshStudentRegistrationLinkAction(
     const instructorId = readRequiredString(formData, "instructor_id");
     await requireInstructorAccess(instructorId);
     const token = randomBytes(24).toString("hex");
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          insert into public.instructor_settings (
+            instructor_id, student_registration_token,
+            student_registration_enabled, student_registration_token_updated_at
+          )
+          values ($1, $2, true, $3)
+          on conflict (instructor_id) do update
+          set student_registration_token = excluded.student_registration_token,
+              student_registration_enabled = excluded.student_registration_enabled,
+              student_registration_token_updated_at =
+                excluded.student_registration_token_updated_at
+        `,
+        [instructorId, token, new Date().toISOString()],
+      );
+
+      revalidatePath("/admin/students");
+
+      return {
+        status: "success",
+        message: "Ссылка регистрации обновлена",
+      };
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase.from("instructor_settings").upsert(
       {

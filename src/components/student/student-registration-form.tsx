@@ -1,11 +1,16 @@
 "use client";
 
 import { useActionState } from "react";
-import { Send } from "lucide-react";
+import Link from "next/link";
+import { ExternalLink, Send } from "lucide-react";
 import {
   createStudentRegistrationRequestAction,
   type StudentRegistrationActionState,
 } from "@/app/student/register/actions";
+import {
+  hasRequiredStudentLegalDocuments,
+  LegalConsentCheckboxes,
+} from "@/components/student/legal-consent-checkboxes";
 import { STUDENT_SECRET_MIN_LENGTH } from "@/lib/student-secret-policy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,29 +21,57 @@ const INITIAL_STATE: StudentRegistrationActionState = {
   message: "",
 };
 
-export function StudentRegistrationForm({ token }: { token: string }) {
+type PublishedLegalDocumentLink = {
+  id: string;
+  title: string;
+  href: string;
+  documentType: string;
+};
+
+export function StudentRegistrationForm({
+  token,
+  documents = [],
+  requiresConsent = false,
+}: {
+  token: string;
+  documents?: PublishedLegalDocumentLink[];
+  requiresConsent?: boolean;
+}) {
   const [state, formAction, isPending] = useActionState(
     createStudentRegistrationRequestAction,
     INITIAL_STATE,
   );
   const isSuccess = state.status === "success";
+  const hasRequiredDocuments = hasRequiredStudentLegalDocuments(documents);
 
   return (
     <form action={formAction} className="space-y-4">
       <input type="hidden" name="token" value={token} />
 
-      <div className="space-y-2">
-        <Label htmlFor="student-display-name">Как вас подписать</Label>
-        <Input
-          id="student-display-name"
-          name="first_name"
-          placeholder="Например: Маша, Мария или ученик из ОМГ"
-          maxLength={80}
-          disabled={isSuccess}
-        />
-        <p className="text-xs leading-5 text-zinc-500">
-          Можно указать имя, короткую метку или оставить поле пустым.
-        </p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="student-last-name">Фамилия</Label>
+          <Input
+            id="student-last-name"
+            name="last_name"
+            autoComplete="family-name"
+            maxLength={80}
+            disabled={isSuccess}
+            required
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="student-first-name">Имя</Label>
+          <Input
+            id="student-first-name"
+            name="first_name"
+            autoComplete="given-name"
+            maxLength={80}
+            disabled={isSuccess}
+            required
+          />
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -47,9 +80,11 @@ export function StudentRegistrationForm({ token }: { token: string }) {
           id="student-contact"
           name="student_phone"
           type="text"
-          placeholder="Телефон, Telegram, VK или другой удобный способ"
+          placeholder="+7..."
+          autoComplete="tel"
           maxLength={200}
           disabled={isSuccess}
+          required
         />
       </div>
 
@@ -91,6 +126,31 @@ export function StudentRegistrationForm({ token }: { token: string }) {
         </div>
       </div>
 
+      {documents.length > 0 && (
+        <section className="rounded-2xl border bg-zinc-50 p-3">
+          <p className="text-sm font-semibold">Документы</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {documents.map((document) => (
+              <Link
+                key={document.id}
+                href={document.href}
+                target="_blank"
+                className="inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1.5 text-sm font-medium text-zinc-700"
+              >
+                {document.title}
+                <ExternalLink className="size-3.5" />
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <LegalConsentCheckboxes
+        documents={documents}
+        disabled={isSuccess}
+        required={requiresConsent}
+      />
+
       {state.message && (
         <div
           className={`rounded-xl px-3 py-2 text-sm ${
@@ -106,7 +166,9 @@ export function StudentRegistrationForm({ token }: { token: string }) {
       <Button
         type="submit"
         className="h-11 w-full"
-        disabled={isPending || isSuccess}
+        disabled={
+          isPending || isSuccess || (requiresConsent && !hasRequiredDocuments)
+        }
       >
         <Send />
         {isPending

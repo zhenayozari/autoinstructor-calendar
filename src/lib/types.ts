@@ -1,5 +1,10 @@
 export type OrganizationRole = "owner" | "admin" | "instructor";
 export type SchoolPaymentRule = "manual" | "prepaid" | "settle_later";
+export type LegalDocumentType =
+  | "offer"
+  | "privacy_policy"
+  | "personal_data_consent";
+export type LegalDocumentStatus = "draft" | "published";
 
 export type School = {
   id: string;
@@ -117,6 +122,8 @@ export type StudentAccess = {
   id: string;
   instructor_id: string;
   display_label: string;
+  first_name?: string | null;
+  last_name?: string | null;
   student_phone: string | null;
   login: string;
   total_lesson_limit: number | null;
@@ -125,6 +132,9 @@ export type StudentAccess = {
   school_id: string | null;
   is_archived: boolean;
   archived_at: string | null;
+  profile_completed_at?: string | null;
+  personal_data_consent_at?: string | null;
+  personal_data_consent_source?: string | null;
   created_at: string;
   updated_at: string;
   lesson_type_ids: string[];
@@ -162,6 +172,8 @@ export type StudentRegistrationRequest = {
   login: string;
   status: StudentRegistrationRequestStatus;
   reviewed_at: string | null;
+  personal_data_consent_at?: string | null;
+  personal_data_consent_source?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -219,6 +231,7 @@ export type OrganizationSiteSettings = {
   show_instructors: boolean;
   show_contacts: boolean;
   show_student_login: boolean;
+  require_student_profile_consent?: boolean;
   updated_at: string;
 };
 
@@ -234,6 +247,26 @@ export type InstructorSiteSettings = {
   public_note: string | null;
   public_contact: string | null;
   sort_order: number;
+  updated_at: string;
+};
+
+export type LegalDocument = {
+  id: string;
+  organization_id: string;
+  document_type: LegalDocumentType;
+  title: string;
+  version_label: string | null;
+  original_file_name: string;
+  storage_path: string;
+  mime_type: string;
+  file_size_bytes: string;
+  status: LegalDocumentStatus;
+  published_at: string | null;
+  show_for_students: boolean;
+  show_for_staff: boolean;
+  show_on_site: boolean;
+  created_by_member_id: string | null;
+  created_at: string;
   updated_at: string;
 };
 

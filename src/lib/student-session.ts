@@ -3,6 +3,8 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows, queryOne } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const STUDENT_SESSION_COOKIE = "student_access_session";
@@ -13,10 +15,15 @@ export type CurrentStudentAccess = {
   instructorId: string;
   schoolId: string | null;
   displayLabel: string;
+  firstName: string | null;
+  lastName: string | null;
+  studentPhone: string | null;
   login: string;
   totalLessonLimit: number | null;
   weeklyLessonLimit: number | null;
   isActive: boolean;
+  profileCompletedAt: string | null;
+  personalDataConsentAt: string | null;
   lessonTypeIds: string[];
 };
 
@@ -82,6 +89,68 @@ export async function getCurrentStudentAccess() {
     return null;
   }
 
+  if (isPostgresBackend()) {
+    const access = await queryOne<{
+      id: string;
+      organization_id: string;
+      instructor_id: string;
+      school_id: string | null;
+      display_label: string;
+      first_name: string | null;
+      last_name: string | null;
+      student_phone: string | null;
+      login: string;
+      total_lesson_limit: number | null;
+      weekly_lesson_limit: number | null;
+      is_active: boolean;
+      profile_completed_at: string | null;
+      personal_data_consent_at: string | null;
+    }>(
+      `
+        select id, organization_id, instructor_id, school_id, display_label,
+               first_name, last_name, student_phone, login,
+               total_lesson_limit, weekly_lesson_limit, is_active,
+               profile_completed_at::text as profile_completed_at,
+               personal_data_consent_at::text as personal_data_consent_at
+        from public.student_accesses
+        where id = $1
+        limit 1
+      `,
+      [accessId],
+    );
+
+    if (!access?.is_active) {
+      return null;
+    }
+
+    const lessonTypes = await queryRows<{ lesson_type_id: string }>(
+      `
+        select lesson_type_id
+        from public.student_access_lesson_types
+        where student_access_id = $1
+      `,
+      [access.id],
+    );
+
+    return {
+      id: access.id,
+      organizationId: access.organization_id,
+      instructorId: access.instructor_id,
+      schoolId: access.school_id,
+      displayLabel: access.display_label,
+      firstName: access.first_name,
+      lastName: access.last_name,
+      studentPhone: access.student_phone,
+      login: access.login,
+      totalLessonLimit: access.total_lesson_limit,
+      weeklyLessonLimit: access.weekly_lesson_limit,
+      isActive: access.is_active,
+      profileCompletedAt: access.profile_completed_at,
+      personalDataConsentAt: access.personal_data_consent_at,
+      lessonTypeIds: lessonTypes.map((item) => item.lesson_type_id),
+    } satisfies CurrentStudentAccess;
+  }
+
   const supabase = createAdminClient();
   const { data: access, error } = await supabase
     .from("student_accesses")
@@ -110,10 +179,15 @@ export async function getCurrentStudentAccess() {
     instructorId: access.instructor_id,
     schoolId: access.school_id,
     displayLabel: access.display_label,
+    firstName: null,
+    lastName: null,
+    studentPhone: null,
     login: access.login,
     totalLessonLimit: access.total_lesson_limit,
     weeklyLessonLimit: access.weekly_lesson_limit,
     isActive: access.is_active,
+    profileCompletedAt: new Date(0).toISOString(),
+    personalDataConsentAt: new Date(0).toISOString(),
     lessonTypeIds: (lessonTypes ?? []).map((item) => item.lesson_type_id),
   } satisfies CurrentStudentAccess;
 }

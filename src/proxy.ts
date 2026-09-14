@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isPostgresBackend } from "@/lib/backend-mode";
 import {
   getSupabasePublishableKey,
   getSupabaseUrl,
@@ -7,6 +8,10 @@ import {
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
+
+  if (isPostgresBackend()) {
+    return response;
+  }
 
   const supabase = createServerClient(
     getSupabaseUrl(),

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
+import { isPostgresBackend } from "@/lib/backend-mode";
 import {
   formatDateValue,
   formatHours,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { getBookingCategoryLabel } from "@/lib/booking-categories";
+import { queryRows } from "@/lib/db/postgres";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
@@ -325,16 +327,33 @@ export default async function DirectorReportsPage({
 }: DirectorReportsPageProps) {
   const params = (await searchParams) ?? {};
   const membership = await requireDirectorAccess();
-  const adminEnabled = hasSupabaseAdminKey();
-  const supabase = adminEnabled ? createAdminClient() : await createClient();
+  const postgresBackend = isPostgresBackend();
+  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  let instructors: Instructor[] = [];
+  let instructorError: { message: string } | null = null;
 
-  const { data: instructorData, error: instructorError } =
-    await buildActiveInstructorsQuery(
+  if (postgresBackend) {
+    instructors = await queryRows<Instructor>(
+      `
+        select id, name, slug, public_name, timezone, is_active
+        from public.instructors
+        where organization_id = $1
+          and is_active = true
+        order by name
+      `,
+      [membership.organizationId],
+    );
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data, error } = await buildActiveInstructorsQuery(
       supabase,
       membership,
       "id, name, slug, public_name, timezone, is_active",
     );
-  const instructors = (instructorData ?? []) as Instructor[];
+    instructors = (data ?? []) as Instructor[];
+    instructorError = error;
+  }
+
   const timezone = instructors[0]?.timezone ?? DEFAULT_TIMEZONE;
   const selectedPeriod =
     params.period === "day" ||
@@ -354,55 +373,165 @@ export default async function DirectorReportsPage({
     : instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds: reportInstructorIds });
 
-  const [
-    { data: schoolData, error: schoolError },
-    { data: scheduleDayData, error: scheduleDayError },
-    { data: studentAccessData, error: studentAccessError },
-  ] = await Promise.all([
-    supabase
-      .from("schools")
-      .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
-      .eq("organization_id", membership.organizationId)
-      .order("name"),
-    reportInstructorIds.length > 0
-      ? supabase
-          .from("schedule_days")
-          .select("id, instructor_id, date")
-          .in("instructor_id", reportInstructorIds)
-          .gte("date", from)
-          .lte("date", to)
-      : Promise.resolve({ data: [], error: null }),
-    reportInstructorIds.length > 0
-      ? supabase
-          .from("student_accesses")
-          .select("id, school_id, instructor_id")
-          .eq("organization_id", membership.organizationId)
-          .in("instructor_id", reportInstructorIds)
-      : Promise.resolve({ data: [], error: null }),
-  ]);
-  const scheduleDays = (scheduleDayData ?? []) as Pick<
-    ScheduleDay,
-    "id" | "instructor_id" | "date"
-  >[];
+  let schools: School[] = [];
+  let scheduleDays: Pick<ScheduleDay, "id" | "instructor_id" | "date">[] = [];
+  let studentAccesses: {
+    id: string;
+    instructor_id: string;
+    school_id: string | null;
+  }[] = [];
+  let schoolError: { message: string } | null = null;
+  let scheduleDayError: { message: string } | null = null;
+  let studentAccessError: { message: string } | null = null;
+
+  if (postgresBackend) {
+    [schools, scheduleDays, studentAccesses] = await Promise.all([
+      queryRows<School>(
+        `
+          select id, organization_id, name, color, default_price, payment_rule,
+                 is_active, created_at::text as created_at, updated_at::text as updated_at
+          from public.schools
+          where organization_id = $1
+          order by name
+        `,
+        [membership.organizationId],
+      ),
+      reportInstructorIds.length > 0
+        ? queryRows<Pick<ScheduleDay, "id" | "instructor_id" | "date">>(
+            `
+              select id, instructor_id, date::text as date
+              from public.schedule_days
+              where instructor_id = any($1::uuid[])
+                and date >= $2::date
+                and date <= $3::date
+            `,
+            [reportInstructorIds, from, to],
+          )
+        : Promise.resolve([]),
+      reportInstructorIds.length > 0
+        ? queryRows<{
+            id: string;
+            instructor_id: string;
+            school_id: string | null;
+          }>(
+            `
+              select id, school_id, instructor_id
+              from public.student_accesses
+              where organization_id = $1
+                and instructor_id = any($2::uuid[])
+            `,
+            [membership.organizationId, reportInstructorIds],
+          )
+        : Promise.resolve([]),
+    ]);
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const [
+      { data: schoolData, error: schoolLoadError },
+      { data: scheduleDayData, error: scheduleDayLoadError },
+      { data: studentAccessData, error: studentAccessLoadError },
+    ] = await Promise.all([
+      supabase
+        .from("schools")
+        .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
+        .eq("organization_id", membership.organizationId)
+        .order("name"),
+      reportInstructorIds.length > 0
+        ? supabase
+            .from("schedule_days")
+            .select("id, instructor_id, date")
+            .in("instructor_id", reportInstructorIds)
+            .gte("date", from)
+            .lte("date", to)
+        : Promise.resolve({ data: [], error: null }),
+      reportInstructorIds.length > 0
+        ? supabase
+            .from("student_accesses")
+            .select("id, school_id, instructor_id")
+            .eq("organization_id", membership.organizationId)
+            .in("instructor_id", reportInstructorIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    schools = (schoolData ?? []) as School[];
+    scheduleDays = (scheduleDayData ?? []) as Pick<
+      ScheduleDay,
+      "id" | "instructor_id" | "date"
+    >[];
+    studentAccesses = (studentAccessData ?? []) as {
+      id: string;
+      instructor_id: string;
+      school_id: string | null;
+    }[];
+    schoolError = schoolLoadError;
+    scheduleDayError = scheduleDayLoadError;
+    studentAccessError = studentAccessLoadError;
+  }
+
   const scheduleDayIds = scheduleDays.map((day) => day.id);
-  const { data: slotData, error: slotError } =
-    scheduleDayIds.length > 0
-      ? await supabase
-          .from("slots")
-          .select("id, instructor_id, schedule_day_id, start_time, end_time")
-          .in("schedule_day_id", scheduleDayIds)
-          .neq("status", "cancelled")
-      : { data: [], error: null };
-  const slots = (slotData ?? []) as ReportSlot[];
+  let slots: ReportSlot[] = [];
+  let slotError: { message: string } | null = null;
+
+  if (postgresBackend) {
+    slots =
+      scheduleDayIds.length > 0
+        ? await queryRows<ReportSlot>(
+            `
+              select id, instructor_id, schedule_day_id,
+                     start_time::text as start_time, end_time::text as end_time
+              from public.slots
+              where schedule_day_id = any($1::uuid[])
+                and status <> 'cancelled'
+            `,
+            [scheduleDayIds],
+          )
+        : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data: slotData, error: slotLoadError } =
+      scheduleDayIds.length > 0
+        ? await supabase
+            .from("slots")
+            .select("id, instructor_id, schedule_day_id, start_time, end_time")
+            .in("schedule_day_id", scheduleDayIds)
+            .neq("status", "cancelled")
+        : { data: [], error: null };
+    slots = (slotData ?? []) as ReportSlot[];
+    slotError = slotLoadError;
+  }
+
   const slotIds = slots.map((slot) => slot.id);
-  const { data: bookingData, error: bookingError } =
-    slotIds.length > 0
-      ? await supabase
-          .from("bookings")
-          .select("id, slot_id, student_label, student_access_id, school_id, price_amount, paid_amount, is_paid, booking_category, lesson_state")
-          .in("slot_id", slotIds)
-          .eq("status", "confirmed")
-      : { data: [], error: null };
+  let bookings: ReportBooking[] = [];
+  let bookingError: { message: string } | null = null;
+
+  if (postgresBackend) {
+    bookings =
+      slotIds.length > 0
+        ? await queryRows<ReportBooking>(
+            `
+              select id, slot_id, student_label, student_access_id, school_id,
+                     price_amount, paid_amount, is_paid, booking_category,
+                     lesson_state
+              from public.bookings
+              where slot_id = any($1::uuid[])
+                and status = 'confirmed'
+            `,
+            [slotIds],
+          )
+        : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data: bookingData, error: bookingLoadError } =
+      slotIds.length > 0
+        ? await supabase
+            .from("bookings")
+            .select("id, slot_id, student_label, student_access_id, school_id, price_amount, paid_amount, is_paid, booking_category, lesson_state")
+            .in("slot_id", slotIds)
+            .eq("status", "confirmed")
+        : { data: [], error: null };
+    bookings = (bookingData ?? []) as ReportBooking[];
+    bookingError = bookingLoadError;
+  }
 
   const loadError =
     instructorError ??
@@ -411,13 +540,6 @@ export default async function DirectorReportsPage({
     studentAccessError ??
     slotError ??
     bookingError;
-  const schools = (schoolData ?? []) as School[];
-  const bookings = (bookingData ?? []) as ReportBooking[];
-  const studentAccesses = (studentAccessData ?? []) as {
-    id: string;
-    instructor_id: string;
-    school_id: string | null;
-  }[];
   const instructorsById = new Map(
     instructors.map((instructor) => [instructor.id, instructor]),
   );

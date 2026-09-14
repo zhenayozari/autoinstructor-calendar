@@ -7,6 +7,8 @@ import {
   type NotificationEventKey,
 } from "@/lib/notification-events";
 import { sendPushToMember } from "@/lib/push-notifications";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type PushSubscriptionInput = {
@@ -50,32 +52,71 @@ export async function savePushSubscriptionAction(
 
   try {
     const normalized = normalizeSubscription(subscription);
-    const supabase = createAdminClient();
 
-    const { error } = await supabase.from("push_subscriptions").upsert(
-      {
-        organization_id: membership.organizationId,
-        organization_member_id: membership.id,
-        user_id: membership.user.id,
-        instructor_id: membership.instructorId,
-        role: membership.role,
-        endpoint: normalized.endpoint,
-        p256dh: normalized.p256dh,
-        auth_secret: normalized.auth,
-        subscription,
-        user_agent: userAgent ? userAgent.slice(0, 500) : null,
-        is_active: true,
-        last_seen_at: new Date().toISOString(),
-      },
-      { onConflict: "endpoint" },
-    );
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          insert into public.push_subscriptions (
+            organization_id, organization_member_id, user_id, instructor_id,
+            role, endpoint, p256dh, auth_secret, subscription, user_agent,
+            is_active, last_seen_at, updated_at
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, true, now(), now())
+          on conflict (endpoint) do update
+          set organization_id = excluded.organization_id,
+              organization_member_id = excluded.organization_member_id,
+              user_id = excluded.user_id,
+              instructor_id = excluded.instructor_id,
+              role = excluded.role,
+              p256dh = excluded.p256dh,
+              auth_secret = excluded.auth_secret,
+              subscription = excluded.subscription,
+              user_agent = excluded.user_agent,
+              is_active = true,
+              last_seen_at = now(),
+              updated_at = now()
+        `,
+        [
+          membership.organizationId,
+          membership.id,
+          membership.user.id,
+          membership.instructorId,
+          membership.role,
+          normalized.endpoint,
+          normalized.p256dh,
+          normalized.auth,
+          JSON.stringify(subscription),
+          userAgent ? userAgent.slice(0, 500) : null,
+        ],
+      );
+    } else {
+      const supabase = createAdminClient();
 
-    if (error) {
-      console.error("savePushSubscriptionAction:", error);
-      return {
-        ok: false,
-        message: "Не удалось сохранить уведомления. Попробуйте позже.",
-      };
+      const { error } = await supabase.from("push_subscriptions").upsert(
+        {
+          organization_id: membership.organizationId,
+          organization_member_id: membership.id,
+          user_id: membership.user.id,
+          instructor_id: membership.instructorId,
+          role: membership.role,
+          endpoint: normalized.endpoint,
+          p256dh: normalized.p256dh,
+          auth_secret: normalized.auth,
+          subscription,
+          user_agent: userAgent ? userAgent.slice(0, 500) : null,
+          is_active: true,
+          last_seen_at: new Date().toISOString(),
+        },
+        { onConflict: "endpoint" },
+      );
+
+      if (error) {
+        console.error("savePushSubscriptionAction:", error);
+        return {
+          ok: false,
+          message: "Не удалось сохранить уведомления. Попробуйте позже.",
+        };
+      }
     }
 
     revalidatePath("/admin");
@@ -117,22 +158,36 @@ export async function disablePushSubscriptionAction(
     };
   }
 
-  const supabase = createAdminClient();
-  const { error } = await supabase
-    .from("push_subscriptions")
-    .update({
-      is_active: false,
-      last_seen_at: new Date().toISOString(),
-    })
-    .eq("endpoint", normalizedEndpoint)
-    .eq("user_id", membership.user.id);
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        update public.push_subscriptions
+        set is_active = false,
+            last_seen_at = now(),
+            updated_at = now()
+        where endpoint = $1
+          and user_id = $2
+      `,
+      [normalizedEndpoint, membership.user.id],
+    );
+  } else {
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from("push_subscriptions")
+      .update({
+        is_active: false,
+        last_seen_at: new Date().toISOString(),
+      })
+      .eq("endpoint", normalizedEndpoint)
+      .eq("user_id", membership.user.id);
 
-  if (error) {
-    console.error("disablePushSubscriptionAction:", error);
-    return {
-      ok: false,
-      message: "Не удалось выключить уведомления.",
-    };
+    if (error) {
+      console.error("disablePushSubscriptionAction:", error);
+      return {
+        ok: false,
+        message: "Не удалось выключить уведомления.",
+      };
+    }
   }
 
   revalidatePath("/admin");
@@ -209,23 +264,38 @@ export async function updateNotificationPreferenceAction(
     };
   }
 
-  const supabase = createAdminClient();
-  const { error } = await supabase.from("notification_preferences").upsert(
-    {
-      organization_id: membership.organizationId,
-      organization_member_id: membership.id,
-      event_key: eventKey,
-      is_enabled: isEnabled,
-    },
-    { onConflict: "organization_member_id,event_key" },
-  );
+  if (isPostgresBackend()) {
+    await executeQuery(
+      `
+        insert into public.notification_preferences (
+          organization_id, organization_member_id, event_key, is_enabled, updated_at
+        )
+        values ($1, $2, $3, $4, now())
+        on conflict (organization_member_id, event_key) do update
+        set is_enabled = excluded.is_enabled,
+            updated_at = now()
+      `,
+      [membership.organizationId, membership.id, eventKey, isEnabled],
+    );
+  } else {
+    const supabase = createAdminClient();
+    const { error } = await supabase.from("notification_preferences").upsert(
+      {
+        organization_id: membership.organizationId,
+        organization_member_id: membership.id,
+        event_key: eventKey,
+        is_enabled: isEnabled,
+      },
+      { onConflict: "organization_member_id,event_key" },
+    );
 
-  if (error) {
-    console.error("updateNotificationPreferenceAction:", error);
-    return {
-      ok: false,
-      message: "Не удалось сохранить настройку уведомлений.",
-    };
+    if (error) {
+      console.error("updateNotificationPreferenceAction:", error);
+      return {
+        ok: false,
+        message: "Не удалось сохранить настройку уведомлений.",
+      };
+    }
   }
 
   revalidatePath("/admin");

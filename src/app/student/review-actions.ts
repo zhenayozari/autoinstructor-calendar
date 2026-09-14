@@ -1,6 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery, queryOne } from "@/lib/db/postgres";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -62,6 +64,66 @@ export async function submitLessonReviewAction(
     const bookingId = readRequiredString(formData, "booking_id");
     const rating = readRating(formData);
     const comment = readComment(formData);
+
+    if (isPostgresBackend()) {
+      const booking = await queryOne<{
+        id: string;
+        slot_id: string;
+        student_access_id: string | null;
+        lesson_state: string;
+        status: string;
+      }>(
+        `
+          select id, slot_id, student_access_id, lesson_state, status
+          from public.bookings
+          where id = $1
+            and student_access_id = $2
+          limit 1
+        `,
+        [bookingId, access.id],
+      );
+
+      if (!booking || booking.status !== "confirmed") {
+        throw new Error("Запись не найдена");
+      }
+
+      if (booking.lesson_state !== "completed") {
+        throw new Error("Отзыв можно оставить только после проведённого занятия");
+      }
+
+      await executeQuery(
+        `
+          insert into public.lesson_reviews (
+            organization_id, instructor_id, booking_id, student_access_id,
+            rating, comment, updated_at
+          )
+          values ($1, $2, $3, $4, $5, $6, $7)
+          on conflict (booking_id) do update
+          set rating = excluded.rating,
+              comment = excluded.comment,
+              updated_at = excluded.updated_at
+        `,
+        [
+          access.organizationId,
+          access.instructorId,
+          booking.id,
+          access.id,
+          rating,
+          comment,
+          new Date().toISOString(),
+        ],
+      );
+
+      revalidatePath("/student");
+      revalidatePath("/admin/rating");
+      revalidatePath("/director/audit");
+
+      return {
+        status: "success",
+        message: "Спасибо, отзыв сохранён",
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: booking, error: bookingError } = await supabase
       .from("bookings")

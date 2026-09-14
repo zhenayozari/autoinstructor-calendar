@@ -8,6 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne } from "@/lib/db/postgres";
+import {
+  getLegalDocumentPublicPath,
+  getPublishedLegalDocumentsForAudience,
+} from "@/lib/legal-documents";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +26,7 @@ type StudentRegisterPageProps = {
 
 type RegistrationInstructorView = {
   id: string;
+  organization_id: string;
   name: string;
   public_name: string | null;
   is_active: boolean;
@@ -59,9 +66,65 @@ export default async function StudentRegisterPage({
   const params = await searchParams;
   const token = params?.token?.trim();
   let instructor: RegistrationInstructorView | null = null;
+  let legalDocuments: {
+    id: string;
+    title: string;
+    href: string;
+    documentType: string;
+  }[] = [];
   let loadError: string | null = null;
 
-  if (!hasSupabaseAdminKey()) {
+  if (isPostgresBackend()) {
+    if (!token) {
+      loadError = "Ссылка регистрации неполная.";
+    } else {
+      const settings = await queryOne<{
+        instructor_id: string;
+        student_registration_enabled: boolean;
+      }>(
+        `
+          select instructor_id, student_registration_enabled
+          from public.instructor_settings
+          where student_registration_token = $1
+        `,
+        [token],
+      );
+
+      if (!settings?.student_registration_enabled) {
+        loadError = "Ссылка регистрации недоступна.";
+      } else {
+        instructor = await queryOne<RegistrationInstructorView>(
+          `
+            select id, organization_id, name, public_name, is_active
+            from public.instructors
+            where id = $1
+          `,
+          [settings.instructor_id],
+        );
+        legalDocuments = instructor
+          ? (await getPublishedLegalDocumentsForAudience(
+              instructor.organization_id,
+              "student",
+            ))
+              .map((document) => {
+                const href = getLegalDocumentPublicPath(document.document_type);
+
+                return href
+                  ? {
+                      id: document.id,
+                      title: document.title,
+                      href,
+                      documentType: document.document_type,
+                    }
+                  : null;
+              })
+              .filter((document): document is NonNullable<typeof document> =>
+                Boolean(document),
+              )
+          : [];
+      }
+    }
+  } else if (!hasSupabaseAdminKey()) {
     loadError = "Регистрация сейчас недоступна.";
   } else if (!token) {
     loadError = "Ссылка регистрации неполная.";
@@ -80,7 +143,7 @@ export default async function StudentRegisterPage({
     } else {
       const { data, error } = await supabase
         .from("instructors")
-        .select("id, name, public_name, is_active")
+        .select("id, organization_id, name, public_name, is_active")
         .eq("id", settings.instructor_id)
         .maybeSingle();
 
@@ -125,7 +188,11 @@ export default async function StudentRegisterPage({
               </p>
             </CardHeader>
             <CardContent>
-              <StudentRegistrationForm token={token} />
+              <StudentRegistrationForm
+                token={token}
+                documents={legalDocuments}
+                requiresConsent={isPostgresBackend()}
+              />
             </CardContent>
           </Card>
         )}

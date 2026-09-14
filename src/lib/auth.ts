@@ -1,10 +1,42 @@
 import "server-only";
 
 import { redirect } from "next/navigation";
+import { getAppUserById } from "@/lib/app-users/auth";
+import { getAppUserSession } from "@/lib/app-users/session";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
+export type AuthenticatedUser = {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, unknown>;
+};
+
 export async function getAuthenticatedUser() {
+  if (isPostgresBackend()) {
+    const session = await getAppUserSession();
+
+    if (!session) {
+      return null;
+    }
+
+    const user = await getAppUserById(session.sub);
+
+    return user
+      ? ({
+          id: user.id,
+          email: user.email,
+          user_metadata: {
+            name: user.name,
+            phone: user.phone,
+            password_reset_required: user.password_reset_required,
+          },
+        } satisfies AuthenticatedUser)
+      : null;
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -15,7 +47,7 @@ export async function getAuthenticatedUser() {
     return null;
   }
 
-  return user;
+  return user satisfies AuthenticatedUser | null;
 }
 
 export async function requireAuthenticatedUser() {
@@ -35,11 +67,51 @@ export type ActiveOrganizationMembership = {
   role: "owner" | "admin" | "instructor";
   isOwnerOrAdmin: boolean;
   isInstructor: boolean;
-  user: NonNullable<Awaited<ReturnType<typeof getAuthenticatedUser>>>;
+  user: AuthenticatedUser;
 };
 
 export async function requireActiveOrganizationMember(): Promise<ActiveOrganizationMembership> {
   const user = await requireAuthenticatedUser();
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{
+      id: string;
+      organization_id: string;
+      instructor_id: string | null;
+      role: "owner" | "admin" | "instructor";
+    }>(
+      `
+        select id, organization_id, instructor_id, role
+        from public.organization_members
+        where user_id = $1
+          and is_active = true
+        order by created_at
+        limit 1
+      `,
+      [user.id],
+    );
+
+    if (
+      !data ||
+      (data.role !== "owner" &&
+        data.role !== "admin" &&
+        data.role !== "instructor") ||
+      (data.role === "instructor" && !data.instructor_id)
+    ) {
+      redirect("/access-disabled");
+    }
+
+    return {
+      id: data.id,
+      organizationId: data.organization_id,
+      instructorId: data.instructor_id,
+      role: data.role,
+      isOwnerOrAdmin: data.role === "owner" || data.role === "admin",
+      isInstructor: data.role === "instructor",
+      user,
+    };
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("organization_members")
@@ -82,6 +154,25 @@ export async function requireInstructorAccess(targetInstructorId: string) {
     membership.instructorId !== targetInstructorId
   ) {
     throw new Error("Нет доступа к данным другого инструктора");
+  }
+
+  if (isPostgresBackend()) {
+    const data = await queryOne<{ id: string }>(
+      `
+        select id
+        from public.instructors
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [targetInstructorId, membership.organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Инструктор не найден в вашей организации");
+    }
+
+    return membership;
   }
 
   const supabase = createAdminClient();

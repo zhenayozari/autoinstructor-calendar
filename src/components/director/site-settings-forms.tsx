@@ -1,9 +1,24 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState } from "react";
 import type { ReactNode } from "react";
-import { Check, Save } from "lucide-react";
 import {
+  Check,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  Save,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import {
+  deleteLegalDocumentAction,
+  publishLegalDocumentAction,
+  unpublishLegalDocumentAction,
+  uploadLegalDocumentAction,
+  updateLegalDocumentAudienceAction,
   updateInstructorSiteSettingsAction,
   updateOrganizationSiteSettingsAction,
   type DirectorSiteActionState,
@@ -13,9 +28,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { normalizeLandingContent } from "@/lib/landing-content";
+import { LEGAL_DOCUMENT_DEFINITIONS } from "@/lib/legal-document-definitions";
 import type {
   InstructorProfile,
   InstructorSiteSettings,
+  LegalDocument,
+  LegalDocumentType,
   OrganizationSiteSettings,
 } from "@/lib/types";
 
@@ -43,6 +61,68 @@ function StateMessage({ state }: { state: DirectorSiteActionState }) {
     >
       {state.message}
     </div>
+  );
+}
+
+function formatFileSize(value: string) {
+  const size = Number(value);
+
+  if (!Number.isFinite(size) || size <= 0) {
+    return "размер не указан";
+  }
+
+  if (size < 1024 * 1024) {
+    return `${Math.ceil(size / 1024)} КБ`;
+  }
+
+  return `${(size / 1024 / 1024).toFixed(1)} МБ`;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "не опубликован";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function getDocumentsByType(documents: LegalDocument[]) {
+  return documents.reduce(
+    (groups, document) => {
+      groups[document.document_type] ??= [];
+      groups[document.document_type].push(document);
+
+      return groups;
+    },
+    {} as Record<LegalDocumentType, LegalDocument[]>,
+  );
+}
+
+function DocumentAudienceHelp() {
+  return (
+    <details className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">
+      <summary className="cursor-pointer font-semibold">
+        Как выбирать, кому показывать документы
+      </summary>
+      <div className="mt-2 space-y-2">
+        <p>
+          Руководитель сам выбирает, какие документы нужны на публичном сайте,
+          ученикам и сотрудникам. Один и тот же файл можно включить сразу в
+          нескольких местах.
+        </p>
+        <p>
+          Если галочка включена, документ появится в соответствующей форме, и
+          пользователь должен будет подтвердить согласие перед продолжением.
+          Если галочка выключена, документ там не показывается и не требуется.
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -246,7 +326,6 @@ export function OrganizationSiteSettingsForm({
   return (
     <form action={formAction} className="space-y-5" encType="multipart/form-data">
       <input type="hidden" name="show_lesson_types" value="on" />
-      <input type="hidden" name="show_student_login" value="on" />
       <input
         type="hidden"
         name="current_logo_url"
@@ -257,6 +336,12 @@ export function OrganizationSiteSettingsForm({
         name="current_hero_image_url"
         value={content.media.heroImageUrl}
       />
+      {settings.show_student_login && (
+        <input type="hidden" name="show_student_login" value="on" />
+      )}
+      {(settings.require_student_profile_consent ?? true) && (
+        <input type="hidden" name="require_student_profile_consent" value="on" />
+      )}
 
       <SiteBlock
         title="Логотип и изображения"
@@ -605,34 +690,6 @@ export function OrganizationSiteSettingsForm({
         </div>
       </SiteBlock>
 
-      <SiteBlock
-        title="Оферта и правовая информация"
-        description="Текст в конце сайта: условия, cookies и персональные данные."
-        enabledName="legal_enabled"
-        defaultEnabled={content.legal.enabled}
-      >
-        <div className="grid gap-4 lg:grid-cols-2">
-          <TextInputField
-            name="legal_link_label"
-            label="Текст ссылки внизу сайта"
-            defaultValue={content.legal.linkLabel}
-            maxLength={80}
-          />
-          <TextInputField
-            name="legal_title"
-            label="Заголовок"
-            defaultValue={content.legal.title}
-            maxLength={160}
-          />
-        </div>
-        <TextareaField
-          name="legal_text"
-          label="Текст оферты"
-          defaultValue={content.legal.text}
-          maxLength={4000}
-        />
-      </SiteBlock>
-
       <StateMessage state={state} />
 
       <Button type="submit" disabled={isPending}>
@@ -640,6 +697,266 @@ export function OrganizationSiteSettingsForm({
         {isPending ? "Сохраняем..." : "Сохранить сайт"}
       </Button>
     </form>
+  );
+}
+
+export function LegalDocumentsSettings({
+  documents,
+  enabled,
+}: {
+  documents: LegalDocument[];
+  enabled: boolean;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    uploadLegalDocumentAction,
+    INITIAL_STATE,
+  );
+  const documentsByType = getDocumentsByType(documents);
+
+  if (!enabled) {
+    return (
+      <div className="rounded-2xl border border-dashed bg-zinc-50 px-4 py-8 text-sm leading-6 text-zinc-600">
+        Загрузка правовых документов будет доступна после переключения проекта
+        на PostgreSQL. В текущем режиме старый текстовый блок на сайте остаётся
+        без изменений.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <DocumentAudienceHelp />
+
+      <form
+        action={formAction}
+        className="space-y-4 rounded-2xl border bg-zinc-50 p-4"
+        encType="multipart/form-data"
+      >
+        <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+          <div className="space-y-2">
+            <Label htmlFor="legal-document-type">Тип документа</Label>
+            <select
+              id="legal-document-type"
+              name="document_type"
+              required
+              className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+              defaultValue={LEGAL_DOCUMENT_DEFINITIONS[0]?.type}
+            >
+              {LEGAL_DOCUMENT_DEFINITIONS.map((definition) => (
+                <option key={definition.type} value={definition.type}>
+                  {definition.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <TextInputField
+            name="title"
+            label="Название для сайта"
+            defaultValue=""
+            maxLength={180}
+            required
+          />
+
+          <TextInputField
+            name="version_label"
+            label="Версия или дата"
+            defaultValue=""
+            maxLength={80}
+          />
+
+          <div className="space-y-2">
+            <Label htmlFor="legal-document-file">Файл</Label>
+            <Input
+              id="legal-document-file"
+              name="document_file"
+              type="file"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              required
+              className="bg-white"
+            />
+            <p className="text-muted-foreground text-xs">
+              PDF предпочтительнее для сайта. DOCX тоже можно загрузить, но он
+              будет скачиваться файлом. Максимум 10 МБ.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Toggle
+            name="publish_now"
+            label="Сразу опубликовать документ"
+            defaultChecked
+          />
+          <Button type="submit" disabled={isPending}>
+            {isPending ? <Check /> : <Upload />}
+            {isPending ? "Загружаем..." : "Загрузить документ"}
+          </Button>
+        </div>
+        <StateMessage state={state} />
+      </form>
+
+      <div className="space-y-3">
+        {LEGAL_DOCUMENT_DEFINITIONS.map((definition) => {
+          const typeDocuments = documentsByType[definition.type] ?? [];
+          const publishedDocument =
+            typeDocuments.find((document) => document.status === "published") ??
+            null;
+          const publicPath = `/legal/${definition.slug}`;
+
+          return (
+            <section
+              key={definition.type}
+              className="rounded-2xl border bg-white p-4"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <FileText className="size-4 text-zinc-500" />
+                    <h3 className="font-semibold">{definition.label}</h3>
+                  </div>
+                  <p className="text-muted-foreground mt-1 text-sm">
+                    {publishedDocument
+                      ? `Опубликовано: ${formatDateTime(
+                          publishedDocument.published_at,
+                        )}`
+                      : "Публичная версия пока не выбрана."}
+                  </p>
+                </div>
+                {publishedDocument && (
+                  <Button
+                    nativeButton={false}
+                    render={<Link href={publicPath} target="_blank" />}
+                    variant="outline"
+                  >
+                    <ExternalLink />
+                    Открыть
+                  </Button>
+                )}
+              </div>
+
+              {typeDocuments.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-dashed px-3 py-4 text-sm text-zinc-500">
+                  Файлы этого типа ещё не загружены.
+                </div>
+              ) : (
+                <div className="mt-4 space-y-2">
+                  {typeDocuments.map((document) => (
+                    <div
+                      key={document.id}
+                      className="flex flex-col gap-3 rounded-xl border bg-zinc-50 px-3 py-3 lg:flex-row lg:items-center lg:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {document.title}
+                        </p>
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {document.version_label
+                            ? `${document.version_label} · `
+                            : ""}
+                          {document.original_file_name} ·{" "}
+                          {formatFileSize(document.file_size_bytes)}
+                        </p>
+                        <p
+                          className={`mt-1 text-xs font-semibold ${
+                            document.status === "published"
+                              ? "text-emerald-700"
+                              : "text-zinc-500"
+                          }`}
+                        >
+                          {document.status === "published"
+                            ? "Опубликован"
+                            : "Черновик"}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-3 lg:items-end">
+                        <form
+                          action={updateLegalDocumentAudienceAction}
+                          className="grid gap-2 sm:grid-cols-3 lg:min-w-[520px]"
+                        >
+                          <input
+                            type="hidden"
+                            name="document_id"
+                            value={document.id}
+                          />
+                          <Toggle
+                            name="show_for_students"
+                            label="На странице ученика"
+                            defaultChecked={document.show_for_students}
+                          />
+                          <Toggle
+                            name="show_for_staff"
+                            label="На странице сотрудника"
+                            defaultChecked={document.show_for_staff}
+                          />
+                          <Toggle
+                            name="show_on_site"
+                            label="На сайте"
+                            defaultChecked={document.show_on_site}
+                          />
+                          <Button
+                            type="submit"
+                            variant="outline"
+                            className="sm:col-span-3"
+                          >
+                            <Save />
+                            Сохранить показ
+                          </Button>
+                        </form>
+
+                        <div className="flex flex-wrap gap-2">
+                          {document.status === "published" ? (
+                            <form action={unpublishLegalDocumentAction}>
+                              <input
+                                type="hidden"
+                                name="document_id"
+                                value={document.id}
+                              />
+                              <Button type="submit" variant="outline">
+                                <EyeOff />
+                                Снять с публикации
+                              </Button>
+                            </form>
+                          ) : (
+                            <form action={publishLegalDocumentAction}>
+                              <input
+                                type="hidden"
+                                name="document_id"
+                                value={document.id}
+                              />
+                              <Button type="submit" variant="outline">
+                                <Eye />
+                                Опубликовать
+                              </Button>
+                            </form>
+                          )}
+                          <form action={deleteLegalDocumentAction}>
+                            <input
+                              type="hidden"
+                              name="document_id"
+                              value={document.id}
+                            />
+                            <Button
+                              type="submit"
+                              variant="outline"
+                              className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
+                            >
+                              <Trash2 />
+                              Удалить
+                            </Button>
+                          </form>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

@@ -1,6 +1,15 @@
 "use server";
 
 import { randomBytes } from "node:crypto";
+import { headers } from "next/headers";
+import { hashAppUserPassword } from "@/lib/app-users/password";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne, withTransaction } from "@/lib/db/postgres";
+import { getLegalDocumentDefinition } from "@/lib/legal-document-definitions";
+import { getPublishedLegalDocumentsForAudience } from "@/lib/legal-documents";
+import {
+  getLegalAcceptanceFieldName,
+} from "@/lib/student-legal-requirements";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
@@ -61,6 +70,14 @@ function createEmployeeSlug() {
   return `employee-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
 }
 
+function getRequestIp(headersList: Headers) {
+  return (
+    headersList.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    headersList.get("x-real-ip")?.trim() ||
+    null
+  );
+}
+
 export async function submitStaffRegistrationAction(
   previousState: StaffRegistrationActionState,
   formData: FormData,
@@ -77,6 +94,201 @@ export async function submitStaffRegistrationAction(
     const email = validateEmail(readRequiredString(formData, "email"));
     const password = readRequiredString(formData, "password");
     validatePassword(password);
+
+    if (isPostgresBackend()) {
+      const invitation = await queryOne<{
+        id: string;
+        organization_id: string;
+        status: string;
+        expires_at: string;
+      }>(
+        `
+          select id, organization_id, status, expires_at::text as expires_at
+          from public.staff_invitations
+          where token = $1
+        `,
+        [token],
+      );
+
+      if (!invitation) {
+        throw new Error("Приглашение не найдено");
+      }
+
+      if (invitation.status === "submitted") {
+        return {
+          status: "success",
+          message: "Заявка уже отправлена. Руководитель подтвердит доступ.",
+        };
+      }
+
+      if (invitation.status === "approved") {
+        return {
+          status: "success",
+          message: "Доступ уже подтверждён. Можно войти в кабинет инструктора.",
+        };
+      }
+
+      if (invitation.status !== "invited") {
+        throw new Error("Это приглашение уже не активно");
+      }
+
+      if (new Date(invitation.expires_at).getTime() < Date.now()) {
+        await withTransaction(async (client) => {
+          await client.query(
+            `
+              update public.staff_invitations
+              set status = 'expired',
+                  updated_at = now()
+              where id = $1
+            `,
+            [invitation.id],
+          );
+        });
+        throw new Error("Срок действия приглашения истёк");
+      }
+
+      const publishedDocuments = await getPublishedLegalDocumentsForAudience(
+        invitation.organization_id,
+        "staff",
+      );
+      const publishedDocumentsByType = new Map(
+        publishedDocuments.map((document) => [document.document_type, document]),
+      );
+      const requiredDocumentTypes = publishedDocuments.map(
+        (document) => document.document_type,
+      );
+
+      const missingConsentLabels = requiredDocumentTypes.filter(
+        (type) => formData.get(getLegalAcceptanceFieldName(type)) !== "on",
+      ).map(
+        (type) => getLegalDocumentDefinition(type)?.shortLabel ?? "документ",
+      );
+
+      if (missingConsentLabels.length > 0) {
+        throw new Error(
+          `Подтвердите согласие по документам: ${missingConsentLabels.join(", ")}`,
+        );
+      }
+
+      const headersList = await headers();
+      const acceptedDocuments = requiredDocumentTypes.map((type) =>
+        publishedDocumentsByType.get(type),
+      ).filter((document): document is NonNullable<typeof document> =>
+        Boolean(document),
+      );
+      const consentDocumentIds = acceptedDocuments.map((document) => document.id);
+      const consentDocumentVersions = acceptedDocuments.map((document) => ({
+        id: document.id,
+        type: document.document_type,
+        title: document.title,
+        version_label: document.version_label,
+        published_at: document.published_at,
+      }));
+
+      await withTransaction(async (client) => {
+        const { rows: userRows } = await client.query<{ id: string }>(
+          `
+            insert into public.app_users (email, password_hash, name, phone)
+            values ($1, $2, $3, $4)
+            returning id
+          `,
+          [email, hashAppUserPassword(password), name, phone],
+        );
+        const userId = userRows[0]?.id;
+
+        if (!userId) {
+          throw new Error("Не удалось создать аккаунт");
+        }
+
+        createdUserId = userId;
+        const { rows: instructorRows } = await client.query<{ id: string }>(
+          `
+            insert into public.instructors (
+              organization_id, name, slug, public_name, timezone, is_active,
+              public_is_visible, contact_text, profile_updated_at
+            )
+            values ($1, $2, $3, $4, $5, false, false, $6, now())
+            returning id
+          `,
+          [
+            invitation.organization_id,
+            name,
+            createEmployeeSlug(),
+            name,
+            DEFAULT_TIMEZONE,
+            phone,
+          ],
+        );
+        const instructorId = instructorRows[0]?.id;
+
+        if (!instructorId) {
+          throw new Error("Не удалось создать профиль инструктора");
+        }
+
+        createdInstructorId = instructorId;
+
+        await client.query(
+          `
+            insert into public.instructor_settings (instructor_id)
+            values ($1)
+          `,
+          [instructorId],
+        );
+        await client.query(
+          `
+            insert into public.instructor_capabilities (instructor_id, capability)
+            values ($1, 'driving'), ($1, 'theory')
+          `,
+          [instructorId],
+        );
+        await client.query(
+          `
+            insert into public.organization_members (
+              organization_id, user_id, instructor_id, role, is_active
+            )
+            values ($1, $2, $3, 'instructor', false)
+          `,
+          [invitation.organization_id, userId, instructorId],
+        );
+        await client.query(
+          `
+            update public.staff_invitations
+            set status = 'submitted',
+                submitted_name = $1,
+                submitted_email = $2,
+                submitted_phone = $3,
+                user_id = $4,
+                instructor_id = $5,
+                personal_data_consent_at = now(),
+                personal_data_consent_source = 'staff_registration',
+                personal_data_consent_ip = $6,
+                personal_data_consent_user_agent = $7,
+                personal_data_consent_document_ids = $8::uuid[],
+                personal_data_consent_document_versions = $9::jsonb,
+                submitted_at = now(),
+                updated_at = now()
+            where id = $10
+          `,
+          [
+            name,
+            email,
+            phone,
+            userId,
+            instructorId,
+            getRequestIp(headersList),
+            headersList.get("user-agent"),
+            consentDocumentIds,
+            JSON.stringify(consentDocumentVersions),
+            invitation.id,
+          ],
+        );
+      });
+
+      return {
+        status: "success",
+        message: "Заявка отправлена. После подтверждения руководителем можно будет войти.",
+      };
+    }
 
     const supabase = createAdminClient();
     const { data: invitation, error: invitationError } = await supabase
@@ -230,6 +442,13 @@ export async function submitStaffRegistrationAction(
     console.error("submitStaffRegistrationAction:", error);
 
     try {
+      if (isPostgresBackend()) {
+        return {
+          status: "error",
+          message: getErrorMessage(error),
+        };
+      }
+
       const supabase = createAdminClient();
 
       if (createdInstructorId) {

@@ -9,6 +9,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  hasRequiredLegalDocuments,
+  LegalConsentCheckboxes,
+} from "@/components/student/legal-consent-checkboxes";
+import type { LegalDocumentType } from "@/lib/types";
 
 const INITIAL_STATE: StaffRegistrationActionState = {
   status: "idle",
@@ -20,17 +25,33 @@ export function StaffRegistrationForm({
   defaultName,
   defaultEmail,
   defaultPhone,
+  documents = [],
+  requiresConsent = false,
 }: {
   token: string;
   defaultName?: string | null;
   defaultEmail?: string | null;
   defaultPhone?: string | null;
+  documents?: {
+    id: string;
+    title: string;
+    href: string;
+    documentType: LegalDocumentType;
+  }[];
+  requiresConsent?: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
     submitStaffRegistrationAction,
     INITIAL_STATE,
   );
   const isSuccess = state.status === "success";
+  const requiredDocumentTypes = documents.map(
+    (document) => document.documentType,
+  );
+  const hasRequiredDocuments = hasRequiredLegalDocuments(
+    documents,
+    requiredDocumentTypes,
+  );
 
   return (
     <form action={formAction} className="space-y-4">
@@ -90,6 +111,13 @@ export function StaffRegistrationForm({
         />
       </div>
 
+      <LegalConsentCheckboxes
+        documents={documents}
+        disabled={isSuccess}
+        required={requiresConsent}
+        requiredDocumentTypes={requiredDocumentTypes}
+      />
+
       {state.message && (
         <div
           className={`rounded-xl px-3 py-2 text-sm ${
@@ -105,7 +133,11 @@ export function StaffRegistrationForm({
       <Button
         type="submit"
         className="h-11 w-full"
-        disabled={isPending || isSuccess}
+        disabled={
+          isPending ||
+          isSuccess ||
+          (requiresConsent && !hasRequiredDocuments)
+        }
       >
         <Send />
         {isPending

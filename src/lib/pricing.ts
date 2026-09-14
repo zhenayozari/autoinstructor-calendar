@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { queryOne } from "@/lib/db/postgres";
 import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
 
 type SupabaseAdminClient = ReturnType<typeof createAdminClient>;
@@ -55,6 +56,34 @@ export async function getConfiguredLessonPriceAmount({
   return typeof data?.price_amount === "number" ? data.price_amount : null;
 }
 
+export async function getConfiguredLessonPriceAmountPostgres({
+  organizationId,
+  schoolId,
+  lessonTypeId,
+}: {
+  organizationId: string;
+  schoolId: string | null;
+  lessonTypeId: string;
+}) {
+  if (!schoolId) {
+    return null;
+  }
+
+  const data = await queryOne<{ price_amount: number }>(
+    `
+      select price_amount
+      from public.school_lesson_type_prices
+      where organization_id = $1
+        and school_id = $2
+        and lesson_type_id = $3
+      limit 1
+    `,
+    [organizationId, schoolId, lessonTypeId],
+  );
+
+  return typeof data?.price_amount === "number" ? data.price_amount : null;
+}
+
 export function normalizeSchoolPaymentRule(
   value: unknown,
 ): SchoolPaymentRule {
@@ -96,6 +125,31 @@ export async function getSchoolPaymentRule({
 
     throw new Error(error.message);
   }
+
+  return normalizeSchoolPaymentRule(data?.payment_rule);
+}
+
+export async function getSchoolPaymentRulePostgres({
+  organizationId,
+  schoolId,
+}: {
+  organizationId: string;
+  schoolId: string | null;
+}) {
+  if (!schoolId) {
+    return "manual" satisfies SchoolPaymentRule;
+  }
+
+  const data = await queryOne<{ payment_rule: string | null }>(
+    `
+      select payment_rule
+      from public.schools
+      where organization_id = $1
+        and id = $2
+      limit 1
+    `,
+    [organizationId, schoolId],
+  );
 
   return normalizeSchoolPaymentRule(data?.payment_rule);
 }

@@ -1,6 +1,8 @@
 import "server-only";
 
 import type { ActiveOrganizationMembership } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type AuditMetadataValue =
@@ -27,6 +29,30 @@ export async function logAuditEvent({
   metadata?: AuditMetadata;
 }) {
   try {
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          insert into public.audit_logs (
+            organization_id, actor_member_id, actor_user_id, actor_role,
+            actor_instructor_id, action, entity_type, entity_id, metadata
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+        `,
+        [
+          membership.organizationId,
+          membership.id,
+          membership.user.id,
+          membership.role,
+          membership.instructorId,
+          action,
+          entityType,
+          entityId ?? null,
+          JSON.stringify(metadata),
+        ],
+      );
+      return;
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase.from("audit_logs").insert({
       organization_id: membership.organizationId,

@@ -3,11 +3,13 @@ import { CarFront, LogIn, Menu, UserRound } from "lucide-react";
 
 export function PublicHeader({
   showDirectionLinks = false,
+  showStudentLogin = true,
   theme = "light",
   logoUrl,
   logoAlt = "Автоинструктор",
 }: {
   showDirectionLinks?: boolean;
+  showStudentLogin?: boolean;
   theme?: "light" | "dark";
   logoUrl?: string;
   logoAlt?: string;
@@ -60,13 +62,15 @@ export function PublicHeader({
             Войти
           </summary>
           <div className="absolute right-0 top-12 z-50 w-64 rounded-2xl border bg-white p-2 shadow-2xl shadow-zinc-950/15">
-            <Link
-              href="/student/login"
-              className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-100"
-            >
-              <UserRound className="size-4" />
-              Войти как ученик
-            </Link>
+            {showStudentLogin && (
+              <Link
+                href="/student/login"
+                className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-100"
+              >
+                <UserRound className="size-4" />
+                Войти как ученик
+              </Link>
+            )}
             <Link
               href="/login"
               className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-100"

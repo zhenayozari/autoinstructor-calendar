@@ -1,6 +1,12 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { verifyAppUserCredentials } from "@/lib/app-users/auth";
+import {
+  clearAppUserSession,
+  setAppUserSession,
+} from "@/lib/app-users/session";
+import { isPostgresBackend } from "@/lib/backend-mode";
 import { createClient } from "@/lib/supabase/server";
 
 export type LoginActionState = {
@@ -29,6 +35,27 @@ export async function loginAction(
     };
   }
 
+  if (isPostgresBackend()) {
+    const user = await verifyAppUserCredentials({
+      email: email.trim(),
+      password,
+    });
+
+    if (!user) {
+      return {
+        status: "error",
+        message: "Неверная эл. почта или пароль",
+      };
+    }
+
+    await setAppUserSession({
+      userId: user.id,
+      email: user.email,
+    });
+
+    redirect("/admin");
+  }
+
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword({
     email: email.trim(),
@@ -48,6 +75,11 @@ export async function loginAction(
 }
 
 export async function logoutAction() {
+  if (isPostgresBackend()) {
+    await clearAppUserSession();
+    redirect("/login");
+  }
+
   const supabase = await createClient();
   await supabase.auth.signOut();
   redirect("/login");

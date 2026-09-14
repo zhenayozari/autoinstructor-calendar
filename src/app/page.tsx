@@ -2,6 +2,7 @@ import {
   ArrowRight,
   BrainCircuit,
   CheckCircle2,
+  FileText,
   GraduationCap,
   MapPinned,
   MessageCircle,
@@ -16,10 +17,20 @@ import {
   type LandingContent,
   type LandingTextItem,
 } from "@/lib/landing-content";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows, queryOne } from "@/lib/db/postgres";
+import {
+  getLegalDocumentPublicPath,
+  getPublishedLegalDocumentsForSite,
+} from "@/lib/legal-documents";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
-import type { InstructorProfile, InstructorSiteSettings } from "@/lib/types";
+import type {
+  InstructorProfile,
+  InstructorSiteSettings,
+  LegalDocument,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -35,9 +46,82 @@ type LandingInstructor = InstructorProfile & {
 
 type SiteSettingsRow = {
   landing_content: unknown;
+  show_student_login?: boolean;
 };
 
 async function loadLandingData() {
+  if (isPostgresBackend()) {
+    const organization = await queryOne<Organization>(
+      `
+        select id, name
+        from public.organizations
+        order by created_at, id
+        limit 1
+      `,
+    );
+    const siteSettings = organization
+      ? await queryOne<SiteSettingsRow>(
+          `
+            select landing_content, show_student_login
+            from public.organization_site_settings
+            where organization_id = $1
+            limit 1
+          `,
+          [organization.id],
+        )
+      : null;
+    const instructorData = await queryRows<LandingInstructor>(
+      `
+        select id, organization_id, name, slug, public_name, timezone,
+               is_active, photo_url, short_bio, contact_text,
+               car_description, experience_text, public_is_visible,
+               profile_updated_at
+        from public.instructors
+        where is_active = true
+          and public_is_visible = true
+        order by public_name nulls last, name
+      `,
+    );
+    const instructorSettings = organization
+      ? await queryRows<InstructorSiteSettings>(
+          `
+            select instructor_id, organization_id, is_visible, show_photo,
+                   show_bio, show_contact, show_car, show_experience,
+                   public_note, public_contact, sort_order, updated_at
+            from public.instructor_site_settings
+            where organization_id = $1
+          `,
+          [organization.id],
+        )
+      : [];
+    const legalDocuments = organization
+      ? await getPublishedLegalDocumentsForSite(organization.id)
+      : [];
+    const settingsByInstructorId = new Map(
+      instructorSettings.map((item) => [item.instructor_id, item]),
+    );
+    const instructors = instructorData
+      .map((instructor) => ({
+        ...instructor,
+        site_settings: settingsByInstructorId.get(instructor.id) ?? null,
+      }))
+      .sort((first, second) => {
+        const firstOrder = first.site_settings?.sort_order ?? 100;
+        const secondOrder = second.site_settings?.sort_order ?? 100;
+
+        return firstOrder - secondOrder || first.name.localeCompare(second.name);
+      });
+
+    return {
+      organization,
+      siteSettings,
+      instructors,
+      legalDocuments,
+      hasInstructorSiteSettings:
+        Boolean(siteSettings) || instructorSettings.length > 0,
+    };
+  }
+
   const supabase = hasSupabaseAdminKey()
     ? createAdminClient()
     : await createClient();
@@ -50,7 +134,7 @@ async function loadLandingData() {
   const { data: siteSettingsData } = organization
     ? await supabase
         .from("organization_site_settings")
-        .select("landing_content")
+        .select("landing_content, show_student_login")
         .eq("organization_id", organization.id)
         .maybeSingle()
     : { data: null };
@@ -92,6 +176,7 @@ async function loadLandingData() {
     organization,
     siteSettings: siteSettingsData as SiteSettingsRow | null,
     instructors,
+    legalDocuments: [] as LegalDocument[],
     hasInstructorSiteSettings: Boolean(siteSettingsData) || instructorSettings.length > 0,
   };
 }
@@ -291,6 +376,7 @@ export default async function Home() {
   const {
     siteSettings,
     instructors,
+    legalDocuments,
     hasInstructorSiteSettings,
   } = await loadLandingData();
   const content = normalizeLandingContent(siteSettings?.landing_content);
@@ -331,6 +417,7 @@ export default async function Home() {
           theme="dark"
           logoUrl={content.media.logoUrl}
           logoAlt={content.media.logoAlt}
+          showStudentLogin={siteSettings?.show_student_login ?? true}
         />
 
         {content.hero.enabled && (
@@ -572,23 +659,29 @@ export default async function Home() {
           )}
 
           <footer className="mx-auto max-w-6xl py-6 text-xs text-zinc-500">
-            {content.legal.enabled && (
-              <details className="group rounded-2xl border border-zinc-200/80 bg-white/70 p-4 text-left shadow-sm backdrop-blur">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-zinc-800">
-                  <span>{content.legal.linkLabel}</span>
-                  <span className="text-lime-700 transition group-open:rotate-45">
-                    +
-                  </span>
-                </summary>
-                <div className="mt-4 border-t pt-4">
-                  <h2 className="text-base font-semibold text-zinc-950">
-                    {content.legal.title}
-                  </h2>
-                  <p className="mt-3 whitespace-pre-line text-sm leading-7 text-zinc-600">
-                    {content.legal.text}
-                  </p>
-                </div>
-              </details>
+            {legalDocuments.length > 0 && (
+              <nav className="mb-3 flex flex-wrap justify-center gap-2">
+                {legalDocuments.map((document) => {
+                  const documentPath = getLegalDocumentPublicPath(
+                    document.document_type,
+                  );
+
+                  if (!documentPath) {
+                    return null;
+                  }
+
+                  return (
+                    <a
+                      key={document.id}
+                      href={documentPath}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white/80 px-3 py-1.5 font-medium text-zinc-600 shadow-sm transition hover:border-zinc-300 hover:text-zinc-950"
+                    >
+                      <FileText className="size-3.5" />
+                      {document.title}
+                    </a>
+                  );
+                })}
+              </nav>
             )}
             <div className="mt-4 text-center text-[11px] leading-5 text-zinc-400">
               Связь с разработчиком:{" "}

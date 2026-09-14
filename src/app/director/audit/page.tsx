@@ -7,6 +7,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { requireDirectorAccess } from "@/lib/director-auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { formatDateTime } from "@/lib/formatters";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -206,20 +208,39 @@ function AuditLogItem({
 
 export default async function DirectorAuditPage() {
   const membership = await requireDirectorAccess();
-  const supabase = hasSupabaseAdminKey()
-    ? createAdminClient()
-    : await createClient();
+  let logs: AuditLogRow[] = [];
+  let logsError: { message: string } | null = null;
 
-  const { data: logsData, error: logsError } = await supabase
-    .from("audit_logs")
-    .select(
-      "id, organization_id, actor_member_id, actor_user_id, actor_role, actor_instructor_id, action, entity_type, entity_id, metadata, created_at",
-    )
-    .eq("organization_id", membership.organizationId)
-    .order("created_at", { ascending: false })
-    .limit(100);
+  if (isPostgresBackend()) {
+    logs = await queryRows<AuditLogRow>(
+      `
+        select id, organization_id, actor_member_id, actor_user_id, actor_role,
+               actor_instructor_id, action, entity_type, entity_id, metadata,
+               created_at::text as created_at
+        from public.audit_logs
+        where organization_id = $1
+        order by created_at desc
+        limit 100
+      `,
+      [membership.organizationId],
+    );
+  } else {
+    const supabase = hasSupabaseAdminKey()
+      ? createAdminClient()
+      : await createClient();
+    const { data: logsData, error } = await supabase
+      .from("audit_logs")
+      .select(
+        "id, organization_id, actor_member_id, actor_user_id, actor_role, actor_instructor_id, action, entity_type, entity_id, metadata, created_at",
+      )
+      .eq("organization_id", membership.organizationId)
+      .order("created_at", { ascending: false })
+      .limit(100);
 
-  const logs = (logsData ?? []) as AuditLogRow[];
+    logs = (logsData ?? []) as AuditLogRow[];
+    logsError = error;
+  }
+
   const actorInstructorIds = Array.from(
     new Set(
       logs
@@ -228,16 +249,29 @@ export default async function DirectorAuditPage() {
     ),
   );
 
-  const { data: instructorsData } =
-    actorInstructorIds.length > 0
-      ? await supabase
-          .from("instructors")
-          .select("id, name, public_name, timezone")
-          .eq("organization_id", membership.organizationId)
-          .in("id", actorInstructorIds)
-      : { data: [] };
-
-  const instructors = (instructorsData ?? []) as InstructorName[];
+  const instructors = isPostgresBackend()
+    ? actorInstructorIds.length > 0
+      ? await queryRows<InstructorName>(
+          `
+            select id, name, public_name, timezone
+            from public.instructors
+            where organization_id = $1
+              and id = any($2::uuid[])
+          `,
+          [membership.organizationId, actorInstructorIds],
+        )
+      : []
+    : ((actorInstructorIds.length > 0
+        ? (
+            await (hasSupabaseAdminKey()
+              ? createAdminClient()
+              : await createClient())
+              .from("instructors")
+              .select("id, name, public_name, timezone")
+              .eq("organization_id", membership.organizationId)
+              .in("id", actorInstructorIds)
+          ).data
+        : []) ?? []) as InstructorName[];
   const instructorsById = new Map(
     instructors.map((instructor) => [instructor.id, instructor]),
   );

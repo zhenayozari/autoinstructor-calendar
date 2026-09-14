@@ -8,8 +8,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryOne } from "@/lib/db/postgres";
+import {
+  getLegalDocumentPublicPath,
+  getPublishedLegalDocumentsForAudience,
+} from "@/lib/legal-documents";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import type { StaffInvitation } from "@/lib/types";
+import type { LegalDocumentType, StaffInvitation } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +27,7 @@ type StaffRegisterPageProps = {
 
 type InvitationView = Pick<
   StaffInvitation,
+  | "organization_id"
   | "token"
   | "status"
   | "invited_name"
@@ -31,6 +38,13 @@ type InvitationView = Pick<
   organizations: {
     name: string;
   } | null;
+};
+
+type PublishedLegalDocumentLink = {
+  id: string;
+  title: string;
+  href: string;
+  documentType: LegalDocumentType;
 };
 
 function MessageCard({
@@ -69,8 +83,47 @@ export default async function StaffRegisterPage({
 
   let invitation: InvitationView | null = null;
   let loadError: string | null = null;
+  let legalDocuments: PublishedLegalDocumentLink[] = [];
 
-  if (!hasSupabaseAdminKey()) {
+  if (isPostgresBackend()) {
+    if (!token) {
+      loadError = "Ссылка приглашения неполная.";
+    } else {
+      invitation = await queryOne<InvitationView>(
+        `
+          select si.token, si.status, si.invited_name, si.invited_email,
+                 si.invited_phone, si.expires_at::text as expires_at,
+                 jsonb_build_object('name', o.name) as organizations
+          from public.staff_invitations si
+          join public.organizations o on o.id = si.organization_id
+          where si.token = $1
+        `,
+        [token],
+      );
+
+      if (invitation) {
+        legalDocuments = (await getPublishedLegalDocumentsForAudience(
+          invitation.organization_id,
+          "staff",
+        ))
+          .map((document) => {
+            const href = getLegalDocumentPublicPath(document.document_type);
+
+            return href
+              ? {
+                  id: document.id,
+                  title: document.title,
+                  href,
+                  documentType: document.document_type,
+                }
+              : null;
+          })
+          .filter((document): document is NonNullable<typeof document> =>
+            Boolean(document),
+          );
+      }
+    }
+  } else if (!hasSupabaseAdminKey()) {
     loadError = "Регистрация сотрудников временно недоступна.";
   } else if (!token) {
     loadError = "Ссылка приглашения неполная.";
@@ -145,6 +198,8 @@ export default async function StaffRegisterPage({
                 defaultName={invitation.invited_name}
                 defaultEmail={invitation.invited_email}
                 defaultPhone={invitation.invited_phone}
+                documents={legalDocuments}
+                requiresConsent={isPostgresBackend()}
               />
             </CardContent>
           </Card>

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { createClient } from "@/lib/supabase/server";
 
 export type InstructorCapability = "driving" | "theory";
@@ -35,6 +37,66 @@ type InstructorSiteSettingsRow = {
 export async function getPublicInstructors(
   capability?: InstructorCapability,
 ) {
+  if (isPostgresBackend()) {
+    try {
+      const instructorRows = await queryRows<InstructorRow>(
+        `
+          select id, organization_id, slug, public_name, photo_url, short_bio,
+                 contact_text, car_description, experience_text
+          from public.instructors
+          where is_active = true
+            and public_is_visible = true
+          order by public_name nulls last, name
+        `,
+      );
+      const instructorIds = instructorRows.map((instructor) => instructor.id);
+
+      if (instructorRows.length === 0) {
+        return {
+          instructors: [] as PublicInstructor[],
+          error: null,
+        };
+      }
+
+      const settingsRows = await queryRows<InstructorSiteSettingsRow>(
+        `
+          select instructor_id, is_visible, show_photo, show_bio, show_contact,
+                 show_car, show_experience, public_note, public_contact,
+                 sort_order
+          from public.instructor_site_settings
+          where instructor_id = any($1::uuid[])
+        `,
+        [instructorIds],
+      );
+      const capabilityRows = await queryRows<{
+        instructor_id: string;
+        capability: InstructorCapability;
+      }>(
+        `
+          select instructor_id, capability
+          from public.instructor_capabilities
+          where instructor_id = any($1::uuid[])
+        `,
+        [instructorIds],
+      );
+
+      return {
+        instructors: buildPublicInstructors({
+          instructorRows,
+          settingsRows,
+          capabilityRows,
+          capability,
+        }),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        instructors: [] as PublicInstructor[],
+        error,
+      };
+    }
+  }
+
   const supabase = await createClient();
   const { data: instructorData, error: instructorError } = await supabase
     .from("instructors")
@@ -89,16 +151,19 @@ export async function getPublicInstructors(
   }
 
   const capabilitiesByInstructor = new Map<string, InstructorCapability[]>();
+  const settingsRows = (settingsData ?? []) as InstructorSiteSettingsRow[];
+  const capabilityRows = (capabilityData ?? []) as Array<{
+    instructor_id: string;
+    capability: InstructorCapability;
+  }>;
+
   const settingsByInstructorId = new Map(
-    ((settingsData ?? []) as InstructorSiteSettingsRow[]).map((settings) => [
-      settings.instructor_id,
-      settings,
-    ]),
+    settingsRows.map((settings) => [settings.instructor_id, settings]),
   );
 
-  for (const item of capabilityData ?? []) {
+  for (const item of capabilityRows) {
     const current = capabilitiesByInstructor.get(item.instructor_id) ?? [];
-    current.push(item.capability as InstructorCapability);
+    current.push(item.capability);
     capabilitiesByInstructor.set(item.instructor_id, current);
   }
 
@@ -150,6 +215,76 @@ export async function getPublicInstructors(
     instructors,
     error: null,
   };
+}
+
+function buildPublicInstructors({
+  instructorRows,
+  settingsRows,
+  capabilityRows,
+  capability,
+}: {
+  instructorRows: InstructorRow[];
+  settingsRows: InstructorSiteSettingsRow[];
+  capabilityRows: Array<{
+    instructor_id: string;
+    capability: InstructorCapability;
+  }>;
+  capability?: InstructorCapability;
+}) {
+  const capabilitiesByInstructor = new Map<string, InstructorCapability[]>();
+  const settingsByInstructorId = new Map(
+    settingsRows.map((settings) => [settings.instructor_id, settings]),
+  );
+
+  for (const item of capabilityRows) {
+    const current = capabilitiesByInstructor.get(item.instructor_id) ?? [];
+    current.push(item.capability);
+    capabilitiesByInstructor.set(item.instructor_id, current);
+  }
+
+  return instructorRows
+    .filter((instructor) => {
+      const settings = settingsByInstructorId.get(instructor.id);
+
+      return settings ? settings.is_visible : true;
+    })
+    .filter(
+      (instructor) =>
+        !capability ||
+        capabilitiesByInstructor.get(instructor.id)?.includes(capability),
+    )
+    .map((instructor) => {
+      const settings = settingsByInstructorId.get(instructor.id);
+      const showPhoto = settings?.show_photo ?? true;
+      const showBio = settings?.show_bio ?? true;
+      const showContact = settings?.show_contact ?? false;
+      const showCar = settings?.show_car ?? true;
+      const showExperience = settings?.show_experience ?? true;
+
+      return {
+        ...instructor,
+        photo_url: showPhoto ? instructor.photo_url : null,
+        short_bio: showBio
+          ? settings?.public_note || instructor.short_bio
+          : null,
+        contact_text: showContact
+          ? settings?.public_contact || instructor.contact_text
+          : null,
+        car_description: showCar ? instructor.car_description : null,
+        experience_text: showExperience ? instructor.experience_text : null,
+        capabilities: capabilitiesByInstructor.get(instructor.id) ?? [],
+      };
+    })
+    .sort((first, second) => {
+      const firstOrder = settingsByInstructorId.get(first.id)?.sort_order ?? 100;
+      const secondOrder =
+        settingsByInstructorId.get(second.id)?.sort_order ?? 100;
+
+      return (
+        firstOrder - secondOrder ||
+        (first.public_name ?? "").localeCompare(second.public_name ?? "")
+      );
+    });
 }
 
 export async function getPublicInstructorBySlug(slug: string) {

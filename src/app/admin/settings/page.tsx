@@ -6,6 +6,8 @@ import {
 } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { queryRows } from "@/lib/db/postgres";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
@@ -79,40 +81,80 @@ async function loadLessonTypes(
 
 export default async function AdminSettingsPage() {
   const membership = await requireActiveOrganizationMember();
-  const adminEnabled = hasSupabaseAdminKey();
+  const postgresBackend = isPostgresBackend();
+  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
   const canManageCatalog = membership.role === "owner";
-  const supabase = adminEnabled ? createAdminClient() : await createClient();
+  let lessonTypes: EditableLessonType[] = [];
+  let schools: School[] = [];
+  let prices: SchoolLessonTypePrice[] = [];
+  let loadError: { message: string } | null = null;
+  let priceError: { message: string } | null = null;
 
-  const [
-    { data: lessonTypes, error: lessonTypeError },
-    { data: schoolData, error: schoolError },
-    { data: priceData, error: priceError },
-  ] = await Promise.all([
-    loadLessonTypes(supabase, adminEnabled),
-    adminEnabled
-      ? supabase
-          .from("schools")
-          .select(
-            "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
-          )
-          .eq("organization_id", membership.organizationId)
-          .order("name")
-      : Promise.resolve({ data: [], error: null }),
-    adminEnabled
-      ? supabase
-          .from("school_lesson_type_prices")
-          .select(
-            "id, organization_id, school_id, lesson_type_id, price_amount, created_at, updated_at",
-          )
-          .eq("organization_id", membership.organizationId)
-      : Promise.resolve({ data: [], error: null }),
-  ]);
+  if (postgresBackend) {
+    [lessonTypes, schools, prices] = await Promise.all([
+      queryRows<EditableLessonType>(
+        `
+          select id, code, name, description, color, kind,
+                 default_duration_minutes, tags, sort_order, is_active
+          from public.lesson_types
+          order by sort_order, name
+        `,
+      ),
+      queryRows<School>(
+        `
+          select id, organization_id, name, color, default_price, payment_rule,
+                 is_active, created_at::text as created_at, updated_at::text as updated_at
+          from public.schools
+          where organization_id = $1
+          order by name
+        `,
+        [membership.organizationId],
+      ),
+      queryRows<SchoolLessonTypePrice>(
+        `
+          select id, organization_id, school_id, lesson_type_id, price_amount,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from public.school_lesson_type_prices
+          where organization_id = $1
+        `,
+        [membership.organizationId],
+      ),
+    ]);
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const [
+      { data: lessonTypeData, error: lessonTypeError },
+      { data: schoolData, error: schoolError },
+      { data: priceData, error: loadedPriceError },
+    ] = await Promise.all([
+      loadLessonTypes(supabase, adminEnabled),
+      adminEnabled
+        ? supabase
+            .from("schools")
+            .select(
+              "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
+            )
+            .eq("organization_id", membership.organizationId)
+            .order("name")
+        : Promise.resolve({ data: [], error: null }),
+      adminEnabled
+        ? supabase
+            .from("school_lesson_type_prices")
+            .select(
+              "id, organization_id, school_id, lesson_type_id, price_amount, created_at, updated_at",
+            )
+            .eq("organization_id", membership.organizationId)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
 
-  const normalizedPriceError =
-    priceError && !isMissingColumnError(priceError) ? priceError : null;
-  const loadError = lessonTypeError ?? schoolError ?? normalizedPriceError;
-  const schools = (schoolData ?? []) as School[];
-  const prices = (priceData ?? []) as SchoolLessonTypePrice[];
+    priceError = loadedPriceError;
+    const normalizedPriceError =
+      priceError && !isMissingColumnError(priceError) ? priceError : null;
+    loadError = lessonTypeError ?? schoolError ?? normalizedPriceError;
+    lessonTypes = lessonTypeData;
+    schools = (schoolData ?? []) as School[];
+    prices = (priceData ?? []) as SchoolLessonTypePrice[];
+  }
   const visibleSchools = canManageCatalog
     ? schools
     : schools.filter((school) => school.is_active);

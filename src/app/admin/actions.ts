@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isPostgresBackend } from "@/lib/backend-mode";
+import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
 import { hashBookingAccessCode } from "@/lib/booking-access-code";
 import {
   requireActiveOrganizationMember,
@@ -11,11 +13,16 @@ import { logAuditEvent } from "@/lib/audit-log";
 import {
   getEffectiveBookingPriceAmount,
   getConfiguredLessonPriceAmount,
+  getConfiguredLessonPriceAmountPostgres,
   getInitialBookingPaymentFields,
   getSchoolPaymentRule,
+  getSchoolPaymentRulePostgres,
   isMissingPricingTableError,
 } from "@/lib/pricing";
-import { selectStudentLessonPackageForBooking } from "@/lib/student-lesson-packages";
+import {
+  selectStudentLessonPackageForBooking,
+  selectStudentLessonPackageForBookingPostgres,
+} from "@/lib/student-lesson-packages";
 
 export type SlotActionState = {
   status: "idle" | "success" | "error";
@@ -126,6 +133,25 @@ async function validateOptionalSchoolId(
     return null;
   }
 
+  if (isPostgresBackend()) {
+    const data = await queryOne<{ id: string }>(
+      `
+        select id
+        from public.schools
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [schoolId, organizationId],
+    );
+
+    if (!data) {
+      throw new Error("Автошкола не найдена");
+    }
+
+    return schoolId;
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("schools")
@@ -211,6 +237,15 @@ function isMissingColumnError(error: { code?: string; message?: string } | null)
     message.includes("does not exist") ||
     message.includes("could not find") ||
     message.includes("schema cache")
+  );
+}
+
+function isPostgresErrorCode(error: unknown, code: string) {
+  return (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === code
   );
 }
 
@@ -413,6 +448,77 @@ async function getOrCreateCopyTargetDay({
   transmission: "automatic" | "manual" | null;
   publishedAt: string | null;
 }) {
+  if (isPostgresBackend()) {
+    const existingDay = await queryOne<{
+      id: string;
+      transmission: "automatic" | "manual" | null;
+    }>(
+      `
+        select id, transmission
+        from public.schedule_days
+        where instructor_id = $1
+          and date = $2::date
+        limit 1
+      `,
+      [instructorId, date],
+    );
+
+    if (!existingDay) {
+      const createdDay = await queryOne<{
+        id: string;
+        transmission: "automatic" | "manual" | null;
+      }>(
+        `
+          insert into public.schedule_days (
+            instructor_id, date, transmission, published_at
+          )
+          values ($1, $2::date, $3, $4)
+          returning id, transmission
+        `,
+        [instructorId, date, transmission, publishedAt],
+      );
+
+      if (!createdDay) {
+        throw new Error("Не удалось создать день расписания");
+      }
+
+      return createdDay;
+    }
+
+    if (
+      transmission &&
+      existingDay.transmission &&
+      existingDay.transmission !== transmission
+    ) {
+      throw new Error(
+        `На ${date} уже установлена ${
+          existingDay.transmission === "automatic" ? "АКПП" : "МКПП"
+        }`,
+      );
+    }
+
+    const updatedDay = await queryOne<{
+      id: string;
+      transmission: "automatic" | "manual" | null;
+    }>(
+      `
+        update public.schedule_days
+        set transmission = coalesce(transmission, $2),
+            published_at = $3
+        where id = $1
+          and instructor_id = $4
+        returning id, transmission
+      `,
+      [existingDay.id, transmission, publishedAt, instructorId],
+    );
+
+    if (!updatedDay) {
+      throw new Error("Не удалось обновить день расписания");
+    }
+
+    return updatedDay;
+  }
+
   const supabase = createAdminClient();
   const { data: existingDay, error: lookupError } = await supabase
     .from("schedule_days")
@@ -487,7 +593,6 @@ async function copySlotsToDate({
   timezone: string;
   scheduleDayId: string;
 }) {
-  const supabase = createAdminClient();
   const conflicts: string[] = [];
   let createdCount = 0;
 
@@ -506,24 +611,57 @@ async function copySlotsToDate({
       targetEnd,
       timezone,
     )}`;
-    const { error } = await supabase.from("slots").insert({
-      instructor_id: instructorId,
-      schedule_day_id: scheduleDayId,
-      lesson_type_id: slot.lesson_type_id,
-      school_id: null,
-      start_time: targetStart.toISOString(),
-      end_time: targetEnd.toISOString(),
-      location_type: slot.location_type,
-      status: slot.status,
-      note: slot.note,
-    });
 
-    if (!error) {
-      createdCount += 1;
-    } else if (error.code === "23P01") {
-      conflicts.push(label);
+    if (isPostgresBackend()) {
+      try {
+        await executeQuery(
+          `
+            insert into public.slots (
+              instructor_id, schedule_day_id, lesson_type_id, school_id,
+              start_time, end_time, location_type, status, note
+            )
+            values ($1, $2, $3, null, $4, $5, $6, $7, $8)
+          `,
+          [
+            instructorId,
+            scheduleDayId,
+            slot.lesson_type_id,
+            targetStart.toISOString(),
+            targetEnd.toISOString(),
+            slot.location_type,
+            slot.status,
+            slot.note,
+          ],
+        );
+        createdCount += 1;
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23P01")) {
+          conflicts.push(label);
+        } else {
+          throw new Error(`Ошибка при копировании ${label}: ${getErrorMessage(error)}`);
+        }
+      }
     } else {
-      throw new Error(`Ошибка при копировании ${label}: ${error.message}`);
+      const supabase = createAdminClient();
+      const { error } = await supabase.from("slots").insert({
+        instructor_id: instructorId,
+        schedule_day_id: scheduleDayId,
+        lesson_type_id: slot.lesson_type_id,
+        school_id: null,
+        start_time: targetStart.toISOString(),
+        end_time: targetEnd.toISOString(),
+        location_type: slot.location_type,
+        status: slot.status,
+        note: slot.note,
+      });
+
+      if (!error) {
+        createdCount += 1;
+      } else if (error.code === "23P01") {
+        conflicts.push(label);
+      } else {
+        throw new Error(`Ошибка при копировании ${label}: ${error.message}`);
+      }
     }
   }
 
@@ -550,6 +688,96 @@ export async function copyDayAction(
 
     parseDateValue(sourceDate);
     parseDateValue(targetDate);
+
+    if (isPostgresBackend()) {
+      const [instructor, sourceDay] = await Promise.all([
+        queryOne<{ id: string; timezone: string }>(
+          `
+            select id, timezone
+            from public.instructors
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [instructorId],
+        ),
+        queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+        }>(
+          `
+            select id, transmission
+            from public.schedule_days
+            where instructor_id = $1
+              and date = $2::date
+            limit 1
+          `,
+          [instructorId, sourceDate],
+        ),
+      ]);
+
+      if (!instructor) {
+        throw new Error("Инструктор не найден или отключён");
+      }
+
+      if (!sourceDay) {
+        throw new Error("На дате-источнике нет дня расписания");
+      }
+
+      const sourceSlots = await queryRows<SourceSlot>(
+        `
+          select lesson_type_id, start_time::text as start_time,
+                 end_time::text as end_time, location_type, status, note
+          from public.slots
+          where instructor_id = $1
+            and schedule_day_id = $2
+            and status = any($3::text[])
+          order by start_time
+        `,
+        [instructorId, sourceDay.id, ["available", "blocked"]],
+      );
+
+      if (sourceSlots.length === 0) {
+        throw new Error("На дате-источнике нет активных слотов");
+      }
+
+      if (!preserveTransmission && sourceDay.transmission) {
+        throw new Error(
+          "Для дня с практическими занятиями включите «Сохранить коробку передач»",
+        );
+      }
+
+      const targetDay = await getOrCreateCopyTargetDay({
+        instructorId,
+        date: targetDate,
+        transmission: preserveTransmission ? sourceDay.transmission : null,
+        publishedAt: getPublicationAt(formData, instructor.timezone),
+      });
+      const result = await copySlotsToDate({
+        instructorId,
+        sourceSlots,
+        targetDate,
+        timezone: instructor.timezone,
+        scheduleDayId: targetDay.id,
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message:
+          result.conflicts.length > 0
+            ? `Скопировано слотов: ${result.createdCount}. Конфликты пропущены.`
+            : `День скопирован: ${result.createdCount} слотов.`,
+        createdCount: result.createdCount,
+        conflicts: result.conflicts,
+      };
+    }
+
     const supabase = createAdminClient();
     const [
       { data: instructor, error: instructorError },
@@ -660,6 +888,109 @@ export async function copyWeekAction(
 
     if (sourceWeekStart === targetWeekStart) {
       throw new Error("Неделя-источник и неделя-назначение должны отличаться");
+    }
+
+    if (isPostgresBackend()) {
+      const [instructor, sourceDays] = await Promise.all([
+        queryOne<{ id: string; timezone: string }>(
+          `
+            select id, timezone
+            from public.instructors
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [instructorId],
+        ),
+        queryRows<{
+          id: string;
+          date: string;
+          transmission: "automatic" | "manual" | null;
+        }>(
+          `
+            select id, date::text as date, transmission
+            from public.schedule_days
+            where instructor_id = $1
+              and date >= $2::date
+              and date <= $3::date
+            order by date
+          `,
+          [instructorId, sourceWeekStart, addDaysToDate(sourceWeekStart, 6)],
+        ),
+      ]);
+
+      if (!instructor) {
+        throw new Error("Инструктор не найден или отключён");
+      }
+
+      if (sourceDays.length === 0) {
+        throw new Error("На неделе-источнике нет расписания");
+      }
+
+      let createdCount = 0;
+      const conflicts: string[] = [];
+      const publishedAt = getPublicationAt(formData, instructor.timezone);
+
+      for (const sourceDay of sourceDays) {
+        const dayOffset = Math.round(
+          (parseDateValue(sourceDay.date).getTime() -
+            parseDateValue(sourceWeekStart).getTime()) /
+            86_400_000,
+        );
+        const targetDate = addDaysToDate(targetWeekStart, dayOffset);
+        const sourceSlots = await queryRows<SourceSlot>(
+          `
+            select lesson_type_id, start_time::text as start_time,
+                   end_time::text as end_time, location_type, status, note
+            from public.slots
+            where instructor_id = $1
+              and schedule_day_id = $2
+              and status = any($3::text[])
+            order by start_time
+          `,
+          [instructorId, sourceDay.id, ["available", "blocked"]],
+        );
+
+        if (sourceSlots.length === 0) {
+          continue;
+        }
+
+        try {
+          const targetDay = await getOrCreateCopyTargetDay({
+            instructorId,
+            date: targetDate,
+            transmission: sourceDay.transmission,
+            publishedAt,
+          });
+          const result = await copySlotsToDate({
+            instructorId,
+            sourceSlots,
+            targetDate,
+            timezone: instructor.timezone,
+            scheduleDayId: targetDay.id,
+          });
+          createdCount += result.createdCount;
+          conflicts.push(...result.conflicts);
+        } catch (error) {
+          conflicts.push(`${targetDate}: ${getErrorMessage(error)}`);
+        }
+      }
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message:
+          conflicts.length > 0
+            ? `Скопировано слотов: ${createdCount}. Часть интервалов пропущена.`
+            : `Неделя скопирована: ${createdCount} слотов.`,
+        createdCount,
+        conflicts,
+      };
     }
 
     const supabase = createAdminClient();
@@ -781,6 +1112,56 @@ export async function updateDayPublicationAction(
 
   try {
     const scheduleDayId = readRequiredString(formData, "schedule_day_id");
+
+    if (isPostgresBackend()) {
+      const scheduleDay = await queryOne<{
+        id: string;
+        instructor_id: string;
+        timezone: string;
+      }>(
+        `
+          select d.id, d.instructor_id, i.timezone
+          from public.schedule_days d
+          join public.instructors i on i.id = d.instructor_id
+          where d.id = $1
+          limit 1
+        `,
+        [scheduleDayId],
+      );
+
+      if (!scheduleDay) {
+        throw new Error("День расписания не найден");
+      }
+
+      await requireInstructorAccess(scheduleDay.instructor_id);
+      const publishedAt = getPublicationAt(formData, scheduleDay.timezone);
+      await executeQuery(
+        `
+          update public.schedule_days
+          set published_at = $1
+          where id = $2
+            and instructor_id = $3
+        `,
+        [publishedAt, scheduleDayId, scheduleDay.instructor_id],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message:
+          publishedAt === null
+            ? "День скрыт"
+            : new Date(publishedAt) > new Date()
+              ? "Публикация дня запланирована"
+              : "День опубликован",
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: scheduleDay, error: scheduleDayError } = await supabase
       .from("schedule_days")
@@ -855,6 +1236,39 @@ export async function updateWeekPublicationAction(
       throw new Error("Неизвестное действие публикации");
     }
 
+    if (isPostgresBackend()) {
+      const data = await queryRows<{ id: string }>(
+        `
+          update public.schedule_days
+          set published_at = $1
+          where instructor_id = $2
+            and date >= $3::date
+            and date <= $4::date
+          returning id
+        `,
+        [
+          operation === "publish" ? new Date().toISOString() : null,
+          instructorId,
+          weekStart,
+          addDaysToDate(weekStart, 6),
+        ],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message:
+          operation === "publish"
+            ? `Опубликовано дней: ${data.length}`
+            : `Скрыто дней: ${data.length}`,
+      };
+    }
+
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from("schedule_days")
@@ -921,6 +1335,228 @@ export async function quickCreateDayAction(
       requestedTransmission === "manual"
         ? requestedTransmission
         : null;
+
+    if (isPostgresBackend()) {
+      const [instructor, lessonType] = await Promise.all([
+        queryOne<{ id: string; timezone: string }>(
+          `
+            select id, timezone
+            from public.instructors
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [instructorId],
+        ),
+        queryOne<{ id: string; kind: string }>(
+          `
+            select id, kind
+            from public.lesson_types
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [lessonTypeId],
+        ),
+      ]);
+
+      if (!instructor) {
+        throw new Error("Инструктор не найден или отключён");
+      }
+
+      if (!lessonType) {
+        throw new Error("Тип занятия не найден или отключён");
+      }
+
+      if (lessonType.kind === "driving" && !transmission) {
+        throw new Error("Для практических занятий выберите АКПП или МКПП");
+      }
+
+      const publishedAt = getPublicationAt(formData, instructor.timezone);
+      const workStartsAt = getUtcDate(
+        date,
+        workStartTime,
+        instructor.timezone,
+      );
+      const workEndsAt = getUtcDate(date, workEndTime, instructor.timezone);
+
+      if (
+        Number.isNaN(workStartsAt.getTime()) ||
+        Number.isNaN(workEndsAt.getTime())
+      ) {
+        throw new Error("Проверьте дату и время рабочего дня");
+      }
+
+      if (workEndsAt <= workStartsAt) {
+        throw new Error(
+          "Время окончания рабочего дня должно быть позже времени начала",
+        );
+      }
+
+      const candidates: Array<{ start: Date; end: Date }> = [];
+      let nextStart = workStartsAt;
+
+      while (candidates.length < 100) {
+        const nextEnd = new Date(
+          nextStart.getTime() + durationMinutes * 60_000,
+        );
+
+        if (nextEnd > workEndsAt) {
+          break;
+        }
+
+        candidates.push({ start: nextStart, end: nextEnd });
+        nextStart = new Date(nextEnd.getTime() + breakMinutes * 60_000);
+      }
+
+      if (candidates.length === 0) {
+        throw new Error(
+          "В выбранный рабочий интервал не помещается ни одного занятия",
+        );
+      }
+
+      let scheduleDay = await queryOne<{
+        id: string;
+        transmission: "automatic" | "manual" | null;
+        published_at: string | null;
+      }>(
+        `
+          select id, transmission, published_at::text as published_at
+          from public.schedule_days
+          where instructor_id = $1
+            and date = $2::date
+          limit 1
+        `,
+        [instructorId, date],
+      );
+
+      if (!scheduleDay) {
+        scheduleDay = await queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+          published_at: string | null;
+        }>(
+          `
+            insert into public.schedule_days (
+              instructor_id, date, transmission, published_at
+            )
+            values ($1, $2::date, $3, $4)
+            returning id, transmission, published_at::text as published_at
+          `,
+          [
+            instructorId,
+            date,
+            lessonType.kind === "driving" ? transmission : null,
+            publishedAt,
+          ],
+        );
+      } else {
+        if (
+          lessonType.kind === "driving" &&
+          scheduleDay.transmission &&
+          scheduleDay.transmission !== transmission
+        ) {
+          throw new Error(
+            `На выбранную дату уже установлена ${
+              scheduleDay.transmission === "automatic" ? "АКПП" : "МКПП"
+            }`,
+          );
+        }
+
+        scheduleDay = await queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+          published_at: string | null;
+        }>(
+          `
+            update public.schedule_days
+            set published_at = $1,
+                transmission = case
+                  when $2::text is not null and transmission is null then $2
+                  else transmission
+                end
+            where id = $3
+              and instructor_id = $4
+            returning id, transmission, published_at::text as published_at
+          `,
+          [
+            publishedAt,
+            lessonType.kind === "driving" ? transmission : null,
+            scheduleDay.id,
+            instructorId,
+          ],
+        );
+      }
+
+      if (!scheduleDay) {
+        throw new Error("Не удалось подготовить день расписания");
+      }
+
+      const conflicts: string[] = [];
+      let createdCount = 0;
+      const locationType =
+        lessonType.kind === "driving" ? "in_car" : "online";
+
+      for (const candidate of candidates) {
+        try {
+          await executeQuery(
+            `
+              insert into public.slots (
+                instructor_id, schedule_day_id, lesson_type_id, school_id,
+                start_time, end_time, location_type, status, note
+              )
+              values ($1, $2, $3, null, $4, $5, $6, 'available', $7)
+            `,
+            [
+              instructorId,
+              scheduleDay.id,
+              lessonTypeId,
+              candidate.start.toISOString(),
+              candidate.end.toISOString(),
+              locationType,
+              note,
+            ],
+          );
+          createdCount += 1;
+        } catch (error) {
+          if (isPostgresErrorCode(error, "23P01")) {
+            conflicts.push(
+              formatTimeRange(
+                candidate.start,
+                candidate.end,
+                instructor.timezone,
+              ),
+            );
+            continue;
+          }
+
+          throw new Error(
+            `Создано слотов: ${createdCount}. Ошибка на интервале ${formatTimeRange(
+              candidate.start,
+              candidate.end,
+              instructor.timezone,
+            )}: ${getErrorMessage(error)}`,
+          );
+        }
+      }
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message:
+          conflicts.length > 0
+            ? `Создано слотов: ${createdCount}. Часть интервалов пропущена из-за конфликтов.`
+            : `День создан: ${createdCount} слотов.`,
+        createdCount,
+        conflicts,
+      };
+    }
+
     const supabase = createAdminClient();
     const [
       { data: instructor, error: instructorError },
@@ -1159,6 +1795,172 @@ export async function createSlotAction(
         ? requestedTransmission
         : null;
 
+    if (isPostgresBackend()) {
+      const [instructor, lessonType] = await Promise.all([
+        queryOne<{ id: string; timezone: string }>(
+          `
+            select id, timezone
+            from public.instructors
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [instructorId],
+        ),
+        queryOne<{
+          id: string;
+          kind: string;
+          default_duration_minutes: number;
+        }>(
+          `
+            select id, kind, default_duration_minutes
+            from public.lesson_types
+            where id = $1
+              and is_active = true
+            limit 1
+          `,
+          [lessonTypeId],
+        ),
+      ]);
+
+      if (!instructor) {
+        throw new Error("Инструктор не найден или отключён");
+      }
+
+      if (!lessonType) {
+        throw new Error("Тип занятия не найден или отключён");
+      }
+
+      if (lessonType.kind === "driving" && !transmission) {
+        throw new Error("Для практического занятия выберите АКПП или МКПП");
+      }
+
+      let scheduleDay = await queryOne<{
+        id: string;
+        transmission: "automatic" | "manual" | null;
+        published_at: string | null;
+      }>(
+        `
+          select id, transmission, published_at::text as published_at
+          from public.schedule_days
+          where instructor_id = $1
+            and date = $2::date
+          limit 1
+        `,
+        [instructorId, date],
+      );
+
+      if (!scheduleDay) {
+        scheduleDay = await queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+          published_at: string | null;
+        }>(
+          `
+            insert into public.schedule_days (
+              instructor_id, date, transmission, published_at
+            )
+            values ($1, $2::date, $3, $4)
+            returning id, transmission, published_at::text as published_at
+          `,
+          [
+            instructorId,
+            date,
+            lessonType.kind === "driving" ? transmission : null,
+            publishDay ? new Date().toISOString() : null,
+          ],
+        );
+      } else {
+        const nextPublishedAt =
+          publishDay && !scheduleDay.published_at
+            ? new Date().toISOString()
+            : scheduleDay.published_at;
+        const nextTransmission =
+          lessonType.kind === "driving" && !scheduleDay.transmission
+            ? transmission
+            : scheduleDay.transmission;
+
+        if (
+          lessonType.kind === "driving" &&
+          scheduleDay.transmission &&
+          scheduleDay.transmission !== transmission
+        ) {
+          throw new Error(
+            `На выбранную дату уже установлена ${
+              scheduleDay.transmission === "automatic" ? "АКПП" : "МКПП"
+            }`,
+          );
+        }
+
+        if (
+          nextPublishedAt !== scheduleDay.published_at ||
+          nextTransmission !== scheduleDay.transmission
+        ) {
+          scheduleDay = await queryOne<{
+            id: string;
+            transmission: "automatic" | "manual" | null;
+            published_at: string | null;
+          }>(
+            `
+              update public.schedule_days
+              set published_at = $1,
+                  transmission = $2
+              where id = $3
+              returning id, transmission, published_at::text as published_at
+            `,
+            [nextPublishedAt, nextTransmission, scheduleDay.id],
+          );
+        }
+      }
+
+      if (!scheduleDay) {
+        throw new Error("Не удалось подготовить день расписания");
+      }
+
+      const startsAt = getUtcDate(date, startTime, instructor.timezone);
+      const endsAt = new Date(
+        startsAt.getTime() + lessonType.default_duration_minutes * 60_000,
+      );
+
+      try {
+        await executeQuery(
+          `
+            insert into public.slots (
+              instructor_id, schedule_day_id, lesson_type_id, school_id,
+              start_time, end_time, location_type, status, note
+            )
+            values ($1, $2, $3, null, $4, $5, $6, 'available', $7)
+          `,
+          [
+            instructorId,
+            scheduleDay.id,
+            lessonTypeId,
+            startsAt.toISOString(),
+            endsAt.toISOString(),
+            locationType,
+            note,
+          ],
+        );
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23P01")) {
+          throw new Error("У инструктора уже есть занятие в это время");
+        }
+
+        throw error;
+      }
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message: "Слот создан",
+      };
+    }
+
     const supabase = createAdminClient();
     const [{ data: instructor, error: instructorError }, { data: lessonType, error: lessonError }] =
       await Promise.all([
@@ -1314,6 +2116,233 @@ export async function updateSlotAction(
     const startTime = readRequiredString(formData, "start_time");
     const locationType = readLocationType(formData);
     const note = readOptionalNote(formData);
+
+    if (isPostgresBackend()) {
+      const slot = await queryOne<{
+        id: string;
+        instructor_id: string;
+        schedule_day_id: string;
+        lesson_type_id: string;
+        school_id: string | null;
+        location_type: SlotLocationType;
+        status: string;
+      }>(
+        `
+          select id, instructor_id, schedule_day_id, lesson_type_id, school_id,
+                 location_type, status
+          from public.slots
+          where id = $1
+            and status <> 'cancelled'
+          limit 1
+        `,
+        [slotId],
+      );
+
+      if (!slot) {
+        throw new Error("Слот не найден");
+      }
+
+      const membership = await requireInstructorAccess(slot.instructor_id);
+      const [instructor, currentDay, nextLessonType, bookingCount] =
+        await Promise.all([
+          queryOne<{ id: string; timezone: string }>(
+            `
+              select id, timezone
+              from public.instructors
+              where id = $1
+                and is_active = true
+              limit 1
+            `,
+            [slot.instructor_id],
+          ),
+          queryOne<{
+            id: string;
+            date: string;
+            transmission: "automatic" | "manual" | null;
+            published_at: string | null;
+          }>(
+            `
+              select id, date::text as date, transmission,
+                     published_at::text as published_at
+              from public.schedule_days
+              where id = $1
+                and instructor_id = $2
+              limit 1
+            `,
+            [slot.schedule_day_id, slot.instructor_id],
+          ),
+          queryOne<{
+            id: string;
+            kind: string;
+            default_duration_minutes: number;
+          }>(
+            `
+              select id, kind, default_duration_minutes
+              from public.lesson_types
+              where id = $1
+                and is_active = true
+              limit 1
+            `,
+            [lessonTypeId],
+          ),
+          queryOne<{ count: string }>(
+            `
+              select count(*)::text as count
+              from public.bookings
+              where slot_id = $1
+                and status = 'confirmed'
+            `,
+            [slotId],
+          ),
+        ]);
+
+      if (!instructor) {
+        throw new Error("Инструктор не найден или отключён");
+      }
+
+      if (!currentDay) {
+        throw new Error("День текущего слота не найден");
+      }
+
+      if (!nextLessonType) {
+        throw new Error("Новый тип занятия не найден или отключён");
+      }
+
+      let targetDay = await queryOne<{
+        id: string;
+        transmission: "automatic" | "manual" | null;
+        published_at: string | null;
+      }>(
+        `
+          select id, transmission, published_at::text as published_at
+          from public.schedule_days
+          where instructor_id = $1
+            and date = $2::date
+          limit 1
+        `,
+        [slot.instructor_id, date],
+      );
+      const needsTransmission = nextLessonType.kind === "driving";
+      const targetTransmission =
+        targetDay?.transmission ?? currentDay.transmission;
+
+      if (needsTransmission && !targetTransmission) {
+        throw new Error(
+          "Для вождения нужна коробка передач дня. Создайте слот в день, где уже указана АКПП или МКПП.",
+        );
+      }
+
+      if (!targetDay) {
+        targetDay = await queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+          published_at: string | null;
+        }>(
+          `
+            insert into public.schedule_days (
+              instructor_id, date, transmission, published_at
+            )
+            values ($1, $2::date, $3, $4)
+            returning id, transmission, published_at::text as published_at
+          `,
+          [
+            slot.instructor_id,
+            date,
+            needsTransmission ? targetTransmission : null,
+            currentDay.published_at ?? null,
+          ],
+        );
+      } else if (needsTransmission && !targetDay.transmission && targetTransmission) {
+        targetDay = await queryOne<{
+          id: string;
+          transmission: "automatic" | "manual" | null;
+          published_at: string | null;
+        }>(
+          `
+            update public.schedule_days
+            set transmission = $1
+            where id = $2
+              and instructor_id = $3
+            returning id, transmission, published_at::text as published_at
+          `,
+          [targetTransmission, targetDay.id, slot.instructor_id],
+        );
+      }
+
+      if (!targetDay) {
+        throw new Error("Не удалось подготовить день расписания");
+      }
+
+      const startsAt = getUtcDate(date, startTime, instructor.timezone);
+      const endsAt = new Date(
+        startsAt.getTime() + nextLessonType.default_duration_minutes * 60_000,
+      );
+
+      try {
+        await executeQuery(
+          `
+            update public.slots
+            set schedule_day_id = $1,
+                lesson_type_id = $2,
+                school_id = null,
+                location_type = $3,
+                start_time = $4,
+                end_time = $5,
+                note = $6
+            where id = $7
+              and instructor_id = $8
+          `,
+          [
+            targetDay.id,
+            lessonTypeId,
+            locationType,
+            startsAt.toISOString(),
+            endsAt.toISOString(),
+            note,
+            slotId,
+            slot.instructor_id,
+          ],
+        );
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23P01")) {
+          throw new Error("У инструктора уже есть занятие в это время");
+        }
+
+        throw error;
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "slot.updated",
+        entityType: "slot",
+        entityId: slotId,
+        metadata: {
+          instructor_id: slot.instructor_id,
+          had_confirmed_booking: Number(bookingCount?.count ?? 0) > 0,
+          date_changed: currentDay.date !== date,
+          lesson_type_changed: slot.lesson_type_id !== lessonTypeId,
+          location_type_changed: slot.location_type !== locationType,
+        },
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/admin/reports");
+      revalidatePath("/admin/students");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/student");
+
+      return {
+        status: "success",
+        message:
+          Number(bookingCount?.count ?? 0) > 0
+            ? "Слот обновлён. Не забудьте предупредить ученика."
+            : "Слот обновлён",
+      };
+    }
+
     const supabase = createAdminClient();
 
     const { data: slot, error: slotLookupError } = await supabase
@@ -1507,6 +2536,49 @@ export async function deleteSlotAction(formData: FormData) {
   const slotId = readRequiredString(formData, "slot_id");
 
   try {
+    if (isPostgresBackend()) {
+      const slot = await queryOne<{ instructor_id: string }>(
+        `
+          select instructor_id
+          from public.slots
+          where id = $1
+          limit 1
+        `,
+        [slotId],
+      );
+
+      if (!slot) {
+        throw new Error("Слот не найден");
+      }
+
+      const membership = await requireInstructorAccess(slot.instructor_id);
+      await executeQuery(
+        `
+          delete from public.slots
+          where id = $1
+            and instructor_id = $2
+        `,
+        [slotId, slot.instructor_id],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "slot.deleted",
+        entityType: "slot",
+        entityId: slotId,
+        metadata: {
+          instructor_id: slot.instructor_id,
+        },
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { data: slot, error: slotLookupError } = await supabase
       .from("slots")
@@ -1576,6 +2648,67 @@ export async function deleteSelectedSlotsAction(
   }
 
   try {
+    if (isPostgresBackend()) {
+      const selectedSlots = await queryRows<{
+        id: string;
+        instructor_id: string;
+      }>(
+        `
+          select id, instructor_id
+          from public.slots
+          where id = any($1::uuid[])
+            and status <> 'cancelled'
+        `,
+        [slotIds],
+      );
+
+      if (selectedSlots.length === 0) {
+        throw new Error("Выбранные слоты не найдены");
+      }
+
+      const instructorIds = [
+        ...new Set(selectedSlots.map((slot) => slot.instructor_id)),
+      ];
+      let membership = await requireActiveOrganizationMember();
+
+      for (const selectedInstructorId of instructorIds) {
+        membership = await requireInstructorAccess(selectedInstructorId);
+      }
+
+      const manageableSlotIds = selectedSlots.map((slot) => slot.id);
+      await executeQuery(
+        `
+          delete from public.slots
+          where id = any($1::uuid[])
+        `,
+        [manageableSlotIds],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "slots.bulk_deleted",
+        entityType: "slot",
+        metadata: {
+          count: manageableSlotIds.length,
+          instructor_ids: instructorIds,
+        },
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/admin/reports");
+      revalidatePath("/admin/students");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+
+      return {
+        status: "success",
+        message: `Удалено слотов: ${manageableSlotIds.length}`,
+        deletedCount: manageableSlotIds.length,
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: selectedSlots, error: lookupError } = await supabase
       .from("slots")
@@ -1650,6 +2783,57 @@ export async function cancelBookingAction(formData: FormData) {
   const bookingId = readRequiredString(formData, "booking_id");
 
   try {
+    if (isPostgresBackend()) {
+      const booking = await queryOne<{
+        id: string;
+        slot_id: string;
+        instructor_id: string;
+      }>(
+        `
+          select b.id, b.slot_id, s.instructor_id
+          from public.bookings b
+          join public.slots s on s.id = b.slot_id
+          where b.id = $1
+          limit 1
+        `,
+        [bookingId],
+      );
+
+      if (!booking) {
+        throw new Error("Запись не найдена");
+      }
+
+      const membership = await requireInstructorAccess(booking.instructor_id);
+      await executeQuery(
+        `
+          update public.bookings
+          set status = 'cancelled',
+              cancelled_at = $1
+          where id = $2
+            and status = 'confirmed'
+        `,
+        [new Date().toISOString(), bookingId],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "booking.cancelled",
+        entityType: "booking",
+        entityId: bookingId,
+        metadata: {
+          slot_id: booking.slot_id,
+          instructor_id: booking.instructor_id,
+        },
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { data: booking, error: bookingLookupError } = await supabase
       .from("bookings")
@@ -1795,6 +2979,187 @@ export async function assignStudentToSlotAction(
     await requireActiveOrganizationMember();
     const slotId = readRequiredString(formData, "slot_id");
     const studentAccessId = readRequiredString(formData, "student_access_id");
+
+    if (isPostgresBackend()) {
+      const slot = await queryOne<{
+        id: string;
+        instructor_id: string;
+        schedule_day_id: string;
+        lesson_type_id: string;
+        status: string;
+      }>(
+        `
+          select id, instructor_id, schedule_day_id, lesson_type_id, status
+          from public.slots
+          where id = $1
+          limit 1
+        `,
+        [slotId],
+      );
+
+      if (!slot) {
+        throw new Error("Слот не найден");
+      }
+
+      const membership = await requireInstructorAccess(slot.instructor_id);
+
+      if (slot.status !== "available") {
+        throw new Error("Записать ученика можно только в свободный слот");
+      }
+
+      const activeBookingCount = await queryOne<{ count: string }>(
+        `
+          select count(*)::text as count
+          from public.bookings
+          where slot_id = $1
+            and status = 'confirmed'
+        `,
+        [slot.id],
+      );
+
+      if (Number(activeBookingCount?.count ?? 0) > 0) {
+        throw new Error("Этот слот уже занят");
+      }
+
+      const access = await queryOne<{
+        id: string;
+        organization_id: string;
+        instructor_id: string;
+        school_id: string | null;
+        display_label: string;
+        total_lesson_limit: number | null;
+        weekly_lesson_limit: number | null;
+        is_active: boolean;
+        is_archived: boolean;
+      }>(
+        `
+          select id, organization_id, instructor_id, school_id, display_label,
+                 total_lesson_limit, weekly_lesson_limit, is_active, is_archived
+          from public.student_accesses
+          where id = $1
+            and instructor_id = $2
+          limit 1
+        `,
+        [studentAccessId, slot.instructor_id],
+      );
+
+      if (!access) {
+        throw new Error("Ученик не найден у этого инструктора");
+      }
+
+      if (!access.is_active || access.is_archived) {
+        throw new Error("Доступ ученика не активен");
+      }
+
+      const [allowedLessonTypes, scheduleDay] = await Promise.all([
+        queryRows<{ lesson_type_id: string }>(
+          `
+            select lesson_type_id
+            from public.student_access_lesson_types
+            where student_access_id = $1
+          `,
+          [access.id],
+        ),
+        queryOne<{ date: string }>(
+          `
+            select date::text as date
+            from public.schedule_days
+            where id = $1
+            limit 1
+          `,
+          [slot.schedule_day_id],
+        ),
+      ]);
+
+      if (!scheduleDay) {
+        throw new Error("День расписания не найден");
+      }
+
+      const selectedPackage = await selectStudentLessonPackageForBookingPostgres({
+        access,
+        lessonTypeId: slot.lesson_type_id,
+        lessonDate: scheduleDay.date,
+        legacyLessonTypeIds: allowedLessonTypes.map(
+          (item) => item.lesson_type_id,
+        ),
+      });
+
+      const configuredPriceAmount =
+        await getConfiguredLessonPriceAmountPostgres({
+          organizationId: access.organization_id,
+          schoolId: selectedPackage.schoolId,
+          lessonTypeId: slot.lesson_type_id,
+        });
+      const priceAmount = getEffectiveBookingPriceAmount({
+        priceAmount: configuredPriceAmount,
+        bookingCategory: selectedPackage.bookingCategory,
+      });
+      const paymentRule = await getSchoolPaymentRulePostgres({
+        organizationId: access.organization_id,
+        schoolId: selectedPackage.schoolId,
+      });
+      const paymentFields = getInitialBookingPaymentFields({
+        priceAmount,
+        paymentRule,
+        bookingCategory: selectedPackage.bookingCategory,
+      });
+
+      try {
+        await executeQuery(
+          `
+            insert into public.bookings (
+              slot_id, student_access_id, student_label,
+              student_lesson_package_id, school_id, price_amount,
+              paid_amount, is_paid, paid_at, booking_category, status
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed')
+          `,
+          [
+            slot.id,
+            access.id,
+            access.display_label,
+            selectedPackage.id,
+            selectedPackage.schoolId,
+            priceAmount,
+            paymentFields.paid_amount,
+            paymentFields.is_paid,
+            paymentFields.paid_at,
+            selectedPackage.bookingCategory,
+          ],
+        );
+      } catch (error) {
+        if (isPostgresErrorCode(error, "23505")) {
+          throw new Error("Этот слот уже занят");
+        }
+
+        throw error;
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "booking.assigned_by_instructor",
+        entityType: "slot",
+        entityId: slot.id,
+        metadata: {
+          instructor_id: slot.instructor_id,
+          student_access_id: access.id,
+          price_amount: priceAmount,
+        },
+      });
+
+      revalidateAdminCrmPaths();
+      revalidatePath("/student");
+      revalidatePath("/director");
+      revalidatePath("/director/schedule");
+      revalidatePath("/director/students");
+      revalidatePath("/director/reports");
+
+      return {
+        status: "success",
+        message: "Ученик записан на занятие",
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: slot, error: slotError } = await supabase
       .from("slots")
@@ -1987,6 +3352,53 @@ export async function createLessonTypeAction(
     }
 
     const persistence = getLessonTypePersistence(category);
+
+    if (isPostgresBackend()) {
+      const lastType = await queryOne<{ sort_order: number | null }>(
+        `
+          select sort_order
+          from public.lesson_types
+          order by sort_order desc, name desc
+          limit 1
+        `,
+      );
+
+      await executeQuery(
+        `
+          insert into public.lesson_types (
+            code, name, description, color, kind, requires_vehicle,
+            default_duration_minutes, default_price_amount, tags, sort_order,
+            is_active
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, null, $8, $9, $10)
+        `,
+        [
+          makeCustomLessonTypeCode(),
+          name,
+          description,
+          color,
+          persistence.kind,
+          persistence.requires_vehicle,
+          durationMinutes,
+          persistence.tags,
+          (lastType?.sort_order ?? 0) + 10,
+          isActive,
+        ],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/instructors");
+
+      return {
+        status: "success",
+        message: "Тип занятия создан",
+      };
+    }
+
     const supabase = createAdminClient();
     const { data: lastType, error: lastTypeError } = await supabase
       .from("lesson_types")
@@ -2084,6 +3496,48 @@ export async function updateLessonTypeAction(
     }
 
     const persistence = getLessonTypePersistence(category);
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.lesson_types
+          set name = $1,
+              description = $2,
+              color = $3,
+              kind = $4,
+              requires_vehicle = $5,
+              default_duration_minutes = $6,
+              tags = $7,
+              is_active = $8,
+              default_price_amount = null
+          where id = $9
+        `,
+        [
+          name,
+          description,
+          color,
+          persistence.kind,
+          persistence.requires_vehicle,
+          durationMinutes,
+          persistence.tags,
+          isActive,
+          lessonTypeId,
+        ],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/instructors");
+
+      return {
+        status: "success",
+        message: "Тип занятия обновлён",
+      };
+    }
+
     const supabase = createAdminClient();
     const lessonTypePayload = {
       name,
@@ -2145,6 +3599,25 @@ export async function toggleLessonTypeActiveAction(formData: FormData) {
   const isActive = formData.get("is_active") === "true";
 
   try {
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.lesson_types
+          set is_active = $1
+          where id = $2
+        `,
+        [isActive, lessonTypeId],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/instructors");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { error } = await supabase
       .from("lesson_types")
@@ -2176,6 +3649,56 @@ export async function deleteLessonTypeAction(
   try {
     await requireLessonTypeManager();
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
+
+    if (isPostgresBackend()) {
+      const slotCount = await queryOne<{ count: string }>(
+        `
+          select count(*)::text as count
+          from public.slots
+          where lesson_type_id = $1
+        `,
+        [lessonTypeId],
+      );
+
+      if (Number(slotCount?.count ?? 0) > 0) {
+        return {
+          status: "error",
+          message:
+            "Этот тип уже используется в расписании. Чтобы не потерять историю, его можно скрыть или сначала удалить связанные слоты.",
+        };
+      }
+
+      await executeQuery(
+        `
+          delete from public.student_access_lesson_types
+          where lesson_type_id = $1
+        `,
+        [lessonTypeId],
+      );
+      await executeQuery(
+        `
+          delete from public.lesson_types
+          where id = $1
+        `,
+        [lessonTypeId],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/settings");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/admin/reports");
+      revalidatePath("/admin/students");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/instructors");
+
+      return {
+        status: "success",
+        message: "Тип занятия удалён навсегда",
+      };
+    }
+
     const supabase = createAdminClient();
     const { count, error: slotCountError } = await supabase
       .from("slots")
@@ -2246,6 +3769,61 @@ export async function moveLessonTypeAction(formData: FormData) {
   }
 
   try {
+    if (isPostgresBackend()) {
+      const lessonTypes = await queryRows<{
+        id: string;
+        sort_order: number;
+        name: string;
+      }>(
+        `
+          select id, sort_order, name
+          from public.lesson_types
+          order by sort_order, name
+        `,
+      );
+      const currentIndex = lessonTypes.findIndex(
+        (lessonType) => lessonType.id === lessonTypeId,
+      );
+      const targetIndex =
+        direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+      if (
+        currentIndex === -1 ||
+        targetIndex < 0 ||
+        targetIndex >= lessonTypes.length
+      ) {
+        return;
+      }
+
+      const current = lessonTypes[currentIndex];
+      const target = lessonTypes[targetIndex];
+
+      await executeQuery(
+        `
+          update public.lesson_types
+          set sort_order = $1
+          where id = $2
+        `,
+        [target.sort_order, current.id],
+      );
+      await executeQuery(
+        `
+          update public.lesson_types
+          set sort_order = $1
+          where id = $2
+        `,
+        [current.sort_order, target.id],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+      revalidatePath("/");
+      revalidatePath("/schedule");
+      revalidatePath("/instructors");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from("lesson_types")
@@ -2310,6 +3888,43 @@ export async function togglePaymentAction(formData: FormData) {
   const isPaid = formData.get("is_paid") === "true";
 
   try {
+    if (isPostgresBackend()) {
+      const { booking, slot, membership } =
+        await requireManageableBookingPostgres(bookingId);
+      const paidAt = isPaid ? new Date().toISOString() : null;
+      const paidAmount = isPaid ? (booking.price_amount ?? 0) : 0;
+
+      await executeQuery(
+        `
+          update public.bookings
+          set is_paid = $1,
+              paid_at = $2,
+              paid_amount = $3
+          where id = $4
+            and status = 'confirmed'
+        `,
+        [isPaid, paidAt, paidAmount, bookingId],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "booking.payment_toggled",
+        entityType: "booking",
+        entityId: bookingId,
+        metadata: {
+          slot_id: booking.slot_id,
+          instructor_id: slot.instructor_id,
+          is_paid: isPaid,
+          paid_amount: paidAmount,
+        },
+      });
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/reports");
+      return;
+    }
+
     const supabase = createAdminClient();
     const { data: booking, error: bookingLookupError } = await supabase
       .from("bookings")
@@ -2397,6 +4012,57 @@ export async function updateBookingPaymentAction(
     }
 
     const isPaid = priceAmount !== null && paidAmount >= priceAmount;
+
+    if (isPostgresBackend()) {
+      const { booking, slot, membership } =
+        await requireManageableBookingPostgres(bookingId);
+
+      await executeQuery(
+        `
+          update public.bookings
+          set price_amount = $1,
+              paid_amount = $2,
+              is_paid = $3,
+              paid_at = $4,
+              payment_note = $5
+          where id = $6
+            and status = 'confirmed'
+        `,
+        [
+          priceAmount,
+          paidAmount,
+          isPaid,
+          isPaid ? new Date().toISOString() : null,
+          paymentNote,
+          bookingId,
+        ],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "booking.payment_updated",
+        entityType: "booking",
+        entityId: bookingId,
+        metadata: {
+          slot_id: booking.slot_id,
+          instructor_id: slot.instructor_id,
+          price_amount: priceAmount,
+          paid_amount: paidAmount,
+          is_paid: isPaid,
+          has_payment_note: Boolean(paymentNote),
+        },
+      });
+
+      revalidateAdminCrmPaths();
+      revalidatePath("/admin/bookings");
+      revalidatePath("/student");
+
+      return {
+        status: "success",
+        message: isPaid ? "Оплата закрыта" : "Оплата сохранена",
+      };
+    }
+
     const { supabase, booking, slot, membership } =
       await requireManageableBooking(bookingId);
     const { error } = await supabase
@@ -2703,6 +4369,44 @@ export async function updateBookingCategoryAction(
 
   try {
     const bookingCategory = readBookingCategory(formData);
+
+    if (isPostgresBackend()) {
+      const { booking, slot, membership } =
+        await requireManageableBookingPostgres(bookingId);
+
+      await executeQuery(
+        `
+          update public.bookings
+          set booking_category = $1
+          where id = $2
+            and status = 'confirmed'
+        `,
+        [bookingCategory, bookingId],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "booking.category_updated",
+        entityType: "booking",
+        entityId: bookingId,
+        metadata: {
+          slot_id: booking.slot_id,
+          instructor_id: slot.instructor_id,
+          booking_category: bookingCategory,
+        },
+      });
+
+      revalidateAdminCrmPaths();
+      revalidatePath("/director");
+      revalidatePath("/director/reports");
+      revalidatePath("/director/schedule");
+
+      return {
+        status: "success",
+        message: "Категория записи сохранена",
+      };
+    }
+
     const { supabase, booking, slot, membership } =
       await requireManageableBooking(bookingId);
     const { error } = await supabase
@@ -2786,6 +4490,45 @@ async function requireManageableBooking(bookingId: string) {
   return { supabase, booking, slot, membership };
 }
 
+async function requireManageableBookingPostgres(bookingId: string) {
+  const booking = await queryOne<{
+    id: string;
+    slot_id: string;
+    price_amount: number | null;
+  }>(
+    `
+      select id, slot_id, price_amount
+      from public.bookings
+      where id = $1
+        and status = 'confirmed'
+      limit 1
+    `,
+    [bookingId],
+  );
+
+  if (!booking) {
+    throw new Error("Запись не найдена");
+  }
+
+  const slot = await queryOne<{ instructor_id: string }>(
+    `
+      select instructor_id
+      from public.slots
+      where id = $1
+      limit 1
+    `,
+    [booking.slot_id],
+  );
+
+  if (!slot) {
+    throw new Error("Слот записи не найден");
+  }
+
+  const membership = await requireInstructorAccess(slot.instructor_id);
+
+  return { booking, slot, membership };
+}
+
 function revalidateAdminCrmPaths() {
   revalidatePath("/admin");
   revalidatePath("/admin/schedule");
@@ -2799,6 +4542,41 @@ export async function updateBookingLessonStateAction(formData: FormData) {
   const lessonState = readBookingLessonState(formData);
 
   try {
+    if (isPostgresBackend()) {
+      const { booking, slot, membership } =
+        await requireManageableBookingPostgres(bookingId);
+
+      await executeQuery(
+        `
+          update public.bookings
+          set lesson_state = $1,
+              completed_at = $2
+          where id = $3
+            and status = 'confirmed'
+        `,
+        [
+          lessonState,
+          lessonState === "completed" ? new Date().toISOString() : null,
+          bookingId,
+        ],
+      );
+
+      await logAuditEvent({
+        membership,
+        action: "booking.lesson_state_updated",
+        entityType: "booking",
+        entityId: bookingId,
+        metadata: {
+          slot_id: booking.slot_id,
+          instructor_id: slot.instructor_id,
+          lesson_state: lessonState,
+        },
+      });
+
+      revalidateAdminCrmPaths();
+      return;
+    }
+
     const { supabase, booking, slot, membership } =
       await requireManageableBooking(bookingId);
     const { error } = await supabase
@@ -2844,6 +4622,22 @@ export async function saveBookingInstructorNoteAction(formData: FormData) {
   }
 
   try {
+    if (isPostgresBackend()) {
+      await requireManageableBookingPostgres(bookingId);
+      await executeQuery(
+        `
+          update public.bookings
+          set instructor_note = $1
+          where id = $2
+            and status = 'confirmed'
+        `,
+        [note, bookingId],
+      );
+
+      revalidateAdminCrmPaths();
+      return;
+    }
+
     const { supabase } = await requireManageableBooking(bookingId);
     const { error } = await supabase
       .from("bookings")
@@ -2879,6 +4673,24 @@ export async function saveBookingAccessCodeAction(
       return {
         status: "error",
         message: "Кодовое слово должно содержать не более 100 символов",
+      };
+    }
+
+    if (isPostgresBackend()) {
+      await queryOne(
+        `
+          select public.set_booking_access_code($1, $2, $3)
+        `,
+        [instructorId, accessCode, hashBookingAccessCode(accessCode)],
+      );
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/schedule");
+      revalidatePath("/admin/bookings");
+
+      return {
+        status: "success",
+        message: "Кодовое слово сохранено",
       };
     }
 

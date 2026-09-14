@@ -4,7 +4,7 @@ export const selectClassName =
   "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-10 w-full rounded-lg border px-3 text-sm outline-none focus-visible:ring-3";
 
 export function getRoleLabel(role: OrganizationRole | string) {
-  if (role === "owner") return "Владелец";
+  if (role === "owner") return "Руководитель";
   if (role === "admin") return "Администратор";
   if (role === "instructor") return "Инструктор";
   return role;

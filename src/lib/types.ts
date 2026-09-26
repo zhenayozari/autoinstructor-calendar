@@ -31,6 +31,7 @@ export type InstructorProfile = Instructor & {
   photo_url: string | null;
   short_bio: string | null;
   contact_text: string | null;
+  show_contact_in_student_cabinet: boolean;
   car_description: string | null;
   experience_text: string | null;
   public_is_visible: boolean;
@@ -125,6 +126,7 @@ export type StudentAccess = {
   first_name?: string | null;
   last_name?: string | null;
   student_phone: string | null;
+  student_photo_url?: string | null;
   login: string;
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
@@ -147,6 +149,8 @@ export type StudentLessonPackage = {
   instructor_id: string;
   school_id: string | null;
   booking_category: BookingCategory;
+  custom_price_amount: number | null;
+  payment_rule_override: SchoolPaymentRule | null;
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
   is_active: boolean;
@@ -268,6 +272,106 @@ export type LegalDocument = {
   created_by_member_id: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type InstructorPayoutAccrualPolicy = "prepaid" | "postpaid";
+export type InstructorSourceVisibilityMode = "all_active" | "selected_only";
+export type InstructorPayoutEntryType =
+  | "booking_accrual"
+  | "manual_adjustment"
+  | "cancellation_adjustment"
+  | "no_show_adjustment";
+export type InstructorPayoutEntryStatus = "planned" | "cancelled";
+
+export type InstructorPayoutSettings = {
+  instructor_id: string;
+  organization_id: string;
+  accrual_policy: InstructorPayoutAccrualPolicy;
+  weekly_lesson_limit: number | null;
+  source_visibility_mode: InstructorSourceVisibilityMode;
+  show_client_prices: boolean;
+  can_manage_student_packages: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InstructorSourceVisibility = {
+  instructor_id: string;
+  organization_id: string;
+  school_id: string;
+  is_visible: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InstructorPayoutRateRule = {
+  id: string;
+  organization_id: string;
+  instructor_id: string;
+  school_id: string | null;
+  lesson_type_id: string | null;
+  booking_category: BookingCategory | null;
+  amount: number;
+  is_active: boolean;
+  effective_from: string;
+  effective_to: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InstructorPayoutEntry = {
+  id: string;
+  organization_id: string;
+  instructor_id: string;
+  booking_id: string | null;
+  slot_id: string | null;
+  school_id: string | null;
+  lesson_type_id: string | null;
+  student_access_id: string | null;
+  rate_rule_id: string | null;
+  entry_type: InstructorPayoutEntryType;
+  accrual_policy: InstructorPayoutAccrualPolicy;
+  status: InstructorPayoutEntryStatus;
+  amount: number;
+  planned_at: string;
+  event_at: string | null;
+  cancelled_at: string | null;
+  note: string | null;
+  created_by_member_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InstructorPayoutEntryBalance = InstructorPayoutEntry & {
+  paid_amount: number;
+  remaining_amount: number;
+};
+
+export type InstructorPayoutPayment = {
+  id: string;
+  organization_id: string;
+  instructor_id: string;
+  amount: number;
+  paid_at: string;
+  payment_note: string | null;
+  created_by_member_id: string | null;
+  created_at: string;
+};
+
+export type InstructorPayoutPaymentAllocation = {
+  payment_id: string;
+  payout_entry_id: string;
+  amount: number;
+  created_at: string;
+};
+
+export type InstructorPayoutSummary = {
+  organization_id: string;
+  instructor_id: string;
+  planned_amount: number;
+  paid_amount: number;
+  remaining_amount: number;
 };
 
 export type AccessCodeHistoryItem = {

@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import {
   CalendarDays,
   Check,
+  ChevronDown,
   Link2,
   X,
   Trash2,
@@ -11,10 +12,16 @@ import {
 } from "lucide-react";
 import {
   approveStaffInvitationAction,
+  backfillStaffPayoutEntriesAction,
+  createStaffPayoutPaymentAction,
+  createStaffPayoutRateRuleAction,
   createStaffInvitationAction,
   deleteStaffInvitationAction,
   deleteStaffInstructorAction,
+  disableStaffPayoutRateRuleAction,
   rejectStaffInvitationAction,
+  updateStaffPayoutSettingsAction,
+  updateOwnerPayoutPolicyAction,
   updateStaffInstructorStatusAction,
 } from "@/app/director/staff/actions";
 import { Button } from "@/components/ui/button";
@@ -42,14 +49,24 @@ import { getPublicOrigin } from "@/lib/public-origin";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
+import {
+  ensureInstructorPayoutSettingsForOrganization,
+  getInstructorPayoutSetup,
+  getOwnerPayoutPolicy,
+  type InstructorPayoutSetup,
+} from "@/lib/instructor-payouts";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
+  BookingCategory,
   Instructor,
+  InstructorPayoutRateRule,
+  LessonType,
   LessonState,
   ScheduleDay,
+  School,
   Slot,
   StaffInvitation,
 } from "@/lib/types";
@@ -59,6 +76,7 @@ export const dynamic = "force-dynamic";
 type StaffInstructor = Instructor & {
   organization_id: string;
   is_active: boolean;
+  photo_url: string | null;
 };
 
 type StaffBooking = Pick<Booking, "id" | "slot_id"> & {
@@ -88,9 +106,19 @@ type StaffStats = {
   weekDebtAmount: number;
 };
 
+type StaffPayoutPanelProps = {
+  instructor: StaffInstructor;
+  payoutSetup: InstructorPayoutSetup | null;
+  schools: School[];
+  lessonTypes: LessonType[];
+  currentDate: string;
+  defaultOpen?: boolean;
+};
+
 type DirectorStaffPageProps = {
   searchParams?: Promise<{
     invite?: string;
+    staff?: string;
   }>;
 };
 
@@ -169,11 +197,426 @@ function getInviteStatusMessage(status?: string) {
       return "Доступ сотрудника обновлён.";
     case "staff-deleted":
       return "Сотрудник удалён из школы.";
+    case "payout-updated":
+      return "Настройки выплат сотруднику сохранены.";
+    case "payout-rate-created":
+      return "Ставка выплаты сотруднику добавлена.";
+    case "payout-rate-disabled":
+      return "Ставка выплаты сотруднику отключена.";
+    case "payout-paid":
+      return "Выдача денег сотруднику отмечена.";
+    case "payout-backfilled":
+      return "Начисления по старым записям обновлены.";
+    case "owner-payout-updated":
+      return "Настройка выплат владельцу сохранена.";
     case "error":
       return "Не удалось выполнить действие. Проверьте миграцию и служебный ключ проекта.";
     default:
       return null;
   }
+}
+
+function getAccrualPolicyLabel(value: string) {
+  return value === "prepaid" ? "Предоплата" : "Постоплата";
+}
+
+function getSourceVisibilityLabel(value: string) {
+  return value === "selected_only" ? "Только выбранные" : "Все активные";
+}
+
+function getBookingCategoryLabel(value: BookingCategory | null) {
+  if (value === "regular") return "обычная запись";
+  if (value === "extra") return "доп. занятие";
+  if (value === "gift") return "подарочное";
+  return "любая запись";
+}
+
+function getRuleLabel(
+  rule: InstructorPayoutRateRule,
+  schoolById: Map<string, School>,
+  lessonTypeById: Map<string, LessonType>,
+) {
+  const source = rule.school_id
+    ? schoolById.get(rule.school_id)?.name ?? "источник удалён"
+    : "любой источник";
+  const lessonType = rule.lesson_type_id
+    ? lessonTypeById.get(rule.lesson_type_id)?.name ?? "тип удалён"
+    : "любой тип";
+
+  return `${source} · ${lessonType} · ${getBookingCategoryLabel(rule.booking_category)}`;
+}
+
+function StaffPayoutPanel({
+  instructor,
+  payoutSetup,
+  schools,
+  lessonTypes,
+  currentDate,
+  defaultOpen = false,
+}: StaffPayoutPanelProps) {
+  if (!payoutSetup) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+        Выплаты появятся после применения миграции PostgreSQL.
+      </div>
+    );
+  }
+
+  const activeSchools = schools.filter((school) => school.is_active !== false);
+  const activeLessonTypes = lessonTypes.filter(
+    (lessonType) => lessonType.is_active !== false,
+  );
+  const visibleSchoolIds = new Set(
+    payoutSetup.sourceVisibility
+      .filter((item) => item.is_visible)
+      .map((item) => item.school_id),
+  );
+  const schoolById = new Map(schools.map((school) => [school.id, school]));
+  const lessonTypeById = new Map(
+    lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
+  );
+  const activeRateRules = payoutSetup.rateRules.filter((rule) => rule.is_active);
+  const inactiveRateCount = payoutSetup.rateRules.length - activeRateRules.length;
+
+  return (
+    <details
+      className="group mt-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 shadow-sm open:bg-zinc-50/70"
+      open={defaultOpen}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-100/80">
+        <span>Выплаты</span>
+        <ChevronDown className="size-4 text-emerald-700 transition group-open:rotate-180" />
+      </summary>
+
+      <div className="mt-3 space-y-3">
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">Запланировано</p>
+            <p className="font-semibold">
+              {formatMoney(payoutSetup.summary.planned_amount)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">Выдано</p>
+            <p className="font-semibold">
+              {formatMoney(payoutSetup.summary.paid_amount)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2">
+            <p className="text-xs text-zinc-500">К выдаче</p>
+            <p className="font-semibold">
+              {formatMoney(payoutSetup.summary.remaining_amount)}
+            </p>
+          </div>
+        </div>
+
+        {payoutSetup.summary.remaining_amount > 0 && (
+          <form
+            action={createStaffPayoutPaymentAction}
+            className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3"
+          >
+            <input type="hidden" name="instructor_id" value={instructor.id} />
+            <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-end">
+              <label className="space-y-2 text-sm font-medium">
+                <span>Выдано, ₽</span>
+                <input
+                  type="number"
+                  name="amount"
+                  min={1}
+                  max={payoutSetup.summary.remaining_amount}
+                  defaultValue={payoutSetup.summary.remaining_amount}
+                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+                />
+              </label>
+              <label className="space-y-2 text-sm font-medium">
+                <span>Комментарий</span>
+                <input
+                  name="payment_note"
+                  maxLength={500}
+                  placeholder="Например: переводом за неделю"
+                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+                />
+              </label>
+              <Button type="submit" className="h-10 shadow-md shadow-emerald-950/15">
+                Отметить выдачу
+              </Button>
+            </div>
+            <p className="text-xs leading-5 text-emerald-900">
+              После сохранения сумма перейдёт из “к выдаче” в “выдано”. Если
+              указать часть суммы, остаток останется к выдаче.
+            </p>
+          </form>
+        )}
+
+        <form action={updateStaffPayoutSettingsAction} className="space-y-3 rounded-xl border bg-white p-3">
+          <input type="hidden" name="instructor_id" value={instructor.id} />
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-2 text-sm font-medium">
+              <span>Когда начислять инструктору</span>
+              <select
+                name="accrual_policy"
+                defaultValue={payoutSetup.settings.accrual_policy}
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              >
+                <option value="postpaid">Постоплата: после проведённого занятия</option>
+                <option value="prepaid">Предоплата: сразу после записи ученика</option>
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Лимит занятий в неделю</span>
+              <input
+                type="number"
+                name="weekly_lesson_limit"
+                min={1}
+                max={200}
+                defaultValue={payoutSetup.settings.weekly_lesson_limit ?? ""}
+                placeholder="Без лимита"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              />
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Источники в кабинете инструктора</span>
+              <select
+                name="source_visibility_mode"
+                defaultValue={payoutSetup.settings.source_visibility_mode}
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              >
+                <option value="all_active">Показывать все активные</option>
+                <option value="selected_only">Показывать только выбранные</option>
+              </select>
+            </label>
+
+            <label className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                name="show_client_prices"
+                value="true"
+                defaultChecked={payoutSetup.settings.show_client_prices}
+                className="size-4"
+              />
+              Инструктор видит цены ученика
+            </label>
+
+            <label className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                name="can_manage_student_packages"
+                value="true"
+                defaultChecked={payoutSetup.settings.can_manage_student_packages}
+                className="size-4"
+              />
+              Может добавлять и менять доп. доступы учеников
+            </label>
+          </div>
+
+          {activeSchools.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-zinc-600">
+                Какие источники доступны сотруднику, если выбран режим “только выбранные”
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {activeSchools.map((school) => (
+                  <label
+                    key={school.id}
+                    className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-medium"
+                  >
+                    <input
+                      type="checkbox"
+                      name="visible_school_id"
+                      value={school.id}
+                      defaultChecked={
+                        payoutSetup.settings.source_visibility_mode === "all_active" ||
+                        visibleSchoolIds.has(school.id)
+                      }
+                      className="size-4"
+                    />
+                    {school.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Button type="submit" variant="accent" className="h-10 w-full">
+            Сохранить выплаты и источники
+          </Button>
+        </form>
+
+        <form action={createStaffPayoutRateRuleAction} className="space-y-3 rounded-xl border bg-white p-3">
+          <input type="hidden" name="instructor_id" value={instructor.id} />
+          <p className="text-sm font-semibold">Добавить ставку</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-2 text-sm font-medium">
+              <span>Сумма инструктору за занятие</span>
+              <input
+                type="number"
+                name="amount"
+                min={0}
+                max={10000000}
+                required
+                placeholder="1200"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              />
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Действует с даты</span>
+              <input
+                type="date"
+                name="effective_from"
+                required
+                defaultValue={currentDate}
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              />
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Источник</span>
+              <select
+                name="school_id"
+                defaultValue="all"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              >
+                <option value="all">Любой источник</option>
+                {activeSchools.map((school) => (
+                  <option key={school.id} value={school.id}>
+                    {school.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Тип занятия</span>
+              <select
+                name="lesson_type_id"
+                defaultValue="all"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              >
+                <option value="all">Любой тип</option>
+                {activeLessonTypes.map((lessonType) => (
+                  <option key={lessonType.id} value={lessonType.id}>
+                    {lessonType.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Категория записи</span>
+              <select
+                name="booking_category"
+                defaultValue="all"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              >
+                <option value="all">Любая запись</option>
+                <option value="regular">Обычная</option>
+                <option value="extra">Доп. занятие</option>
+                <option value="gift">Подарочная</option>
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm font-medium">
+              <span>Действует до даты</span>
+              <input
+                type="date"
+                name="effective_to"
+                className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+              />
+            </label>
+          </div>
+
+          <label className="space-y-2 text-sm font-medium">
+            <span>Комментарий</span>
+            <input
+              name="note"
+              maxLength={300}
+              placeholder="Например: базовая ставка"
+              className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+            />
+          </label>
+
+          <Button type="submit" className="h-10 w-full shadow-md shadow-zinc-950/15">
+            Добавить ставку
+          </Button>
+        </form>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold">Активные ставки</p>
+            <p className="text-xs text-zinc-500">
+              {getAccrualPolicyLabel(payoutSetup.settings.accrual_policy)} ·{" "}
+              {getSourceVisibilityLabel(payoutSetup.settings.source_visibility_mode)}
+            </p>
+          </div>
+
+          {activeRateRules.length === 0 ? (
+            <div className="rounded-xl border border-dashed bg-white px-3 py-4 text-center text-sm text-zinc-500">
+              Ставок пока нет. Начисления не будут создаваться, пока руководитель
+              не задаст сумму.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {activeRateRules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="flex flex-col gap-3 rounded-xl border bg-white px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="font-semibold">{formatMoney(rule.amount)}</p>
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      {getRuleLabel(rule, schoolById, lessonTypeById)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      c {formatDate(rule.effective_from)}
+                      {rule.effective_to ? ` до ${formatDate(rule.effective_to)}` : ""}
+                      {rule.note ? ` · ${rule.note}` : ""}
+                    </p>
+                  </div>
+                  <form action={disableStaffPayoutRateRuleAction}>
+                    <input type="hidden" name="rule_id" value={rule.id} />
+                    <Button type="submit" variant="outline" className="h-9 w-full sm:w-auto">
+                      Отключить
+                    </Button>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {inactiveRateCount > 0 && (
+            <p className="text-xs text-zinc-500">
+              Отключённых ставок: {inactiveRateCount}. Они оставлены в истории.
+            </p>
+          )}
+        </div>
+
+        <form
+          action={backfillStaffPayoutEntriesAction}
+          className="rounded-xl border border-blue-200 bg-blue-50/70 p-3"
+        >
+          <input type="hidden" name="instructor_id" value={instructor.id} />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-blue-950">
+                Начисления по старым записям
+              </p>
+              <p className="mt-1 text-xs leading-5 text-blue-900">
+                Используйте после настройки ставок. Повторный запуск не создаст
+                дубли по тем записям, где начисление уже есть.
+              </p>
+            </div>
+            <Button type="submit" variant="accent" className="h-10">
+              Начислить старые записи
+            </Button>
+          </div>
+        </form>
+      </div>
+    </details>
+  );
 }
 
 function InviteStatusMessage({ status }: { status?: string }) {
@@ -288,49 +731,98 @@ function StaffCard({
   isPending,
   member,
   contact,
+  payoutSetup,
+  schools,
+  lessonTypes,
+  currentDate,
+  includeOwnerInPayouts,
+  defaultOpen = false,
 }: {
   instructor: StaffInstructor;
   stats: StaffStats;
   isPending?: boolean;
   member?: StaffMember;
   contact?: StaffContact;
+  payoutSetup?: InstructorPayoutSetup | null;
+  schools: School[];
+  lessonTypes: LessonType[];
+  currentDate: string;
+  includeOwnerInPayouts: boolean;
+  defaultOpen?: boolean;
 }) {
   const isOwner = member?.role === "owner";
   const contactItems = [contact?.email, contact?.phone].filter(
     (item): item is string => Boolean(item),
   );
+  const payoutRemaining = payoutSetup?.summary.remaining_amount ?? 0;
+  const instructorName = instructor.public_name ?? instructor.name;
+  const initials = instructorName.trim().slice(0, 1).toUpperCase() || "И";
 
   return (
-    <article className="rounded-2xl border bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-lg font-semibold">
-            {instructor.public_name ?? instructor.name}
-          </h2>
-          {contactItems.length > 0 ? (
-            <div className="text-muted-foreground mt-1 space-y-0.5 text-sm">
-              {contactItems.map((item) => (
-                <p key={item} className="truncate">
-                  {item}
-                </p>
-              ))}
+    <details
+      className="group rounded-2xl border bg-white shadow-sm"
+      open={defaultOpen}
+    >
+      <summary className="grid cursor-pointer list-none gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1.2fr)_auto] sm:items-center">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-zinc-100 text-sm font-semibold text-zinc-600 shadow-sm">
+            {instructor.photo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={instructor.photo_url}
+                alt={instructorName}
+                className="size-full object-cover"
+              />
+            ) : (
+              initials
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 className="truncate text-base font-semibold">
+                {instructorName}
+              </h2>
+              {isOwner ? (
+                <span className="rounded-full bg-zinc-950 px-2 py-1 text-xs font-semibold text-white">
+                  Руководитель
+                </span>
+              ) : (
+                <StatusPill
+                  isActive={instructor.is_active}
+                  isPending={isPending}
+                />
+              )}
             </div>
-          ) : (
-            <p className="text-muted-foreground mt-1 text-sm">
-              Контакты не указаны
+            <p className="text-muted-foreground mt-1 truncate text-sm">
+              {contactItems.length > 0
+                ? contactItems.join(" · ")
+                : "Контакты не указаны"}
             </p>
-          )}
+          </div>
         </div>
-        {isOwner ? (
-          <span className="rounded-full bg-zinc-950 px-2 py-1 text-xs font-semibold text-white">
-            Руководитель
-          </span>
-        ) : (
-          <StatusPill isActive={instructor.is_active} isPending={isPending} />
-        )}
-      </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2 text-sm sm:min-w-[420px]">
+          <div className="rounded-xl bg-zinc-50 px-3 py-2">
+            <p className="text-xs text-zinc-500">Ученики</p>
+            <p className="font-semibold">{stats.studentCount}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 px-3 py-2">
+            <p className="text-xs text-zinc-500">Записи</p>
+            <p className="font-semibold">{stats.weekBookings}</p>
+          </div>
+          <div className="rounded-xl bg-emerald-50 px-3 py-2">
+            <p className="text-xs text-emerald-700">
+              {isOwner ? "Неделя" : "К выдаче"}
+            </p>
+            <p className="font-semibold text-emerald-950">
+              {formatMoney(isOwner ? stats.weekPaidAmount : payoutRemaining)}
+            </p>
+          </div>
+        </div>
+      </summary>
+
+      <div className="border-t px-4 pb-4 pt-4">
+      <div className="grid grid-cols-2 gap-2">
         <div className="rounded-xl bg-zinc-50 px-3 py-2">
           <p className="text-xs text-zinc-500">Ученики</p>
           <p className="mt-1 text-lg font-semibold">{stats.studentCount}</p>
@@ -362,6 +854,24 @@ function StaffCard({
             {formatMoney(stats.weekDebtAmount)}
           </p>
         </div>
+      )}
+
+      {isOwner && !includeOwnerInPayouts && (
+        <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+          Выплаты владельцу выключены. Занятия руководителя не уменьшают маржу
+          школы и не попадают в начисления.
+        </div>
+      )}
+
+      {(!isOwner || includeOwnerInPayouts) && !isPending && (
+        <StaffPayoutPanel
+          instructor={instructor}
+          payoutSetup={payoutSetup ?? null}
+          schools={schools}
+          lessonTypes={lessonTypes}
+          currentDate={currentDate}
+          defaultOpen={defaultOpen}
+        />
       )}
 
       {!isOwner && !isPending && (
@@ -413,7 +923,8 @@ function StaffCard({
           </details>
         </div>
       )}
-    </article>
+      </div>
+    </details>
   );
 }
 
@@ -435,11 +946,17 @@ export default async function DirectorStaffPage({
 
   let instructors: StaffInstructor[] = [];
   let instructorError: { message: string } | null = null;
+  let includeOwnerInPayouts = false;
 
   if (postgresBackend) {
+    includeOwnerInPayouts = await getOwnerPayoutPolicy({
+      organizationId: membership.organizationId,
+    });
+
     instructors = await queryRows<StaffInstructor>(
       `
-        select id, organization_id, name, slug, public_name, timezone, is_active
+        select id, organization_id, name, slug, public_name, timezone, is_active,
+               photo_url
         from public.instructors
         where organization_id = $1
         order by name
@@ -450,7 +967,7 @@ export default async function DirectorStaffPage({
     const supabase = adminEnabled ? createAdminClient() : await createClient();
     const { data: instructorData, error } = await supabase
       .from("instructors")
-      .select("id, organization_id, name, slug, public_name, timezone, is_active")
+      .select("id, organization_id, name, slug, public_name, timezone, is_active, photo_url")
       .eq("organization_id", membership.organizationId)
       .order("name");
     instructors = (instructorData ?? []) as StaffInstructor[];
@@ -612,11 +1129,14 @@ export default async function DirectorStaffPage({
   const slotIds = slots.map((slot) => slot.id);
   let bookingData: StaffBooking[] = [];
   let invitationData: StaffInvitation[] = [];
+  let schools: School[] = [];
+  let lessonTypes: LessonType[] = [];
+  const payoutSetupByInstructorId = new Map<string, InstructorPayoutSetup>();
   let bookingError: { message: string } | null = null;
   let invitationError: { message: string } | null = null;
 
   if (postgresBackend) {
-    [bookingData, invitationData] = await Promise.all([
+    [bookingData, invitationData, schools, lessonTypes] = await Promise.all([
       slotIds.length > 0
         ? queryRows<StaffBooking>(
             `
@@ -643,7 +1163,48 @@ export default async function DirectorStaffPage({
         `,
         [membership.organizationId],
       ),
+      queryRows<School>(
+        `
+          select id, organization_id, name, color, default_price, payment_rule,
+                 is_active, created_at::text as created_at, updated_at::text as updated_at
+          from public.schools
+          where organization_id = $1
+          order by name
+        `,
+        [membership.organizationId],
+      ),
+      queryRows<LessonType>(
+        `
+          select id, code, name, color, kind, description,
+                 default_duration_minutes, default_price_amount, tags,
+                 sort_order, is_active, requires_vehicle
+          from public.lesson_types
+          order by sort_order, name
+        `,
+      ),
     ]);
+
+    if (instructorIds.length > 0) {
+      await ensureInstructorPayoutSettingsForOrganization(
+        membership.organizationId,
+      );
+
+      const payoutSetups = await Promise.all(
+        instructorIds.map((instructorId) =>
+          getInstructorPayoutSetup({
+            organizationId: membership.organizationId,
+            instructorId,
+          }),
+        ),
+      );
+
+      for (const payoutSetup of payoutSetups) {
+        payoutSetupByInstructorId.set(
+          payoutSetup.settings.instructor_id,
+          payoutSetup,
+        );
+      }
+    }
   } else {
     const supabase = adminEnabled ? createAdminClient() : await createClient();
     const { data: bookingResult, error: bookingLoadError } =
@@ -824,6 +1385,48 @@ export default async function DirectorStaffPage({
 
         <Card>
           <CardHeader className="pb-3">
+            <CardTitle>Выплаты владельцу</CardTitle>
+            <CardDescription>
+              Управляет тем, уменьшают ли занятия руководителя маржу школы.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!postgresBackend ? (
+              <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Настройка доступна после перехода на PostgreSQL.
+              </div>
+            ) : (
+              <form action={updateOwnerPayoutPolicyAction} className="space-y-3">
+                <label className="flex items-start gap-3 rounded-xl border bg-zinc-50 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    name="include_owner_in_payouts"
+                    value="true"
+                    defaultChecked={includeOwnerInPayouts}
+                    className="mt-1 size-4 shrink-0"
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-zinc-950">
+                      Учитывать занятия владельца в выплатах
+                    </span>
+                    <span className="mt-1 block text-sm leading-5 text-zinc-600">
+                      Если выключено, руководитель остаётся владельцем школы, но
+                      его занятия не считаются зарплатой и не уменьшают маржу.
+                      Если включено, владельцу можно настроить ставку, начислять
+                      выплаты и отмечать выдачу денег как обычному инструктору.
+                    </span>
+                  </span>
+                </label>
+                <Button type="submit" variant="accent" className="h-10">
+                  Сохранить настройку
+                </Button>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
@@ -838,7 +1441,7 @@ export default async function DirectorStaffPage({
                 nativeButton={false}
                 render={<Link href="/director/schedule" />}
                 variant="outline"
-                className="h-9"
+                className="h-9 shadow-sm"
               >
                 <CalendarDays className="size-4" />
                 Открыть расписание
@@ -851,7 +1454,7 @@ export default async function DirectorStaffPage({
                 Сотрудников пока нет.
               </div>
             ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
+              <div className="space-y-3">
                 {instructors.map((instructor) => (
                   <StaffCard
                     key={instructor.id}
@@ -859,6 +1462,12 @@ export default async function DirectorStaffPage({
                     isPending={pendingInstructorIds.has(instructor.id)}
                     member={membersByInstructorId.get(instructor.id)}
                     contact={contactsByInstructorId.get(instructor.id)}
+                    payoutSetup={payoutSetupByInstructorId.get(instructor.id) ?? null}
+                    schools={schools}
+                    lessonTypes={lessonTypes}
+                    currentDate={currentDate}
+                    includeOwnerInPayouts={includeOwnerInPayouts}
+                    defaultOpen={params?.staff === instructor.id}
                     stats={
                       statsByInstructorId.get(instructor.id) ?? createEmptyStats()
                     }
@@ -916,10 +1525,10 @@ export default async function DirectorStaffPage({
                     maxLength={40}
                   />
                 </div>
-                <Button type="submit" className="h-10 sm:col-span-3">
-                  <Link2 className="size-4" />
-                  Создать ссылку
-                </Button>
+            <Button type="submit" className="h-10 shadow-md shadow-zinc-950/15 sm:col-span-3">
+              <Link2 className="size-4" />
+              Создать ссылку
+            </Button>
               </form>
             )}
           </CardContent>

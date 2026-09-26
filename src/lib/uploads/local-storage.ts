@@ -35,7 +35,7 @@ export async function saveLocalImageUpload({
   maxSize,
 }: {
   file: File;
-  bucket: "instructor-photos" | "public-site";
+  bucket: "instructor-photos" | "public-site" | "student-avatars";
   maxSize: number;
 }) {
   const extension = ALLOWED_IMAGE_TYPES.get(file.type);

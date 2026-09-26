@@ -1,4 +1,5 @@
 import { CircleDollarSign } from "lucide-react";
+import { createDirectorReportPayoutPaymentAction } from "@/app/director/reports/actions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,6 +24,10 @@ import {
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { getBookingCategoryLabel } from "@/lib/booking-categories";
 import { queryRows } from "@/lib/db/postgres";
+import {
+  getOwnerInstructorIds,
+  getOwnerPayoutPolicy,
+} from "@/lib/instructor-payouts";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
@@ -44,6 +49,7 @@ type DirectorReportsPageProps = {
     from?: string;
     to?: string;
     instructor?: string;
+    payout?: string;
   }>;
 };
 
@@ -76,10 +82,32 @@ type MoneyGroup = {
   count: number;
   completedCount: number;
   hours: number;
+  totalStudentAmount: number;
   plannedAmount: number;
   earnedAmount: number;
   paidAmount: number;
   debtAmount: number;
+  instructorPayoutAmount: number;
+  instructorPaidAmount: number;
+  instructorRemainingAmount: number;
+  marginAmount: number;
+};
+
+type PayoutGroup = {
+  id: string;
+  amount: number;
+  paid_amount: number;
+  remaining_amount: number;
+};
+
+type PayoutSummary = {
+  amount: number;
+  paid_amount: number;
+  remaining_amount: number;
+};
+
+type InstructorPayoutQuickItem = PayoutGroup & {
+  instructor: Instructor;
 };
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -158,13 +186,19 @@ function addToGroup(
       count: 0,
       completedCount: 0,
       hours: 0,
+      totalStudentAmount: 0,
       plannedAmount: 0,
       earnedAmount: 0,
       paidAmount: 0,
       debtAmount: 0,
+      instructorPayoutAmount: 0,
+      instructorPaidAmount: 0,
+      instructorRemainingAmount: 0,
+      marginAmount: 0,
     } satisfies MoneyGroup);
 
   current.count += 1;
+  current.totalStudentAmount += item.price_amount ?? 0;
   current.paidAmount += getPaidAmount(item);
   current.debtAmount += getDebtAmount(item);
 
@@ -178,7 +212,27 @@ function addToGroup(
     current.earnedAmount += item.price_amount ?? 0;
   }
 
+  current.marginAmount = current.paidAmount - current.instructorPayoutAmount;
+
   map.set(key, current);
+}
+
+function attachPayoutsToGroups(
+  groups: Map<string, MoneyGroup>,
+  payoutGroups: PayoutGroup[],
+) {
+  for (const payout of payoutGroups) {
+    const group = groups.get(payout.id);
+
+    if (!group) {
+      continue;
+    }
+
+    group.instructorPayoutAmount = payout.amount;
+    group.instructorPaidAmount = payout.paid_amount;
+    group.instructorRemainingAmount = payout.remaining_amount;
+    group.marginAmount = group.paidAmount - payout.amount;
+  }
 }
 
 function SummaryCard({
@@ -245,6 +299,201 @@ function PeriodButton({
   );
 }
 
+function MoneyGroupMetric({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "emerald" | "amber" | "blue" | "red";
+}) {
+  const toneClassName =
+    tone === "emerald"
+      ? "bg-emerald-50 text-emerald-800"
+      : tone === "amber"
+        ? "bg-amber-50 text-amber-800"
+        : tone === "blue"
+          ? "bg-blue-50 text-blue-800"
+          : tone === "red"
+            ? "bg-red-50 text-red-800"
+            : "bg-zinc-50 text-zinc-800";
+
+  return (
+    <div className={`rounded-xl px-3 py-2 ${toneClassName}`}>
+      <p className="text-[11px] font-medium uppercase tracking-wide opacity-70">
+        {label}
+      </p>
+      <p className="mt-1 whitespace-nowrap text-sm font-semibold tabular-nums">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function PayoutReturnFields({
+  selectedPeriod,
+  from,
+  to,
+  selectedInstructorId,
+}: {
+  selectedPeriod: string;
+  from: string;
+  to: string;
+  selectedInstructorId: string;
+}) {
+  return (
+    <>
+      <input type="hidden" name="return_period" value={selectedPeriod} />
+      <input type="hidden" name="return_from" value={from} />
+      <input type="hidden" name="return_to" value={to} />
+      <input type="hidden" name="return_instructor" value={selectedInstructorId} />
+    </>
+  );
+}
+
+function InstructorPayoutQuickPanel({
+  items,
+  selectedPeriod,
+  from,
+  to,
+  selectedInstructorId,
+  status,
+}: {
+  items: InstructorPayoutQuickItem[];
+  selectedPeriod: string;
+  from: string;
+  to: string;
+  selectedInstructorId: string;
+  status?: string;
+}) {
+  if (items.length === 0 && !status) {
+    return null;
+  }
+
+  const statusMessage =
+    status === "paid"
+      ? "Выдача денег инструктору отмечена."
+      : status === "error"
+        ? "Не удалось отметить выдачу. Проверьте сумму и остаток к выдаче."
+        : null;
+
+  return (
+    <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Расчёты с инструкторами</h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Общий остаток по выплатам. Выдачу можно отметить прямо здесь.
+          </p>
+        </div>
+        {statusMessage && (
+          <div
+            className={`rounded-xl px-3 py-2 text-sm ${
+              status === "error"
+                ? "bg-red-50 text-red-700"
+                : "bg-emerald-50 text-emerald-800"
+            }`}
+          >
+            {statusMessage}
+          </div>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          По инструкторам нет открытого остатка к выдаче.
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          {items.map((item) => {
+            const instructorName =
+              item.instructor.public_name ?? item.instructor.name;
+            const schoolOwesInstructor = item.remaining_amount > 0;
+
+            return (
+              <div
+                key={item.id}
+                className={`rounded-2xl border p-3 ${
+                  schoolOwesInstructor
+                    ? "border-amber-200 bg-amber-50/70"
+                    : "border-red-200 bg-red-50/70"
+                }`}
+              >
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{instructorName}</p>
+                    <p
+                      className={`mt-1 text-sm ${
+                        schoolOwesInstructor ? "text-amber-800" : "text-red-800"
+                      }`}
+                    >
+                      {schoolOwesInstructor
+                        ? `Школа должна: ${formatMoney(item.remaining_amount)}`
+                        : `Инструктор должен школе: ${formatMoney(Math.abs(item.remaining_amount))}`}
+                    </p>
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      Начислено {formatMoney(item.amount)} · выдано{" "}
+                      {formatMoney(item.paid_amount)}
+                    </p>
+                  </div>
+
+                  {schoolOwesInstructor ? (
+                    <form
+                      action={createDirectorReportPayoutPaymentAction}
+                      className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)_auto] sm:items-end"
+                    >
+                      <PayoutReturnFields
+                        selectedPeriod={selectedPeriod}
+                        from={from}
+                        to={to}
+                        selectedInstructorId={selectedInstructorId}
+                      />
+                      <input
+                        type="hidden"
+                        name="instructor_id"
+                        value={item.instructor.id}
+                      />
+                      <label className="space-y-1 text-xs font-medium">
+                        <span>Сумма</span>
+                        <input
+                          type="number"
+                          name="amount"
+                          min={1}
+                          max={item.remaining_amount}
+                          defaultValue={item.remaining_amount}
+                          className="h-9 w-full rounded-xl border bg-white px-3 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs font-medium">
+                        <span>Комментарий</span>
+                        <input
+                          name="payment_note"
+                          maxLength={500}
+                          placeholder="Например: переводом"
+                          className="h-9 w-full rounded-xl border bg-white px-3 text-sm"
+                        />
+                      </label>
+                      <Button type="submit" className="h-9 shadow-md shadow-emerald-950/15">
+                        Отметить выдачу
+                      </Button>
+                    </form>
+                  ) : (
+                    <div className="rounded-xl bg-white/70 px-3 py-2 text-xs leading-5 text-red-800">
+                      Это отрицательная корректировка. Денежную выдачу здесь
+                      отмечать не нужно.
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function MoneyGroupTable({
   title,
   description,
@@ -266,55 +515,67 @@ function MoneyGroupTable({
             Нет данных за выбранный период.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
-              <thead className="text-xs uppercase tracking-wide text-zinc-500">
-                <tr className="border-b">
-                  <th className="py-3 pr-3 font-semibold">Название</th>
-                  <th className="py-3 pr-3 text-right font-semibold">Занятий</th>
-                  <th className="py-3 pr-3 text-right font-semibold">Проведено</th>
-                  <th className="py-3 pr-3 text-right font-semibold">Часов</th>
-                  <th className="py-3 pr-3 text-right font-semibold">План</th>
-                  <th className="py-3 pr-3 text-right font-semibold">Получено</th>
-                  <th className="py-3 text-right font-semibold">Долг</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groups.map((group) => (
-                  <tr key={group.id} className="border-b last:border-0">
-                    <td className="py-3 pr-3">
-                      <div className="flex items-center gap-2">
-                        {group.color && (
-                          <span
-                            className="size-3 rounded-full border border-black/10"
-                            style={{ backgroundColor: group.color }}
-                          />
-                        )}
-                        <span className="font-semibold">{group.label}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 pr-3 text-right tabular-nums">
-                      {group.count}
-                    </td>
-                    <td className="py-3 pr-3 text-right tabular-nums">
-                      {group.completedCount}
-                    </td>
-                    <td className="py-3 pr-3 text-right tabular-nums">
-                      {formatHours(group.hours)}
-                    </td>
-                    <td className="py-3 pr-3 text-right font-semibold tabular-nums">
-                      {formatMoney(group.plannedAmount)}
-                    </td>
-                    <td className="py-3 pr-3 text-right font-semibold tabular-nums text-emerald-700">
-                      {formatMoney(group.paidAmount)}
-                    </td>
-                    <td className="py-3 text-right font-semibold tabular-nums text-amber-700">
-                      {formatMoney(group.debtAmount)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-3">
+            {groups.map((group) => (
+              <div key={group.id} className="rounded-2xl border bg-white p-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {group.color && (
+                        <span
+                          className="size-3 shrink-0 rounded-full border border-black/10"
+                          style={{ backgroundColor: group.color }}
+                        />
+                      )}
+                      <h3 className="truncate text-sm font-semibold">
+                        {group.label}
+                      </h3>
+                    </div>
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      {group.count} занятий · {group.completedCount} проведено ·{" "}
+                      {formatHours(group.hours)} ч
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <MoneyGroupMetric
+                      label="Стоимость"
+                      value={formatMoney(group.totalStudentAmount)}
+                    />
+                    <MoneyGroupMetric
+                      label="Получено"
+                      value={formatMoney(group.paidAmount)}
+                      tone="emerald"
+                    />
+                    <MoneyGroupMetric
+                      label="Начислено"
+                      value={formatMoney(group.instructorPayoutAmount)}
+                      tone="blue"
+                    />
+                    <MoneyGroupMetric
+                      label="Выдано"
+                      value={formatMoney(group.instructorPaidAmount)}
+                      tone="emerald"
+                    />
+                    <MoneyGroupMetric
+                      label="К выдаче"
+                      value={formatMoney(group.instructorRemainingAmount)}
+                      tone="amber"
+                    />
+                    <MoneyGroupMetric
+                      label="Маржа"
+                      value={formatMoney(group.marginAmount)}
+                      tone={group.marginAmount < 0 ? "red" : "default"}
+                    />
+                    <MoneyGroupMetric
+                      label="Долг"
+                      value={formatMoney(group.debtAmount)}
+                      tone="amber"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </CardContent>
@@ -371,6 +632,18 @@ export default async function DirectorReportsPage({
   const reportInstructorIds = selectedInstructor
     ? [selectedInstructor.id]
     : instructors.map((instructor) => instructor.id);
+  const [includeOwnerInPayouts, ownerInstructorIds] = postgresBackend
+    ? await Promise.all([
+        getOwnerPayoutPolicy({ organizationId: membership.organizationId }),
+        getOwnerInstructorIds({ organizationId: membership.organizationId }),
+      ])
+    : [true, []];
+  const ownerInstructorIdSet = new Set(ownerInstructorIds);
+  const payoutInstructorIds = includeOwnerInPayouts
+    ? reportInstructorIds
+    : reportInstructorIds.filter(
+        (instructorId) => !ownerInstructorIdSet.has(instructorId),
+      );
   await autoCompletePastBookings({ instructorIds: reportInstructorIds });
 
   let schools: School[] = [];
@@ -580,17 +853,6 @@ export default async function DirectorReportsPage({
   const completedItems = reportItems.filter(
     (item) => item.lesson_state === "completed",
   );
-  const plannedItems = reportItems.filter(
-    (item) => item.lesson_state === "scheduled",
-  );
-  const plannedAmount = plannedItems.reduce(
-    (sum, item) => sum + (item.price_amount ?? 0),
-    0,
-  );
-  const earnedAmount = completedItems.reduce(
-    (sum, item) => sum + (item.price_amount ?? 0),
-    0,
-  );
   const paidAmount = reportItems.reduce(
     (sum, item) => sum + getPaidAmount(item),
     0,
@@ -606,6 +868,115 @@ export default async function DirectorReportsPage({
     (sum, item) => sum + getDurationHours(item.slot),
     0,
   );
+  const [
+    payoutSummary,
+    payoutByInstructor,
+    payoutBySchool,
+    payoutByBookingCategory,
+    allTimePayoutByInstructor,
+  ] =
+    postgresBackend && payoutInstructorIds.length > 0
+      ? await Promise.all([
+          queryRows<PayoutSummary>(
+            `
+              select coalesce(sum(amount), 0)::integer as amount,
+                     coalesce(sum(paid_amount), 0)::integer as paid_amount,
+                     coalesce(sum(remaining_amount), 0)::integer as remaining_amount
+              from public.instructor_payout_entry_balances
+              where organization_id = $1
+                and instructor_id = any($2::uuid[])
+                and status = 'planned'
+                and coalesce(event_at, planned_at)::date >= $3::date
+                and coalesce(event_at, planned_at)::date <= $4::date
+            `,
+            [membership.organizationId, payoutInstructorIds, from, to],
+          ).then(
+            (rows) =>
+              rows[0] ?? {
+                amount: 0,
+                paid_amount: 0,
+                remaining_amount: 0,
+              },
+          ),
+          queryRows<PayoutGroup>(
+            `
+              select instructor_id::text as id,
+                     coalesce(sum(amount), 0)::integer as amount,
+                     coalesce(sum(paid_amount), 0)::integer as paid_amount,
+                     coalesce(sum(remaining_amount), 0)::integer as remaining_amount
+              from public.instructor_payout_entry_balances
+              where organization_id = $1
+                and instructor_id = any($2::uuid[])
+                and status = 'planned'
+                and coalesce(event_at, planned_at)::date >= $3::date
+                and coalesce(event_at, planned_at)::date <= $4::date
+              group by instructor_id
+            `,
+            [membership.organizationId, payoutInstructorIds, from, to],
+          ),
+          queryRows<PayoutGroup>(
+            `
+              select coalesce(school_id::text, 'without-school') as id,
+                     coalesce(sum(amount), 0)::integer as amount,
+                     coalesce(sum(paid_amount), 0)::integer as paid_amount,
+                     coalesce(sum(remaining_amount), 0)::integer as remaining_amount
+              from public.instructor_payout_entry_balances
+              where organization_id = $1
+                and instructor_id = any($2::uuid[])
+                and status = 'planned'
+                and coalesce(event_at, planned_at)::date >= $3::date
+                and coalesce(event_at, planned_at)::date <= $4::date
+              group by coalesce(school_id::text, 'without-school')
+            `,
+            [membership.organizationId, payoutInstructorIds, from, to],
+          ),
+          queryRows<PayoutGroup>(
+            `
+              select coalesce(bookings.booking_category, 'without-category') as id,
+                     coalesce(sum(entries.amount), 0)::integer as amount,
+                     coalesce(sum(entries.paid_amount), 0)::integer as paid_amount,
+                     coalesce(sum(entries.remaining_amount), 0)::integer as remaining_amount
+              from public.instructor_payout_entry_balances entries
+              left join public.bookings bookings on bookings.id = entries.booking_id
+              where entries.organization_id = $1
+                and entries.instructor_id = any($2::uuid[])
+                and entries.status = 'planned'
+                and coalesce(entries.event_at, entries.planned_at)::date >= $3::date
+                and coalesce(entries.event_at, entries.planned_at)::date <= $4::date
+              group by coalesce(bookings.booking_category, 'without-category')
+            `,
+            [membership.organizationId, payoutInstructorIds, from, to],
+          ),
+          queryRows<PayoutGroup>(
+            `
+              select instructor_id::text as id,
+                     coalesce(sum(amount), 0)::integer as amount,
+                     coalesce(sum(paid_amount), 0)::integer as paid_amount,
+                     coalesce(sum(remaining_amount), 0)::integer as remaining_amount
+              from public.instructor_payout_entry_balances
+              where organization_id = $1
+                and instructor_id = any($2::uuid[])
+                and status = 'planned'
+              group by instructor_id
+              having coalesce(sum(remaining_amount), 0) <> 0
+              order by coalesce(sum(remaining_amount), 0) desc
+            `,
+            [membership.organizationId, payoutInstructorIds],
+          ),
+        ])
+      : [
+          { amount: 0, paid_amount: 0, remaining_amount: 0 },
+          [],
+          [],
+          [],
+          [],
+        ];
+  const totalStudentAmount = reportItems.reduce(
+    (sum, item) => sum + (item.price_amount ?? 0),
+    0,
+  );
+  const marginAmount = paidAmount - payoutSummary.amount;
+  const potentialMarginAmount = totalStudentAmount - payoutSummary.amount;
   const byInstructor = new Map<string, MoneyGroup>();
   const bySchool = new Map<string, MoneyGroup>();
   const byStudent = new Map<string, MoneyGroup>();
@@ -634,14 +1005,32 @@ export default async function DirectorReportsPage({
     addToGroup(byStudent, item.student_label, item.student_label, item);
   }
 
+  attachPayoutsToGroups(byInstructor, payoutByInstructor);
+  attachPayoutsToGroups(bySchool, payoutBySchool);
+  attachPayoutsToGroups(byBookingCategory, payoutByBookingCategory);
+  const instructorPayoutQuickItems = allTimePayoutByInstructor
+    .map((item) => {
+      const instructor = instructorsById.get(item.id);
+
+      if (!instructor) {
+        return null;
+      }
+
+      return {
+        ...item,
+        instructor,
+      };
+    })
+    .filter((item): item is InstructorPayoutQuickItem => Boolean(item));
+
   const instructorGroups = [...byInstructor.values()].sort(
-    (first, second) => second.plannedAmount - first.plannedAmount,
+    (first, second) => second.totalStudentAmount - first.totalStudentAmount,
   );
   const schoolGroups = [...bySchool.values()].sort(
-    (first, second) => second.plannedAmount - first.plannedAmount,
+    (first, second) => second.totalStudentAmount - first.totalStudentAmount,
   );
   const bookingCategoryGroups = [...byBookingCategory.values()].sort(
-    (first, second) => second.plannedAmount - first.plannedAmount,
+    (first, second) => second.totalStudentAmount - first.totalStudentAmount,
   );
   const topDebtGroups = [...byStudent.values()]
     .filter((group) => group.debtAmount > 0)
@@ -670,30 +1059,62 @@ export default async function DirectorReportsPage({
           </div>
         )}
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryCard
-            label="План"
-            value={formatMoney(plannedAmount)}
-            hint={`${plannedItems.length} запланированных занятий`}
+            label="Стоимость занятий"
+            value={formatMoney(totalStudentAmount)}
+            hint={`${reportItems.length} записей за период`}
           />
           <SummaryCard
-            label="Заработано"
-            value={formatMoney(earnedAmount)}
-            hint={`${completedItems.length} проведено · ${formatHours(hours)} ч`}
-          />
-          <SummaryCard
-            label="Получено"
+            label="Получено от учеников"
             value={formatMoney(paidAmount)}
             hint={`${paidItemsCount} записей с оплатой`}
             tone="emerald"
           />
           <SummaryCard
-            label="Долг"
+            label="Долг учеников"
             value={formatMoney(debtAmount)}
             hint={`${debtItems.length} записей с долгом`}
             tone="amber"
           />
+          <SummaryCard
+            label="Начислено инструкторам"
+            value={formatMoney(payoutSummary.amount)}
+            hint={`${completedItems.length} проведено · ${formatHours(hours)} ч`}
+          />
+          <SummaryCard
+            label="Выдано инструкторам"
+            value={formatMoney(payoutSummary.paid_amount)}
+            hint="Отмечено руководителем как выдано"
+            tone="emerald"
+          />
+          <SummaryCard
+            label="К выдаче инструкторам"
+            value={formatMoney(payoutSummary.remaining_amount)}
+            hint="Начислено минус выдано"
+            tone="amber"
+          />
+          <SummaryCard
+            label="Маржа"
+            value={formatMoney(marginAmount)}
+            hint="Получено от учеников минус начислено инструкторам"
+            tone={marginAmount < 0 ? "amber" : "default"}
+          />
+          <SummaryCard
+            label="Потенциальная маржа"
+            value={formatMoney(potentialMarginAmount)}
+            hint="Стоимость занятий минус начислено инструкторам"
+          />
         </section>
+
+        <InstructorPayoutQuickPanel
+          items={instructorPayoutQuickItems}
+          selectedPeriod={selectedPeriod}
+          from={from}
+          to={to}
+          selectedInstructorId={selectedInstructorId}
+          status={params.payout}
+        />
 
         <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-3">
@@ -765,7 +1186,7 @@ export default async function DirectorReportsPage({
                   </select>
                 </div>
                 <div className="flex items-end">
-                  <Button type="submit" className="h-10 w-full">
+                  <Button type="submit" className="h-10 w-full shadow-md shadow-zinc-950/15">
                     Показать
                   </Button>
                 </div>

@@ -7,11 +7,21 @@ import {
   setAppUserSession,
 } from "@/lib/app-users/session";
 import { isPostgresBackend } from "@/lib/backend-mode";
+import {
+  checkLoginRateLimit,
+  clearLoginRateLimit,
+  getLoginRateLimitHelpText,
+  getLoginRateLimitMessage,
+  getRequestIp,
+  recordFailedLogin,
+} from "@/lib/auth/login-rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
 export type LoginActionState = {
   status: "idle" | "error";
   message: string;
+  retryAfterSeconds?: number;
+  helpText?: string;
 };
 
 export async function loginAction(
@@ -36,22 +46,44 @@ export async function loginAction(
   }
 
   if (isPostgresBackend()) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const ipAddress = await getRequestIp();
+    const rateLimit = await checkLoginRateLimit({
+      identifier: normalizedEmail,
+      ipAddress,
+    });
+
+    if (rateLimit.isBlocked) {
+      return {
+        status: "error",
+        message: getLoginRateLimitMessage(rateLimit.retryAfterSeconds),
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        helpText: getLoginRateLimitHelpText("руководителем"),
+      };
+    }
+
     const user = await verifyAppUserCredentials({
-      email: email.trim(),
+      email: normalizedEmail,
       password,
     });
 
     if (!user) {
+      await recordFailedLogin({
+        identifier: normalizedEmail,
+        ipAddress,
+      });
+
       return {
         status: "error",
         message: "Неверная эл. почта или пароль",
       };
     }
 
-    await setAppUserSession({
-      userId: user.id,
-      email: user.email,
+    await clearLoginRateLimit({
+      identifier: normalizedEmail,
+      ipAddress,
     });
+    await setAppUserSession(user.id);
 
     redirect("/admin");
   }

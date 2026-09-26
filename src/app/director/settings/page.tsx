@@ -1,11 +1,3 @@
-import Link from "next/link";
-import {
-  CircleDollarSign,
-  GraduationCap,
-  Settings,
-  ShieldCheck,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { AccountCredentialsForm } from "@/components/account/account-credentials-form";
 import {
   Card,
@@ -14,11 +6,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
+import { PriceMatrixSettings } from "@/components/admin/price-matrix-settings";
+import { SchoolsSettings } from "@/components/admin/schools-settings";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import {
-  isMissingPricingTableError,
-  normalizeSchoolPaymentRule,
-} from "@/lib/pricing";
+import { isMissingPricingTableError } from "@/lib/pricing";
+import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
@@ -33,13 +26,19 @@ type Organization = {
   slug: string;
 };
 
-type CatalogItemProps = {
-  title: string;
-  subtitle: string;
-  color?: string;
-  isActive?: boolean;
-  meta: string;
-};
+type EditableLessonType = LessonType &
+  Required<
+    Pick<
+      LessonType,
+      | "code"
+      | "description"
+      | "kind"
+      | "default_duration_minutes"
+      | "tags"
+      | "sort_order"
+      | "is_active"
+    >
+  >;
 
 function MetricCard({
   label,
@@ -59,66 +58,19 @@ function MetricCard({
   );
 }
 
-function CatalogItem({
-  title,
-  subtitle,
-  color,
-  isActive = true,
-  meta,
-}: CatalogItemProps) {
-  return (
-    <div className="rounded-2xl border bg-white p-3 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            {color && (
-              <span
-                className="size-3 shrink-0 rounded-full border border-black/10"
-                style={{ backgroundColor: color }}
-              />
-            )}
-            <p className="truncate font-semibold">{title}</p>
-          </div>
-          <p className="text-muted-foreground mt-1 text-sm">{subtitle}</p>
-        </div>
-        <span
-          className={
-            isActive
-              ? "rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800"
-              : "rounded-full bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-600"
-          }
-        >
-          {isActive ? "Активен" : "Скрыт"}
-        </span>
-      </div>
-      <p className="mt-3 text-sm font-medium text-zinc-700">{meta}</p>
-    </div>
-  );
-}
-
-function getPaymentRuleLabel(value: School["payment_rule"]) {
-  const rule = normalizeSchoolPaymentRule(value);
-
-  if (rule === "prepaid") return "предоплата";
-  if (rule === "settle_later") return "расчёт позже";
-  return "вручную";
-}
-
-function getLessonKindLabel(lessonType: LessonType) {
-  if (lessonType.kind === "theory") return "Теория";
-  if (lessonType.tags?.includes("gift")) return "Подарочное";
-  return "Вождение";
-}
-
 export default async function DirectorSettingsPage() {
   const membership = await requireDirectorAccess();
+  const postgresBackend = isPostgresBackend();
+  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  const canManageCatalog = membership.role === "owner";
   let organization: Organization | null = null;
   let schools: School[] = [];
-  let lessonTypes: LessonType[] = [];
+  let lessonTypes: EditableLessonType[] = [];
   let prices: SchoolLessonTypePrice[] = [];
   let loadError: { message: string } | null = null;
+  let priceLoadError: { message: string } | null = null;
 
-  if (isPostgresBackend()) {
+  if (postgresBackend) {
     [organization, schools, lessonTypes, prices] = await Promise.all([
       queryOne<Organization>(
         `
@@ -139,7 +91,7 @@ export default async function DirectorSettingsPage() {
         `,
         [membership.organizationId],
       ),
-      queryRows<LessonType>(
+      queryRows<EditableLessonType>(
         `
           select id, code, name, color, kind, description,
                  default_duration_minutes, default_price_amount, tags,
@@ -183,7 +135,7 @@ export default async function DirectorSettingsPage() {
       supabase
         .from("lesson_types")
         .select(
-          "id, code, name, color, kind, description, default_duration_minutes, tags, sort_order, is_active, requires_vehicle",
+          "id, code, name, color, kind, description, default_duration_minutes, default_price_amount, tags, sort_order, is_active, requires_vehicle",
         )
         .order("sort_order")
         .order("name"),
@@ -196,12 +148,13 @@ export default async function DirectorSettingsPage() {
     ]);
     const normalizedPriceError =
       priceError && !isMissingPricingTableError(priceError) ? priceError : null;
+    priceLoadError = normalizedPriceError;
 
     loadError =
       organizationError ?? schoolError ?? lessonTypeError ?? normalizedPriceError;
     organization = organizationData as Organization | null;
     schools = (schoolData ?? []) as School[];
-    lessonTypes = (lessonTypeData ?? []) as LessonType[];
+    lessonTypes = (lessonTypeData ?? []) as EditableLessonType[];
     prices = (priceData ?? []) as SchoolLessonTypePrice[];
   }
   const activeSchools = schools.filter((school) => school.is_active !== false);
@@ -211,6 +164,9 @@ export default async function DirectorSettingsPage() {
   );
   const hiddenLessonTypes = lessonTypes.length - activeLessonTypes.length;
   const pricedSchoolCount = new Set(prices.map((price) => price.school_id)).size;
+  const visibleSchools = canManageCatalog ? schools : activeSchools;
+  const visibleLessonTypes = canManageCatalog ? lessonTypes : activeLessonTypes;
+  const priceLessonTypes = getSchedulableLessonTypes(visibleLessonTypes);
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -267,132 +223,37 @@ export default async function DirectorSettingsPage() {
           />
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-2">
+        {!canManageCatalog && (
           <Card>
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <GraduationCap className="size-4" />
-                    Источники
-                  </CardTitle>
-                  <CardDescription>
-                    Автошколы, частные ученики, рекомендации и другие источники
-                    заявок.
-                  </CardDescription>
-                </div>
-                <Button
-                  nativeButton={false}
-                  render={<Link href="/admin/settings" />}
-                  variant="outline"
-                  className="h-9"
-                >
-                  Редактировать
-                </Button>
-              </div>
+            <CardHeader>
+              <CardTitle>Просмотр справочников</CardTitle>
+              <CardDescription>
+                Редактировать источники, типы занятий и цены может только
+                владелец школы.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {schools.length === 0 ? (
-                <div className="rounded-2xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">
-                  Источники пока не добавлены.
-                </div>
-              ) : (
-                schools.map((school) => (
-                  <CatalogItem
-                    key={school.id}
-                    title={school.name}
-                    subtitle="Источник ученика"
-                    color={school.color}
-                    isActive={school.is_active}
-                    meta={`Оплата: ${getPaymentRuleLabel(school.payment_rule)}`}
-                  />
-                ))
-              )}
-            </CardContent>
           </Card>
+        )}
 
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <CircleDollarSign className="size-4" />
-                    Типы занятий
-                  </CardTitle>
-                  <CardDescription>
-                    Вождение, допзанятия, подарочные занятия и теория.
-                  </CardDescription>
-                </div>
-                <Button
-                  nativeButton={false}
-                  render={<Link href="/admin/settings" />}
-                  variant="outline"
-                  className="h-9"
-                >
-                  Редактировать
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {lessonTypes.length === 0 ? (
-                <div className="rounded-2xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">
-                  Типы занятий пока не добавлены.
-                </div>
-              ) : (
-                lessonTypes.map((lessonType) => (
-                  <CatalogItem
-                    key={lessonType.id}
-                    title={lessonType.name}
-                    subtitle={`${getLessonKindLabel(lessonType)} · ${lessonType.default_duration_minutes} мин.`}
-                    color={lessonType.color}
-                    isActive={lessonType.is_active !== false}
-                    meta="Цена задаётся по источнику ученика"
-                  />
-                ))
-              )}
-            </CardContent>
-          </Card>
-        </section>
+        <SchoolsSettings
+          schools={visibleSchools}
+          adminEnabled={adminEnabled}
+          canManage={canManageCatalog}
+        />
 
-        <section className="grid gap-3 sm:grid-cols-3">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Settings className="size-4" />
-                Где редактировать
-              </CardTitle>
-              <CardDescription>
-                Справочники редактируются в кабинете инструктора, чтобы не было
-                двух разных форм.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ShieldCheck className="size-4" />
-                Права
-              </CardTitle>
-              <CardDescription>
-                В интерфейсе сейчас есть роли руководителя и инструктора, без
-                отдельной роли администратора.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <CircleDollarSign className="size-4" />
-                Цены
-              </CardTitle>
-              <CardDescription>
-                В отчёты попадает фактическая цена записи. Её можно поправить в
-                расписании, а стартовая цена берётся из источника ученика и
-                типа занятия.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </section>
+        <LessonTypesSettings
+          lessonTypes={visibleLessonTypes}
+          adminEnabled={adminEnabled}
+          canManage={canManageCatalog}
+        />
+
+        <PriceMatrixSettings
+          schools={visibleSchools}
+          lessonTypes={priceLessonTypes}
+          prices={prices}
+          adminEnabled={adminEnabled && !priceLoadError}
+          canManage={canManageCatalog}
+        />
       </div>
     </main>
   );

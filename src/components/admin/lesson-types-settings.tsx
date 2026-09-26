@@ -175,7 +175,11 @@ function CreateLessonTypeForm({ enabled }: { enabled: boolean }) {
     <form action={formAction} className="space-y-4">
       <LessonTypeFields idPrefix="new-lesson-type" />
       <LessonTypeStateMessage state={state} />
-      <Button type="submit" disabled={isPending || !enabled}>
+      <Button
+        type="submit"
+        disabled={isPending || !enabled}
+        className="shadow-md shadow-zinc-950/15"
+      >
         <Plus />
         {isPending ? "Создаём…" : "Добавить тип занятия"}
       </Button>
@@ -202,7 +206,7 @@ function EditLessonTypeForm({
         idPrefix={`lesson-type-${lessonType.id}`}
       />
       <LessonTypeStateMessage state={state} />
-      <Button type="submit" variant="outline" disabled={isPending || !enabled}>
+      <Button type="submit" variant="accent" disabled={isPending || !enabled}>
         <Pencil />
         {isPending ? "Сохраняем…" : "Сохранить изменения"}
       </Button>

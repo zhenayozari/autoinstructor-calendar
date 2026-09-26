@@ -76,6 +76,8 @@ export async function saveInstructorProfileAction(
     const carDescription = readOptionalString(formData, "car_description");
     const experienceText = readOptionalString(formData, "experience_text");
     const publicIsVisible = formData.get("public_is_visible") === "on";
+    const showContactInStudentCabinet =
+      formData.get("show_contact_in_student_cabinet") === "on";
 
     validateLength(shortBio, 500, "Краткое описание");
     validateLength(contactText, 300, "Контакты");
@@ -134,17 +136,19 @@ export async function saveInstructorProfileAction(
               photo_url = $2,
               short_bio = $3,
               contact_text = $4,
-              car_description = $5,
-              experience_text = $6,
-              public_is_visible = $7,
+              show_contact_in_student_cabinet = $5,
+              car_description = $6,
+              experience_text = $7,
+              public_is_visible = $8,
               profile_updated_at = now()
-          where id = $8
+          where id = $9
         `,
         [
           publicName,
           photoUrl,
           shortBio,
           contactText,
+          showContactInStudentCabinet,
           carDescription,
           experienceText,
           publicIsVisible,
@@ -199,6 +203,7 @@ export async function saveInstructorProfileAction(
           photo_url: photoUrl,
           short_bio: shortBio,
           contact_text: contactText,
+          show_contact_in_student_cabinet: showContactInStudentCabinet,
           car_description: carDescription,
           experience_text: experienceText,
           public_is_visible: publicIsVisible,
@@ -216,6 +221,7 @@ export async function saveInstructorProfileAction(
     }
 
     revalidatePath("/admin/profile");
+    revalidatePath("/student");
     revalidatePath("/");
     revalidatePath("/instructors");
     revalidatePath(`/instructors/${instructor.slug}`);

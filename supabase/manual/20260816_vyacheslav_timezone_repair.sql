@@ -213,3 +213,4 @@ end $$;
 -- First run leaves data unchanged. Replace ROLLBACK with COMMIT only after
 -- the preview output is checked.
 rollback;
+ 

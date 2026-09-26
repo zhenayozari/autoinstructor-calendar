@@ -9,6 +9,7 @@ import {
 import { studentLogoutAction } from "@/app/student/actions";
 import { LessonReviewForm } from "@/components/student/lesson-review-form";
 import { StudentProfileCompletionForm } from "@/components/student/student-profile-completion-form";
+import { StudentAvatarUploadForm } from "@/components/student/student-avatar-upload-form";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
@@ -37,6 +38,9 @@ type Instructor = {
   id: string;
   name: string;
   public_name: string | null;
+  photo_url: string | null;
+  contact_text: string | null;
+  show_contact_in_student_cabinet: boolean | null;
   timezone: string;
 };
 
@@ -644,7 +648,8 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   if (isPostgresBackend()) {
     currentInstructor = await queryOne<Instructor>(
       `
-        select id, name, public_name, timezone
+        select id, name, public_name, photo_url, contact_text,
+               show_contact_in_student_cabinet, timezone
         from public.instructors
         where id = $1
         limit 1
@@ -666,7 +671,9 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
     const supabase = createAdminClient();
     const { data: instructor } = await supabase
       .from("instructors")
-      .select("id, name, public_name, timezone")
+      .select(
+        "id, name, public_name, photo_url, contact_text, show_contact_in_student_cabinet, timezone",
+      )
       .eq("id", access.instructorId)
       .maybeSingle();
     const { data: sourceData } = access.schoolId
@@ -951,26 +958,57 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
     <main className="min-h-screen bg-[#f6f4ef] px-4 py-5 text-zinc-950 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-5xl space-y-4 sm:space-y-6">
         <header className="rounded-[2rem] bg-zinc-950 p-5 text-white shadow-xl shadow-zinc-950/10 sm:p-7">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
-                Кабинет ученика
-              </p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-                {access.displayLabel}
-              </h1>
-              <p className="mt-2 text-sm text-zinc-300">
-                Инструктор: {instructorName}
-              </p>
-              {studentSource && (
-                <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-sm text-zinc-100">
-                  <span
-                    className="size-2.5 shrink-0 rounded-full border border-white/30"
-                    style={{ backgroundColor: studentSource.color }}
-                  />
-                  <span className="truncate">{studentSource.name}</span>
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+              <StudentAvatarUploadForm
+                displayLabel={access.displayLabel}
+                photoUrl={access.studentPhotoUrl}
+              />
+
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+                  Кабинет ученика
+                </p>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+                  {access.displayLabel}
+                </h1>
+
+                <div className="mt-3 flex min-w-0 flex-col gap-2 text-sm text-zinc-300">
+                  <div className="inline-flex min-w-0 items-center gap-2">
+                    <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full border border-white/20 bg-white/10 text-xs font-semibold text-white">
+                      {currentInstructor?.photo_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={currentInstructor.photo_url}
+                          alt=""
+                          className="size-full object-cover"
+                          draggable={false}
+                        />
+                      ) : (
+                        instructorName.slice(0, 1).toUpperCase()
+                      )}
+                    </span>
+                    <span className="truncate">Инструктор: {instructorName}</span>
+                  </div>
+
+                  {currentInstructor?.show_contact_in_student_cabinet &&
+                    currentInstructor.contact_text && (
+                    <p className="max-w-xl rounded-2xl bg-white/10 px-3 py-2 leading-6 text-zinc-200">
+                      Контакт инструктора: {currentInstructor.contact_text}
+                    </p>
+                  )}
                 </div>
-              )}
+
+                {studentSource && (
+                  <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-sm text-zinc-100">
+                    <span
+                      className="size-2.5 shrink-0 rounded-full border border-white/30"
+                      style={{ backgroundColor: studentSource.color }}
+                    />
+                    <span className="truncate">{studentSource.name}</span>
+                  </div>
+                )}
+              </div>
             </div>
             <form action={studentLogoutAction}>
               <Button type="submit" variant="outline" className="bg-white text-zinc-950">

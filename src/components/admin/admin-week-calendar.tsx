@@ -668,6 +668,7 @@ function DesktopSlotCard({
   lessonType,
   booking,
   timezone,
+  showClientPrices = true,
   onClick,
   selectionMode = false,
   selected = false,
@@ -677,6 +678,7 @@ function DesktopSlotCard({
   lessonType: LessonType;
   booking: Booking | null;
   timezone: string;
+  showClientPrices?: boolean;
   onClick: () => void;
   selectionMode?: boolean;
   selected?: boolean;
@@ -705,6 +707,7 @@ function DesktopSlotCard({
           lessonType={lessonType}
           booking={booking}
           timezone={timezone}
+          showClientPrices={showClientPrices}
         />
       </label>
     );
@@ -722,6 +725,7 @@ function DesktopSlotCard({
         lessonType={lessonType}
         booking={booking}
         timezone={timezone}
+        showClientPrices={showClientPrices}
       />
     </button>
   );
@@ -732,15 +736,18 @@ function SlotCardContent({
   lessonType,
   booking,
   timezone,
+  showClientPrices = true,
 }: {
   slot: Slot;
   lessonType: LessonType;
   booking: Booking | null;
   timezone: string;
+  showClientPrices?: boolean;
 }) {
   const isBlocked = slot.status === "blocked";
   const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
-  const paymentBadge = booking ? getPaymentBadge(booking) : null;
+  const paymentBadge =
+    booking && showClientPrices ? getPaymentBadge(booking) : null;
 
   return (
     <>
@@ -761,16 +768,18 @@ function SlotCardContent({
       </div>
 
       <div className="mt-1 flex items-center gap-1.5">
-        {booking && lessonStateBadge && paymentBadge ? (
+        {booking && lessonStateBadge ? (
           <>
             <Badge className={`px-1.5 py-0 text-[10px] ${lessonStateBadge.className}`}>
               {lessonStateBadge.label}
             </Badge>
-            <span
-              className={`rounded-full px-1.5 py-0 text-[10px] font-semibold ${paymentBadge.className}`}
-            >
-              {paymentBadge.label}
-            </span>
+            {paymentBadge && (
+              <span
+                className={`rounded-full px-1.5 py-0 text-[10px] font-semibold ${paymentBadge.className}`}
+              >
+                {paymentBadge.label}
+              </span>
+            )}
           </>
         ) : (
           <Badge
@@ -806,6 +815,7 @@ function DesktopSlotPanel({
   schools,
   studentAccesses,
   adminEnabled,
+  showClientPrices = true,
   onClose,
 }: {
   slot: Slot;
@@ -818,6 +828,7 @@ function DesktopSlotPanel({
   schools: School[];
   studentAccesses: StudentAccess[];
   adminEnabled: boolean;
+  showClientPrices?: boolean;
   onClose: () => void;
 }) {
   const isBlocked = slot.status === "blocked";
@@ -921,7 +932,7 @@ function DesktopSlotPanel({
                   <StudentContactAction contact={studentContact} />
                 </div>
               )}
-              {booking.is_paid && booking.paid_at && (
+              {showClientPrices && booking.is_paid && booking.paid_at && (
                 <p className="mt-2 text-xs text-emerald-700">
                   Оплачено: {formatDateTime(booking.paid_at, instructor.timezone)}
                 </p>
@@ -943,16 +954,22 @@ function DesktopSlotPanel({
                   disabled={!adminEnabled}
                 />
               </div>
-              <div className="mt-3">
-                <BookingPaymentForm
-                  bookingId={booking.id}
-                  priceAmount={booking.price_amount ?? null}
-                  paidAmount={booking.paid_amount ?? null}
-                  paymentNote={booking.payment_note ?? null}
-                  isPaid={booking.is_paid ?? false}
-                  disabled={!adminEnabled}
-                />
-              </div>
+              {showClientPrices ? (
+                <div className="mt-3">
+                  <BookingPaymentForm
+                    bookingId={booking.id}
+                    priceAmount={booking.price_amount ?? null}
+                    paidAmount={booking.paid_amount ?? null}
+                    paymentNote={booking.payment_note ?? null}
+                    isPaid={booking.is_paid ?? false}
+                    disabled={!adminEnabled}
+                  />
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg border bg-white px-3 py-2 text-xs text-zinc-600">
+                  Клиентские цены скрыты настройками руководителя.
+                </div>
+              )}
             </div>
           ) : (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800">
@@ -1026,6 +1043,7 @@ function MobileSlotRow({
   studentAccesses,
   timezone,
   adminEnabled,
+  showClientPrices = true,
   selectionMode = false,
   selected = false,
   onSelectionChange,
@@ -1040,6 +1058,7 @@ function MobileSlotRow({
   studentAccesses: StudentAccess[];
   timezone: string;
   adminEnabled: boolean;
+  showClientPrices?: boolean;
   selectionMode?: boolean;
   selected?: boolean;
   onSelectionChange?: (checked: boolean) => void;
@@ -1047,7 +1066,8 @@ function MobileSlotRow({
   const isBlocked = slot.status === "blocked";
   const visibleNote = getVisibleSlotNote(slot.note);
   const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
-  const paymentBadge = booking ? getPaymentBadge(booking) : null;
+  const paymentBadge =
+    booking && showClientPrices ? getPaymentBadge(booking) : null;
   return (
     <details
       className={`group rounded-lg border bg-white ${
@@ -1086,18 +1106,20 @@ function MobileSlotRow({
             )}
           </span>
         </span>
-        {booking && lessonStateBadge && paymentBadge ? (
+        {booking && lessonStateBadge ? (
           <span className="flex flex-col items-end gap-1">
             <span
               className={`rounded-full px-2 py-1 text-[10px] font-bold ${lessonStateBadge.className}`}
             >
               {lessonStateBadge.label}
             </span>
-            <span
-              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${paymentBadge.className}`}
-            >
-              {paymentBadge.label}
-            </span>
+            {paymentBadge && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${paymentBadge.className}`}
+              >
+                {paymentBadge.label}
+              </span>
+            )}
           </span>
         ) : (
           <span
@@ -1168,7 +1190,7 @@ function MobileSlotRow({
           </div>
         )}
 
-        {booking && (
+        {booking && showClientPrices && (
           <div className="space-y-2 rounded-lg border bg-white px-3 py-2">
             <p className="text-xs font-medium text-zinc-600">Оплата</p>
             <BookingPaymentForm
@@ -1249,6 +1271,7 @@ export function AdminWeekCalendar({
   onInstructorChange,
   canSelectInstructor,
   adminEnabled,
+  showClientPrices = true,
   onCreateSlotForDate,
 }: {
   instructors: Instructor[];
@@ -1265,6 +1288,7 @@ export function AdminWeekCalendar({
   onInstructorChange: (value: string) => void;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  showClientPrices?: boolean;
   onCreateSlotForDate?: (date: string) => void;
 }) {
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
@@ -1784,6 +1808,7 @@ export function AdminWeekCalendar({
                     studentAccesses={studentAccesses}
                     timezone={selectedInstructor.timezone}
                     adminEnabled={adminEnabled}
+                    showClientPrices={showClientPrices}
                     selectionMode={selectionMode}
                     selected={selectedSlotIds.includes(slot.id)}
                     onSelectionChange={(checked) =>
@@ -1833,6 +1858,7 @@ export function AdminWeekCalendar({
                         lessonType={lessonType}
                         booking={bookingsBySlotId.get(slot.id) ?? null}
                         timezone={selectedInstructor.timezone}
+                        showClientPrices={showClientPrices}
                         selectionMode={selectionMode}
                         selected={selectedSlotIds.includes(slot.id)}
                         onSelectionChange={(checked) =>
@@ -1875,6 +1901,7 @@ export function AdminWeekCalendar({
             schools={schools}
             studentAccesses={studentAccesses}
             adminEnabled={adminEnabled}
+            showClientPrices={showClientPrices}
             onClose={() => setSelectedSlotId(null)}
           />
         )}

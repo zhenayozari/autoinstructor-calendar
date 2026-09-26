@@ -105,7 +105,11 @@ function PriceRowForm({
             })}
           </div>
           <StateMessage state={state} />
-          <Button type="submit" disabled={!enabled || isPending} className="w-full">
+          <Button
+            type="submit"
+            disabled={!enabled || isPending}
+            className="w-full shadow-md shadow-zinc-950/15"
+          >
             <Save />
             {isPending ? "Сохраняем..." : "Сохранить цены"}
           </Button>
@@ -142,7 +146,7 @@ function PriceRowForm({
           <div className="border-b px-2 py-2">
             <Button
               type="submit"
-              variant="outline"
+              variant="accent"
               size="sm"
               disabled={!enabled || isPending}
               className="w-full"

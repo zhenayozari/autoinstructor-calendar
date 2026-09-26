@@ -6,18 +6,20 @@ import { redirect } from "next/navigation";
 import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
+  type ActiveOrganizationMembership,
 } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
 import { logAuditEvent } from "@/lib/audit-log";
 import { hashStudentAccessSecret } from "@/lib/student-access";
+import { revokeAllStudentSessions } from "@/lib/student-session";
 import {
   STUDENT_SECRET_MAX_LENGTH,
   STUDENT_SECRET_MIN_LENGTH,
 } from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingPricingTableError } from "@/lib/pricing";
-import type { BookingCategory } from "@/lib/types";
+import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
 
 export type StudentAccessActionState = {
   status: "idle" | "success" | "error";
@@ -60,6 +62,38 @@ function readOptionalLimit(formData: FormData, field: string, max: number) {
   }
 
   return parsed;
+}
+
+function readOptionalMoneyAmount(formData: FormData, field: string) {
+  const value = readOptionalString(formData, field);
+
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10_000_000) {
+    throw new Error(`Поле «${field}» должно быть целым числом от 0 до 10000000`);
+  }
+
+  return parsed;
+}
+
+function readPaymentRuleOverride(
+  formData: FormData,
+): SchoolPaymentRule | null {
+  const value = readOptionalString(formData, "payment_rule_override");
+
+  if (value === null) {
+    return null;
+  }
+
+  if (value === "manual" || value === "prepaid" || value === "settle_later") {
+    return value;
+  }
+
+  throw new Error("Некорректное правило оплаты");
 }
 
 function readLessonTypeIds(formData: FormData) {
@@ -211,11 +245,20 @@ async function validateSchoolId(
   return schoolId;
 }
 
-async function validateRequiredSchoolId(formData: FormData, organizationId: string) {
-  return validateSchoolId(
+async function validateRequiredSchoolId(
+  formData: FormData,
+  organizationId: string,
+): Promise<string> {
+  const schoolId = await validateSchoolId(
     readRequiredString(formData, "school_id"),
     organizationId,
   );
+
+  if (!schoolId) {
+    throw new Error("Выберите источник ученика");
+  }
+
+  return schoolId;
 }
 
 async function replaceAccessLessonTypes({
@@ -354,6 +397,8 @@ async function syncPrimaryStudentLessonPackage({
   organizationId,
   instructorId,
   schoolId,
+  customPriceAmount,
+  paymentRuleOverride,
   totalLessonLimit,
   weeklyLessonLimit,
   isActive,
@@ -364,6 +409,8 @@ async function syncPrimaryStudentLessonPackage({
   organizationId: string;
   instructorId: string;
   schoolId: string | null;
+  customPriceAmount: number | null;
+  paymentRuleOverride: SchoolPaymentRule | null;
   totalLessonLimit: number | null;
   weeklyLessonLimit: number | null;
   isActive: boolean;
@@ -390,16 +437,20 @@ async function syncPrimaryStudentLessonPackage({
               instructor_id = $2,
               school_id = $3,
               booking_category = 'regular',
-              total_lesson_limit = $4,
-              weekly_lesson_limit = $5,
-              is_active = $6,
+              custom_price_amount = $4,
+              payment_rule_override = $5,
+              total_lesson_limit = $6,
+              weekly_lesson_limit = $7,
+              is_active = $8,
               updated_at = now()
-          where id = $7
+          where id = $9
         `,
         [
           organizationId,
           instructorId,
           schoolId,
+          customPriceAmount,
+          paymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -411,10 +462,10 @@ async function syncPrimaryStudentLessonPackage({
         `
           insert into public.student_lesson_packages (
             student_access_id, organization_id, instructor_id, school_id,
-            booking_category, total_lesson_limit, weekly_lesson_limit,
-            is_active, sort_order
+            booking_category, custom_price_amount, payment_rule_override,
+            total_lesson_limit, weekly_lesson_limit, is_active, sort_order
           )
-          values ($1, $2, $3, $4, 'regular', $5, $6, $7, 100)
+          values ($1, $2, $3, $4, 'regular', $5, $6, $7, $8, $9, 100)
           returning id
         `,
         [
@@ -422,6 +473,8 @@ async function syncPrimaryStudentLessonPackage({
           organizationId,
           instructorId,
           schoolId,
+          customPriceAmount,
+          paymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -473,6 +526,8 @@ async function syncPrimaryStudentLessonPackage({
         instructor_id: instructorId,
         school_id: schoolId,
         booking_category: "regular",
+        custom_price_amount: customPriceAmount,
+        payment_rule_override: paymentRuleOverride,
         total_lesson_limit: totalLessonLimit,
         weekly_lesson_limit: weeklyLessonLimit,
         is_active: isActive,
@@ -491,6 +546,8 @@ async function syncPrimaryStudentLessonPackage({
         instructor_id: instructorId,
         school_id: schoolId,
         booking_category: "regular",
+        custom_price_amount: customPriceAmount,
+        payment_rule_override: paymentRuleOverride,
         total_lesson_limit: totalLessonLimit,
         weekly_lesson_limit: weeklyLessonLimit,
         is_active: isActive,
@@ -623,10 +680,11 @@ async function getManageableAccess(accessId: string) {
       login: string;
       display_label: string;
       student_phone: string | null;
+      school_id: string | null;
     }>(
       `
         select id, instructor_id, organization_id, login, display_label,
-               student_phone
+               student_phone, school_id
         from public.student_accesses
         where id = $1
           and organization_id = $2
@@ -650,7 +708,7 @@ async function getManageableAccess(accessId: string) {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_accesses")
-    .select("id, instructor_id, organization_id, login, display_label, student_phone")
+    .select("id, instructor_id, organization_id, login, display_label, student_phone, school_id")
     .eq("id", accessId)
     .eq("organization_id", membership.organizationId)
     .maybeSingle();
@@ -670,6 +728,7 @@ async function getManageableAccess(accessId: string) {
       login: string;
       display_label: string;
       student_phone: string | null;
+      school_id: string | null;
     },
   };
 }
@@ -684,9 +743,13 @@ async function getManageableStudentLessonPackage(packageId: string) {
       instructor_id: string;
       organization_id: string;
       sort_order: number;
+      school_id: string | null;
+      custom_price_amount: number | null;
+      payment_rule_override: SchoolPaymentRule | null;
     }>(
       `
-        select id, student_access_id, instructor_id, organization_id, sort_order
+        select id, student_access_id, instructor_id, organization_id, sort_order,
+               school_id, custom_price_amount, payment_rule_override
         from public.student_lesson_packages
         where id = $1
           and organization_id = $2
@@ -710,7 +773,7 @@ async function getManageableStudentLessonPackage(packageId: string) {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("student_lesson_packages")
-    .select("id, student_access_id, instructor_id, organization_id, sort_order")
+    .select("id, student_access_id, instructor_id, organization_id, sort_order, school_id, custom_price_amount, payment_rule_override")
     .eq("id", packageId)
     .eq("organization_id", membership.organizationId)
     .maybeSingle();
@@ -739,6 +802,9 @@ async function getManageableStudentLessonPackage(packageId: string) {
       instructor_id: string;
       organization_id: string;
       sort_order: number;
+      school_id: string | null;
+      custom_price_amount: number | null;
+      payment_rule_override: SchoolPaymentRule | null;
     },
   };
 }
@@ -747,6 +813,238 @@ function assertOwnerCanDelete(membership: Awaited<ReturnType<typeof requireActiv
   if (membership.role !== "owner") {
     throw new Error("Удалять навсегда может только руководитель");
   }
+}
+
+function canManageStudentPrices(membership: ActiveOrganizationMembership) {
+  return membership.role === "owner";
+}
+
+function normalizeSourceName(value: string) {
+  return value.trim().toLowerCase().replaceAll("ё", "е").replace(/\s+/g, " ");
+}
+
+function isPrivateStudentSourceName(value: string) {
+  const name = normalizeSourceName(value);
+
+  return name === "частные ученики" || name === "частный ученик";
+}
+
+async function canManageStudentLessonPackages({
+  membership,
+  instructorId,
+}: {
+  membership: ActiveOrganizationMembership;
+  instructorId: string;
+}) {
+  if (membership.role === "owner") {
+    return true;
+  }
+
+  if (!isPostgresBackend()) {
+    return false;
+  }
+
+  const settings = await queryOne<{ can_manage_student_packages: boolean }>(
+    `
+      select can_manage_student_packages
+      from public.instructor_payout_settings
+      where organization_id = $1
+        and instructor_id = $2
+      limit 1
+    `,
+    [membership.organizationId, instructorId],
+  );
+
+  return settings?.can_manage_student_packages ?? false;
+}
+
+async function canManagePrivateStudentPackagePrice({
+  membership,
+  instructorId,
+  schoolId,
+}: {
+  membership: ActiveOrganizationMembership;
+  instructorId: string;
+  schoolId: string;
+}) {
+  if (membership.role === "owner") {
+    return true;
+  }
+
+  if (!isPostgresBackend()) {
+    return false;
+  }
+
+  const settings = await queryOne<{
+    can_manage_student_packages: boolean;
+    source_visibility_mode: "all_active" | "selected_only";
+  }>(
+    `
+      select can_manage_student_packages, source_visibility_mode
+      from public.instructor_payout_settings
+      where organization_id = $1
+        and instructor_id = $2
+      limit 1
+    `,
+    [membership.organizationId, instructorId],
+  );
+
+  if (!settings?.can_manage_student_packages) {
+    return false;
+  }
+
+  const school = await queryOne<{ name: string; is_active: boolean }>(
+    `
+      select name, is_active
+      from public.schools
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [schoolId, membership.organizationId],
+  );
+
+  if (
+    !school ||
+    !school.is_active ||
+    !isPrivateStudentSourceName(school.name)
+  ) {
+    return false;
+  }
+
+  if (settings.source_visibility_mode === "all_active") {
+    return true;
+  }
+
+  const visibility = await queryOne<{ is_visible: boolean }>(
+    `
+      select is_visible
+      from public.instructor_source_visibility
+      where organization_id = $1
+        and instructor_id = $2
+        and school_id = $3
+      limit 1
+    `,
+    [membership.organizationId, instructorId, schoolId],
+  );
+
+  return visibility?.is_visible ?? false;
+}
+
+async function canManagePrivateStudentPackageTerms({
+  membership,
+  instructorId,
+  schoolId,
+}: {
+  membership: ActiveOrganizationMembership;
+  instructorId: string;
+  schoolId: string;
+}) {
+  if (!isPostgresBackend()) {
+    return false;
+  }
+
+  const school = await queryOne<{ name: string; is_active: boolean }>(
+    `
+      select name, is_active
+      from public.schools
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [schoolId, membership.organizationId],
+  );
+
+  if (
+    !school ||
+    !school.is_active ||
+    !isPrivateStudentSourceName(school.name)
+  ) {
+    return false;
+  }
+
+  if (membership.role === "owner") {
+    return true;
+  }
+
+  return canManagePrivateStudentPackagePrice({
+    membership,
+    instructorId,
+    schoolId,
+  });
+}
+
+async function assertCanManageStudentLessonPackages({
+  membership,
+  instructorId,
+}: {
+  membership: ActiveOrganizationMembership;
+  instructorId: string;
+}) {
+  const allowed = await canManageStudentLessonPackages({
+    membership,
+    instructorId,
+  });
+
+  if (!allowed) {
+    throw new Error(
+      "Дополнительные доступы ученика может менять только руководитель или сотрудник с разрешением руководителя",
+    );
+  }
+}
+
+async function getPrimaryPackageTerms({
+  accessId,
+  supabase,
+}: {
+  accessId: string;
+  supabase?: ReturnType<typeof createAdminClient>;
+}) {
+  if (isPostgresBackend()) {
+    const row = await queryOne<{
+      custom_price_amount: number | null;
+      payment_rule_override: SchoolPaymentRule | null;
+    }>(
+      `
+        select custom_price_amount, payment_rule_override
+        from public.student_lesson_packages
+        where student_access_id = $1
+          and sort_order = 100
+        limit 1
+      `,
+      [accessId],
+    );
+
+    return {
+      customPriceAmount: row?.custom_price_amount ?? null,
+      paymentRuleOverride: row?.payment_rule_override ?? null,
+    };
+  }
+
+  const client = supabase ?? createAdminClient();
+  const { data, error } = await client
+    .from("student_lesson_packages")
+    .select("custom_price_amount, payment_rule_override")
+    .eq("student_access_id", accessId)
+    .eq("sort_order", 100)
+    .maybeSingle();
+
+  if (error && !isMissingPricingTableError(error)) {
+    throw new Error(error.message);
+  }
+
+  return {
+    customPriceAmount:
+      typeof data?.custom_price_amount === "number"
+        ? data.custom_price_amount
+        : null,
+    paymentRuleOverride:
+      data?.payment_rule_override === "manual" ||
+      data?.payment_rule_override === "prepaid" ||
+      data?.payment_rule_override === "settle_later"
+        ? data.payment_rule_override
+        : null,
+  };
 }
 
 function assertDeleteConfirmed(formData: FormData) {
@@ -1024,10 +1322,26 @@ export async function createStudentAccessAction(
       "weekly_lesson_limit",
       50,
     );
+    const customPriceAmount = readOptionalMoneyAmount(
+      formData,
+      "custom_price_amount",
+    );
     const schoolId = await validateRequiredSchoolId(
       formData,
       membership.organizationId,
     );
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
+    const canManagePrivateTerms = await canManagePrivateStudentPackageTerms({
+      membership,
+      instructorId,
+      schoolId,
+    });
+    const effectiveCustomPriceAmount = canManageStudentPrices(membership)
+      ? customPriceAmount
+      : null;
+    const effectivePaymentRuleOverride = canManagePrivateTerms
+      ? paymentRuleOverride
+      : null;
     const isActive = formData.get("is_active") === "on";
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
@@ -1090,6 +1404,8 @@ export async function createStudentAccessAction(
           organizationId: membership.organizationId,
           instructorId,
           schoolId,
+          customPriceAmount: effectiveCustomPriceAmount,
+          paymentRuleOverride: effectivePaymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -1153,6 +1469,8 @@ export async function createStudentAccessAction(
         organizationId: membership.organizationId,
         instructorId,
         schoolId,
+        customPriceAmount: effectiveCustomPriceAmount,
+        paymentRuleOverride: effectivePaymentRuleOverride,
         totalLessonLimit,
         weeklyLessonLimit,
         isActive,
@@ -1205,10 +1523,26 @@ export async function approveStudentRegistrationRequestAction(
       "weekly_lesson_limit",
       50,
     );
+    const customPriceAmount = readOptionalMoneyAmount(
+      formData,
+      "custom_price_amount",
+    );
     const schoolId = await validateRequiredSchoolId(
       formData,
       request.organization_id,
     );
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
+    const canManagePrivateTerms = await canManagePrivateStudentPackageTerms({
+      membership,
+      instructorId: request.instructor_id,
+      schoolId,
+    });
+    const effectiveCustomPriceAmount = canManageStudentPrices(membership)
+      ? customPriceAmount
+      : null;
+    const effectivePaymentRuleOverride = canManagePrivateTerms
+      ? paymentRuleOverride
+      : null;
     const isActive = formData.get("is_active") === "on";
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
@@ -1303,6 +1637,8 @@ export async function approveStudentRegistrationRequestAction(
           organizationId: request.organization_id,
           instructorId: request.instructor_id,
           schoolId,
+          customPriceAmount: effectiveCustomPriceAmount,
+          paymentRuleOverride: effectivePaymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -1405,6 +1741,8 @@ export async function approveStudentRegistrationRequestAction(
         organizationId: request.organization_id,
         instructorId: request.instructor_id,
         schoolId,
+        customPriceAmount: effectiveCustomPriceAmount,
+        paymentRuleOverride: effectivePaymentRuleOverride,
         totalLessonLimit,
         weeklyLessonLimit,
         isActive,
@@ -1563,10 +1901,33 @@ export async function updateStudentAccessAction(
       "weekly_lesson_limit",
       50,
     );
+    const customPriceAmount = readOptionalMoneyAmount(
+      formData,
+      "custom_price_amount",
+    );
     const schoolId = await validateSchoolId(
       readOptionalString(formData, "school_id"),
       access.organization_id,
     );
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
+    const primaryPackageTerms = await getPrimaryPackageTerms({
+      accessId: access.id,
+    });
+    const canManagePrivateTerms = schoolId
+      ? await canManagePrivateStudentPackageTerms({
+          membership,
+          instructorId: access.instructor_id,
+          schoolId,
+        })
+      : false;
+    const effectiveCustomPriceAmount = canManageStudentPrices(membership)
+      ? customPriceAmount
+      : primaryPackageTerms.customPriceAmount;
+    const effectivePaymentRuleOverride = canManagePrivateTerms
+      ? paymentRuleOverride
+      : schoolId === access.school_id
+        ? primaryPackageTerms.paymentRuleOverride
+        : null;
     const isActive = formData.get("is_active") === "on";
     const newSecret = readOptionalString(formData, "new_secret");
     const lessonTypeIds = await validateLessonTypes(
@@ -1670,11 +2031,17 @@ export async function updateStudentAccessAction(
         throw error;
       }
 
+      if (newSecret || !isActive) {
+        await revokeAllStudentSessions(access.id);
+      }
+
       await syncPrimaryStudentLessonPackage({
         accessId: access.id,
         organizationId: access.organization_id,
         instructorId: access.instructor_id,
         schoolId,
+        customPriceAmount: effectiveCustomPriceAmount,
+        paymentRuleOverride: effectivePaymentRuleOverride,
         totalLessonLimit,
         weeklyLessonLimit,
         isActive,
@@ -1729,6 +2096,8 @@ export async function updateStudentAccessAction(
       organizationId: access.organization_id,
       instructorId: access.instructor_id,
       schoolId,
+      customPriceAmount: effectiveCustomPriceAmount,
+      paymentRuleOverride: effectivePaymentRuleOverride,
       totalLessonLimit,
       weeklyLessonLimit,
       isActive,
@@ -1861,6 +2230,10 @@ export async function updateStudentAccessDetailsAction(
         throw error;
       }
 
+      if (newSecret) {
+        await revokeAllStudentSessions(access.id);
+      }
+
       await logAuditEvent({
         membership,
         action: "student_access.details_updated",
@@ -1949,6 +2322,7 @@ export async function archiveStudentAccessAction(
         `,
         [new Date().toISOString(), access.id, access.instructor_id],
       );
+      await revokeAllStudentSessions(access.id);
 
       await logAuditEvent({
         membership,
@@ -2110,6 +2484,10 @@ export async function toggleStudentAccessAction(
         [isActive, access.id, access.instructor_id],
       );
 
+      if (!isActive) {
+        await revokeAllStudentSessions(access.id);
+      }
+
       await logAuditEvent({
         membership,
         action: isActive ? "student_access.enabled" : "student_access.disabled",
@@ -2176,6 +2554,10 @@ export async function addStudentLessonPackageAction(
   try {
     const accessId = readRequiredString(formData, "student_access_id");
     const { membership, access } = await getManageableAccess(accessId);
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: access.instructor_id,
+    });
     const schoolId = await validateRequiredSchoolId(
       formData,
       access.organization_id,
@@ -2191,6 +2573,27 @@ export async function addStudentLessonPackageAction(
       "weekly_lesson_limit",
       50,
     );
+    const customPriceAmount = readOptionalMoneyAmount(
+      formData,
+      "custom_price_amount",
+    );
+    const canManagePackagePrice = await canManagePrivateStudentPackagePrice({
+      membership,
+      instructorId: access.instructor_id,
+      schoolId,
+    });
+    const canManagePackageTerms = await canManagePrivateStudentPackageTerms({
+      membership,
+      instructorId: access.instructor_id,
+      schoolId,
+    });
+    const effectiveCustomPriceAmount = canManagePackagePrice
+      ? customPriceAmount
+      : null;
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
+    const effectivePaymentRuleOverride = canManagePackageTerms
+      ? paymentRuleOverride
+      : null;
     const isActive = formData.get("is_active") === "on";
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
@@ -2215,10 +2618,10 @@ export async function addStudentLessonPackageAction(
         `
           insert into public.student_lesson_packages (
             student_access_id, organization_id, instructor_id, school_id,
-            booking_category, total_lesson_limit, weekly_lesson_limit,
-            is_active, sort_order
+            booking_category, custom_price_amount, payment_rule_override,
+            total_lesson_limit, weekly_lesson_limit, is_active, sort_order
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
           returning id
         `,
         [
@@ -2227,6 +2630,8 @@ export async function addStudentLessonPackageAction(
           access.instructor_id,
           schoolId,
           bookingCategory,
+          effectiveCustomPriceAmount,
+          effectivePaymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -2310,6 +2715,8 @@ export async function addStudentLessonPackageAction(
         instructor_id: access.instructor_id,
         school_id: schoolId,
         booking_category: bookingCategory,
+        custom_price_amount: effectiveCustomPriceAmount,
+        payment_rule_override: effectivePaymentRuleOverride,
         total_lesson_limit: totalLessonLimit,
         weekly_lesson_limit: weeklyLessonLimit,
         is_active: isActive,
@@ -2385,6 +2792,11 @@ export async function updateStudentLessonPackageAction(
       throw new Error("Основной доступ редактируется в карточке ученика");
     }
 
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: packageRow.instructor_id,
+    });
+
     const schoolId = await validateRequiredSchoolId(
       formData,
       packageRow.organization_id,
@@ -2400,6 +2812,31 @@ export async function updateStudentLessonPackageAction(
       "weekly_lesson_limit",
       50,
     );
+    const customPriceAmount = readOptionalMoneyAmount(
+      formData,
+      "custom_price_amount",
+    );
+    const canManagePackagePrice = await canManagePrivateStudentPackagePrice({
+      membership,
+      instructorId: packageRow.instructor_id,
+      schoolId,
+    });
+    const canManagePackageTerms = await canManagePrivateStudentPackageTerms({
+      membership,
+      instructorId: packageRow.instructor_id,
+      schoolId,
+    });
+    const effectiveCustomPriceAmount = canManagePackagePrice
+      ? customPriceAmount
+      : schoolId === packageRow.school_id
+        ? packageRow.custom_price_amount
+        : null;
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
+    const effectivePaymentRuleOverride = canManagePackageTerms
+      ? paymentRuleOverride
+      : schoolId === packageRow.school_id
+        ? packageRow.payment_rule_override
+        : null;
     const isActive = formData.get("is_active") === "on";
     const lessonTypeIds = await validateLessonTypes(
       readLessonTypeIds(formData),
@@ -2411,16 +2848,20 @@ export async function updateStudentLessonPackageAction(
           update public.student_lesson_packages
           set school_id = $1,
               booking_category = $2,
-              total_lesson_limit = $3,
-              weekly_lesson_limit = $4,
-              is_active = $5,
+              custom_price_amount = $3,
+              payment_rule_override = $4,
+              total_lesson_limit = $5,
+              weekly_lesson_limit = $6,
+              is_active = $7,
               updated_at = now()
-          where id = $6
-            and organization_id = $7
+          where id = $8
+            and organization_id = $9
         `,
         [
           schoolId,
           bookingCategory,
+          effectiveCustomPriceAmount,
+          effectivePaymentRuleOverride,
           totalLessonLimit,
           weeklyLessonLimit,
           isActive,
@@ -2466,6 +2907,8 @@ export async function updateStudentLessonPackageAction(
       .update({
         school_id: schoolId,
         booking_category: bookingCategory,
+        custom_price_amount: effectiveCustomPriceAmount,
+        payment_rule_override: effectivePaymentRuleOverride,
         total_lesson_limit: totalLessonLimit,
         weekly_lesson_limit: weeklyLessonLimit,
         is_active: isActive,
@@ -2532,6 +2975,11 @@ export async function deleteStudentLessonPackageAction(
     if (packageRow.sort_order <= 100) {
       throw new Error("Основной доступ нельзя удалить отдельно от ученика");
     }
+
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: packageRow.instructor_id,
+    });
 
     if (isPostgresBackend()) {
       const bookingCount = await queryOne<{ count: string }>(

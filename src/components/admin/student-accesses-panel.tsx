@@ -31,6 +31,10 @@ import {
   updateStudentAccessAction,
   type StudentAccessActionState,
 } from "@/app/admin/students/actions";
+import {
+  updateBookingPaymentAction,
+  type BookingPaymentActionState,
+} from "@/app/admin/actions";
 import { formatLocalDateTime, formatMoney, selectClassName } from "@/lib/formatters";
 import {
   STUDENT_SECRET_ALPHABET,
@@ -43,11 +47,13 @@ import type {
   StudentAccess,
   StudentRegistrationRequest,
   StudentLessonPackage,
+  SchoolPaymentRule,
 } from "@/lib/types";
 import {
   bookingCategoryOptions,
   getBookingCategoryLabel,
 } from "@/lib/booking-categories";
+import { StudentAvatar } from "@/components/student/student-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +81,7 @@ export type StudentAccessCrmSummary = {
     isPaid: boolean;
     priceAmount: number | null;
     paidAmount: number;
+    paymentChanges: string[];
   }[];
 };
 
@@ -90,6 +97,132 @@ export type StudentAccessCrm = StudentAccess & {
 
 function getInstructorLabel(instructor: Instructor) {
   return instructor.public_name ?? instructor.name;
+}
+
+const INITIAL_PAYMENT_STATE: BookingPaymentActionState = {
+  status: "idle",
+  message: "",
+};
+
+function StudentLessonHistoryRow({
+  lesson,
+  canManageStudentPrices,
+}: {
+  lesson: StudentAccessCrmSummary["lastLessons"][number];
+  canManageStudentPrices: boolean;
+}) {
+  const [paymentState, paymentAction, isPaymentPending] = useActionState(
+    updateBookingPaymentAction,
+    INITIAL_PAYMENT_STATE,
+  );
+
+  return (
+    <details className="group border-b last:border-b-0">
+      <summary className="flex cursor-pointer list-none flex-col gap-2 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{lesson.lessonTypeName}</p>
+          <p className="text-xs text-zinc-500">
+            {formatLocalDateTime(lesson.startsAt)}
+          </p>
+          {lesson.paymentChanges.length > 0 && (
+            <p className="mt-1 text-[11px] text-zinc-400">
+              Изменено {formatLocalDateTime(lesson.paymentChanges[0])}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold">
+            {lesson.lessonState === "completed"
+              ? "Проведено"
+              : lesson.lessonState === "no_show"
+                ? "Неявка"
+                : "План"}
+          </span>
+          {lesson.priceAmount !== null && (
+            <>
+              <span className="font-semibold">
+                {formatMoney(lesson.paidAmount)} / {formatMoney(lesson.priceAmount)}
+              </span>
+              {lesson.paidAmount >= lesson.priceAmount ? (
+                <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
+                  Долга нет
+                </span>
+              ) : (
+                <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
+                  Долг {formatMoney(lesson.priceAmount - lesson.paidAmount)}
+                </span>
+              )}
+            </>
+          )}
+          <span className="text-zinc-400 transition group-open:rotate-180">⌄</span>
+        </div>
+      </summary>
+
+      <div className="space-y-3 border-t bg-zinc-50 px-3 py-3">
+        {canManageStudentPrices ? (
+          <form action={paymentAction} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <input type="hidden" name="booking_id" value={lesson.id} />
+            <div className="space-y-1">
+              <Label htmlFor={`history-price-${lesson.id}`}>К оплате, ₽</Label>
+              <Input
+                id={`history-price-${lesson.id}`}
+                name="price_amount"
+                type="number"
+                min="0"
+                step="1"
+                defaultValue={lesson.priceAmount ?? ""}
+                disabled={isPaymentPending}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`history-paid-${lesson.id}`}>Получено, ₽</Label>
+              <Input
+                id={`history-paid-${lesson.id}`}
+                name="paid_amount"
+                type="number"
+                min="0"
+                step="1"
+                defaultValue={lesson.paidAmount}
+                disabled={isPaymentPending}
+              />
+            </div>
+            <Button type="submit" disabled={isPaymentPending}>
+              {isPaymentPending ? "Сохраняем..." : "Сохранить"}
+            </Button>
+          </form>
+        ) : (
+          <p className="text-xs text-zinc-500">
+            Изменять стоимость и оплату может только руководитель.
+          </p>
+        )}
+
+        {paymentState.message && (
+          <p
+            className={`text-xs ${
+              paymentState.status === "error" ? "text-red-700" : "text-emerald-700"
+            }`}
+          >
+            {paymentState.message}
+          </p>
+        )}
+
+        {lesson.paymentChanges.length > 0 && (
+          <div className="border-t pt-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">
+              История изменений оплаты
+            </p>
+            <div className="mt-1 space-y-1">
+              {lesson.paymentChanges.map((changedAt, index) => (
+                <p key={`${changedAt}-${index}`} className="text-[11px] text-zinc-400">
+                  Изменено {formatLocalDateTime(changedAt)}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
+  );
 }
 
 function getRequestDisplayName(request: StudentRegistrationRequest) {
@@ -144,6 +277,45 @@ function getActiveSchools(schools: School[]) {
 function getEditableSchools(schools: School[], selectedId: string | null) {
   return schools.filter(
     (school) => school.is_active !== false || school.id === selectedId,
+  );
+}
+
+function normalizeSourceName(value: string) {
+  return value.trim().toLowerCase().replaceAll("ё", "е").replace(/\s+/g, " ");
+}
+
+function isPrivateStudentsSchool(school: School | null | undefined) {
+  if (!school || school.is_active === false) {
+    return false;
+  }
+
+  const name = normalizeSourceName(school.name);
+
+  return name === "частные ученики" || name === "частный ученик";
+}
+
+function PaymentRuleOverrideField({
+  id,
+  defaultValue,
+}: {
+  id: string;
+  defaultValue?: SchoolPaymentRule | null;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Правило оплаты</Label>
+      <select
+        id={id}
+        name="payment_rule_override"
+        className={selectClassName}
+        defaultValue={defaultValue ?? ""}
+      >
+        <option value="">По настройкам источника</option>
+        <option value="prepaid">Предоплата</option>
+        <option value="settle_later">Расчёт позже</option>
+        <option value="manual">Вручную</option>
+      </select>
+    </div>
   );
 }
 
@@ -276,8 +448,88 @@ function getPackageDescription(
   const weeklyLimit = packageItem.weekly_lesson_limit
     ? `до ${packageItem.weekly_lesson_limit} в неделю`
     : "без недельного лимита";
+  const price = packageItem.custom_price_amount !== null
+    ? `цена ${formatMoney(packageItem.custom_price_amount)}`
+    : "цена по настройкам школы";
 
-  return `${source} · ${category} · ${totalLimit} · ${weeklyLimit}`;
+  return `${source} · ${category} · ${price} · ${totalLimit} · ${weeklyLimit}`;
+}
+
+function getAccessUsedCount(access: StudentAccessCrm) {
+  const crm = access.crm;
+
+  if (!crm) {
+    return 0;
+  }
+
+  return crm.plannedCount + crm.completedCount + crm.noShowCount;
+}
+
+function getPrimaryLimitNotice({
+  access,
+  packages,
+}: {
+  access: StudentAccessCrm;
+  packages: NonNullable<StudentAccessCrm["packages"]>;
+}) {
+  const primaryPackage = packages[0] ?? null;
+  const primaryLimit =
+    primaryPackage?.total_lesson_limit ?? access.total_lesson_limit;
+
+  if (!primaryLimit) {
+    return null;
+  }
+
+  const primaryUsed = primaryPackage?.usedCount ?? getAccessUsedCount(access);
+
+  if (primaryUsed < primaryLimit) {
+    return null;
+  }
+
+  const nextPackage = packages.slice(1).find((packageItem) => {
+    if (!packageItem.is_active) {
+      return false;
+    }
+
+    if (!packageItem.total_lesson_limit) {
+      return true;
+    }
+
+    return (packageItem.usedCount ?? 0) < packageItem.total_lesson_limit;
+  });
+
+  return {
+    used: primaryUsed,
+    limit: primaryLimit,
+    nextSource: nextPackage?.school?.name ?? null,
+  };
+}
+
+function PrimaryLimitNotice({
+  access,
+  packages,
+}: {
+  access: StudentAccessCrm;
+  packages: NonNullable<StudentAccessCrm["packages"]>;
+}) {
+  const notice = getPrimaryLimitNotice({ access, packages });
+
+  if (!notice) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm leading-6 text-amber-950 shadow-sm">
+      <p className="font-semibold">
+        Основной лимит исчерпан: {notice.used} из {notice.limit}.
+      </p>
+      <p className="mt-1">
+        {notice.nextSource
+          ? `Следующий активный доступ: ${notice.nextSource}. Новые записи будут идти по нему.`
+          : "Активного дополнительного доступа нет. Ученик не сможет записаться, пока руководитель не добавит новый доступ."}
+      </p>
+    </div>
+  );
 }
 
 function StudentLessonPackageList({
@@ -285,15 +537,20 @@ function StudentLessonPackageList({
   packages,
   lessonTypes,
   schools,
+  canManageStudentPrices,
+  canManageStudentLessonPackages,
 }: {
   access: StudentAccessCrm;
   packages: NonNullable<StudentAccessCrm["packages"]>;
   lessonTypes: LessonType[];
   schools: School[];
+  canManageStudentPrices: boolean;
+  canManageStudentLessonPackages: boolean;
 }) {
   if (packages.length === 0) {
     return (
       <div className="space-y-3">
+        <PrimaryLimitNotice access={access} packages={packages} />
         <div className="rounded-xl border bg-white p-3 text-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
@@ -348,6 +605,7 @@ function StudentLessonPackageList({
               access={access}
               lessonTypes={lessonTypes}
               schools={schools}
+              canManageStudentPrices={canManageStudentPrices}
             />
           </div>
         </div>
@@ -361,6 +619,7 @@ function StudentLessonPackageList({
 
   return (
     <div className="space-y-2">
+      <PrimaryLimitNotice access={access} packages={packages} />
       {packages.map((packageItem, index) => (
         <div
           key={packageItem.id}
@@ -405,16 +664,23 @@ function StudentLessonPackageList({
                 access={access}
                 lessonTypes={lessonTypes}
                 schools={schools}
+                primaryPackage={packageItem}
+                canManageStudentPrices={canManageStudentPrices}
               />
             </div>
-          ) : (
+          ) : canManageStudentLessonPackages ? (
             <div className="mt-3 space-y-2 border-t pt-3">
               <EditStudentLessonPackageForm
                 packageItem={packageItem}
                 lessonTypes={lessonTypes}
                 schools={schools}
+                canManageStudentPrices={canManageStudentPrices}
               />
               <DeleteStudentLessonPackageForm packageItem={packageItem} />
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500">
+              Дополнительный доступ изменяет руководитель.
             </div>
           )}
         </div>
@@ -427,10 +693,14 @@ function EditPrimaryStudentAccessForm({
   access,
   lessonTypes,
   schools,
+  primaryPackage,
+  canManageStudentPrices,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
+  primaryPackage?: NonNullable<StudentAccessCrm["packages"]>[number];
+  canManageStudentPrices: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
     updateStudentAccessAction,
@@ -441,6 +711,14 @@ function EditPrimaryStudentAccessForm({
     access.lesson_type_ids,
   );
   const editableSchools = getEditableSchools(schools, access.school_id);
+  const [selectedSchoolId, setSelectedSchoolId] = useState(
+    access.school_id ?? "",
+  );
+  const selectedSchool = editableSchools.find(
+    (school) => school.id === selectedSchoolId,
+  );
+  const canEditPaymentRule =
+    canManageStudentPrices && isPrivateStudentsSchool(selectedSchool);
 
   return (
     <details className="rounded-xl border bg-zinc-50">
@@ -466,7 +744,8 @@ function EditPrimaryStudentAccessForm({
               id={`primary-school-${access.id}`}
               name="school_id"
               className={selectClassName}
-              defaultValue={access.school_id ?? ""}
+              value={selectedSchoolId}
+              onChange={(event) => setSelectedSchoolId(event.target.value)}
               required
             >
               {!access.school_id && (
@@ -499,7 +778,31 @@ function EditPrimaryStudentAccessForm({
           />
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
+          {canManageStudentPrices && (
+            <div className="space-y-2">
+              <Label htmlFor={`primary-custom-price-${access.id}`}>
+                Индивидуальная цена за занятие
+              </Label>
+              <Input
+                id={`primary-custom-price-${access.id}`}
+                name="custom_price_amount"
+                type="number"
+                min={0}
+                max={10000000}
+                defaultValue={primaryPackage?.custom_price_amount ?? ""}
+                placeholder="По настройкам школы"
+              />
+            </div>
+          )}
+
+          {canEditPaymentRule && (
+            <PaymentRuleOverrideField
+              id={`primary-payment-rule-${access.id}`}
+              defaultValue={primaryPackage?.payment_rule_override}
+            />
+          )}
+
           <div className="space-y-2">
             <Label htmlFor={`primary-total-${access.id}`}>
               Лимит всего занятий
@@ -554,10 +857,12 @@ function EditStudentLessonPackageForm({
   packageItem,
   lessonTypes,
   schools,
+  canManageStudentPrices,
 }: {
   packageItem: NonNullable<StudentAccessCrm["packages"]>[number];
   lessonTypes: LessonType[];
   schools: School[];
+  canManageStudentPrices: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
     updateStudentLessonPackageAction,
@@ -568,6 +873,16 @@ function EditStudentLessonPackageForm({
     packageItem.lesson_type_ids,
   );
   const editableSchools = getEditableSchools(schools, packageItem.school_id);
+  const [selectedSchoolId, setSelectedSchoolId] = useState(
+    packageItem.school_id ?? "",
+  );
+  const selectedSchool = editableSchools.find(
+    (school) => school.id === selectedSchoolId,
+  );
+  const canEditCustomPrice =
+    canManageStudentPrices || isPrivateStudentsSchool(selectedSchool);
+  const canEditPaymentRule =
+    canEditCustomPrice && isPrivateStudentsSchool(selectedSchool);
 
   return (
     <details className="rounded-xl border bg-zinc-50">
@@ -590,7 +905,8 @@ function EditStudentLessonPackageForm({
               id={`edit-package-school-${packageItem.id}`}
               name="school_id"
               className={selectClassName}
-              defaultValue={packageItem.school_id ?? ""}
+              value={selectedSchoolId}
+              onChange={(event) => setSelectedSchoolId(event.target.value)}
               required
             >
               {!packageItem.school_id && (
@@ -632,7 +948,31 @@ function EditStudentLessonPackageForm({
           />
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
+          {canEditCustomPrice && (
+            <div className="space-y-2">
+              <Label htmlFor={`edit-package-custom-price-${packageItem.id}`}>
+                Индивидуальная цена за занятие
+              </Label>
+              <Input
+                id={`edit-package-custom-price-${packageItem.id}`}
+                name="custom_price_amount"
+                type="number"
+                min={0}
+                max={10000000}
+                defaultValue={packageItem.custom_price_amount ?? ""}
+                placeholder="По настройкам школы"
+              />
+            </div>
+          )}
+
+          {canEditPaymentRule && (
+            <PaymentRuleOverrideField
+              id={`edit-package-payment-rule-${packageItem.id}`}
+              defaultValue={packageItem.payment_rule_override}
+            />
+          )}
+
           <div className="space-y-2">
             <Label htmlFor={`edit-package-total-${packageItem.id}`}>
               Лимит всего занятий
@@ -727,10 +1067,12 @@ function AddStudentLessonPackageForm({
   access,
   lessonTypes,
   schools,
+  canManageStudentPrices,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
+  canManageStudentPrices: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
     addStudentLessonPackageAction,
@@ -739,6 +1081,14 @@ function AddStudentLessonPackageForm({
   const activeLessonTypes = getActiveLessonTypes(lessonTypes);
   const activeSchools = getActiveSchools(schools);
   const defaultSchoolId = activeSchools[0]?.id ?? "";
+  const [selectedSchoolId, setSelectedSchoolId] = useState(defaultSchoolId);
+  const selectedSchool = activeSchools.find(
+    (school) => school.id === selectedSchoolId,
+  );
+  const canEditCustomPrice =
+    canManageStudentPrices || isPrivateStudentsSchool(selectedSchool);
+  const canEditPaymentRule =
+    canEditCustomPrice && isPrivateStudentsSchool(selectedSchool);
 
   return (
     <details className="rounded-xl border bg-white">
@@ -757,7 +1107,8 @@ function AddStudentLessonPackageForm({
               id={`package-school-${access.id}`}
               name="school_id"
               className={selectClassName}
-              defaultValue={defaultSchoolId}
+              value={selectedSchoolId}
+              onChange={(event) => setSelectedSchoolId(event.target.value)}
               required
             >
               {activeSchools.length === 0 && (
@@ -795,7 +1146,27 @@ function AddStudentLessonPackageForm({
           <LessonTypeCheckboxes lessonTypes={activeLessonTypes} />
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
+          {canEditCustomPrice && (
+            <div className="space-y-2">
+              <Label htmlFor={`package-custom-price-${access.id}`}>
+                Индивидуальная цена за занятие
+              </Label>
+              <Input
+                id={`package-custom-price-${access.id}`}
+                name="custom_price_amount"
+                type="number"
+                min={0}
+                max={10000000}
+                placeholder="По настройкам школы"
+              />
+            </div>
+          )}
+
+          {canEditPaymentRule && (
+            <PaymentRuleOverrideField id={`package-payment-rule-${access.id}`} />
+          )}
+
           <div className="space-y-2">
             <Label htmlFor={`package-total-${access.id}`}>
               Лимит всего занятий
@@ -1009,12 +1380,14 @@ function CreateStudentAccessForm({
   schools,
   selectedInstructorId,
   canSelectInstructor,
+  canManageStudentPrices,
 }: {
   instructors: Instructor[];
   lessonTypes: LessonType[];
   schools: School[];
   selectedInstructorId: string;
   canSelectInstructor: boolean;
+  canManageStudentPrices: boolean;
 }) {
   const [state, formAction, isPending] = useActionState(
     createStudentAccessAction,
@@ -1026,6 +1399,12 @@ function CreateStudentAccessForm({
   const activeLessonTypes = getActiveLessonTypes(lessonTypes);
   const activeSchools = getActiveSchools(schools);
   const defaultSchoolId = activeSchools[0]?.id ?? "";
+  const [selectedSchoolId, setSelectedSchoolId] = useState(defaultSchoolId);
+  const selectedSchool = activeSchools.find(
+    (school) => school.id === selectedSchoolId,
+  );
+  const canEditPaymentRule =
+    canManageStudentPrices && isPrivateStudentsSchool(selectedSchool);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -1143,7 +1522,8 @@ function CreateStudentAccessForm({
               id="student-access-school"
               name="school_id"
               className={selectClassName}
-              defaultValue={defaultSchoolId}
+              value={selectedSchoolId}
+              onChange={(event) => setSelectedSchoolId(event.target.value)}
               required
             >
               {activeSchools.length === 0 && (
@@ -1174,7 +1554,27 @@ function CreateStudentAccessForm({
           <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
             Дополнительно
           </summary>
-          <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-2">
+          <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-3">
+            {canManageStudentPrices && (
+              <div className="space-y-2">
+                <Label htmlFor="student-access-custom-price">
+                  Индивидуальная цена за занятие
+                </Label>
+                <Input
+                  id="student-access-custom-price"
+                  name="custom_price_amount"
+                  type="number"
+                  min={0}
+                  max={10000000}
+                  placeholder="По настройкам школы"
+                />
+              </div>
+            )}
+
+            {canEditPaymentRule && (
+              <PaymentRuleOverrideField id="student-access-payment-rule" />
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="student-access-total-limit">
                 Лимит всего занятий
@@ -1203,7 +1603,7 @@ function CreateStudentAccessForm({
               />
             </div>
 
-            <label className="flex items-center gap-2 text-sm font-medium md:col-span-2">
+            <label className="flex items-center gap-2 text-sm font-medium md:col-span-3">
               <input
                 type="checkbox"
                 name="is_active"
@@ -1234,12 +1634,16 @@ function StudentAccessCard({
   lessonTypes,
   schools,
   canDeleteStudents,
+  canManageStudentPrices,
+  canManageStudentLessonPackages,
   isHighlighted = false,
 }: {
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
   canDeleteStudents: boolean;
+  canManageStudentPrices: boolean;
+  canManageStudentLessonPackages: boolean;
   isHighlighted?: boolean;
 }) {
   const [newSecret, setNewSecret] = useState("");
@@ -1279,43 +1683,49 @@ function StudentAccessCard({
     >
       <summary className="cursor-pointer list-none px-4 py-4 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <KeyRound className="size-4 text-zinc-500" />
-              <p className="truncate font-semibold">{access.display_label}</p>
-            </div>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Логин: <span className="font-semibold">{access.login}</span>
-            </p>
-            {access.student_phone && (
+          <div className="flex min-w-0 items-start gap-3">
+            <StudentAvatar
+              label={access.display_label}
+              photoUrl={access.student_photo_url}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <KeyRound className="size-4 text-zinc-500" />
+                <p className="truncate font-semibold">{access.display_label}</p>
+              </div>
               <p className="text-muted-foreground mt-1 text-xs">
-                Способ связи:{" "}
-                <span className="font-semibold">{access.student_phone}</span>
+                Логин: <span className="font-semibold">{access.login}</span>
               </p>
-            )}
-            <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-              <span
-                className={`rounded-full px-2 py-1 font-semibold ${
-                  isStudentProfileCompleted(access)
-                    ? "bg-emerald-100 text-emerald-800"
-                    : "bg-amber-100 text-amber-800"
-                }`}
-              >
-                {isStudentProfileCompleted(access)
-                  ? "Профиль заполнен"
-                  : "Ждёт согласия"}
-              </span>
-              <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold text-zinc-700">
-                План {access.crm?.plannedCount ?? 0}
-              </span>
-              <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
-                Проведено {access.crm?.completedCount ?? 0}
-              </span>
-              {(access.crm?.debtAmount ?? 0) > 0 && (
-                <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
-                  Долг {formatMoney(access.crm?.debtAmount ?? 0)}
-                </span>
+              {access.student_phone && (
+                <p className="text-muted-foreground mt-1 text-xs">
+                  Способ связи:{" "}
+                  <span className="font-semibold">{access.student_phone}</span>
+                </p>
               )}
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <span
+                  className={`rounded-full px-2 py-1 font-semibold ${
+                    isStudentProfileCompleted(access)
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {isStudentProfileCompleted(access)
+                    ? "Профиль заполнен"
+                    : "Ждёт согласия"}
+                </span>
+                <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold text-zinc-700">
+                  План {access.crm?.plannedCount ?? 0}
+                </span>
+                <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
+                  Проведено {access.crm?.completedCount ?? 0}
+                </span>
+                {(access.crm?.debtAmount ?? 0) > 0 && (
+                  <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
+                    Долг {formatMoney(access.crm?.debtAmount ?? 0)}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1408,48 +1818,15 @@ function StudentAccessCard({
           {access.crm && access.crm.lastLessons.length > 0 && (
             <div>
               <p className="text-sm font-semibold">История занятий</p>
-            <div className="mt-2 divide-y rounded-xl border bg-white">
-              {access.crm.lastLessons.map((lesson) => (
-                <div
-                  key={lesson.id}
-                  className="flex flex-col gap-1 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{lesson.lessonTypeName}</p>
-                    <p className="text-xs text-zinc-500">
-                      {formatLocalDateTime(lesson.startsAt)}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="rounded-full bg-zinc-100 px-2 py-1 font-semibold">
-                      {lesson.lessonState === "completed"
-                        ? "Проведено"
-                        : lesson.lessonState === "no_show"
-                          ? "Неявка"
-                          : "План"}
-                    </span>
-                    {lesson.priceAmount !== null && (
-                      <>
-                        <span className="font-semibold">
-                          {formatMoney(lesson.paidAmount)} /{" "}
-                          {formatMoney(lesson.priceAmount)}
-                        </span>
-                        {lesson.paidAmount >= lesson.priceAmount ? (
-                          <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
-                            Долга нет
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
-                            Долг{" "}
-                            {formatMoney(lesson.priceAmount - lesson.paidAmount)}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+              <div className="mt-2 divide-y rounded-xl border bg-white">
+                {access.crm.lastLessons.map((lesson) => (
+                  <StudentLessonHistoryRow
+                    key={lesson.id}
+                    lesson={lesson}
+                    canManageStudentPrices={canManageStudentPrices}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </section>
@@ -1468,12 +1845,21 @@ function StudentAccessCard({
             packages={access.packages ?? []}
             lessonTypes={lessonTypes}
             schools={schools}
+            canManageStudentPrices={canManageStudentPrices}
+            canManageStudentLessonPackages={canManageStudentLessonPackages}
           />
-          <AddStudentLessonPackageForm
-            access={access}
-            lessonTypes={lessonTypes}
-            schools={schools}
-          />
+          {canManageStudentLessonPackages ? (
+            <AddStudentLessonPackageForm
+              access={access}
+              lessonTypes={lessonTypes}
+              schools={schools}
+              canManageStudentPrices={canManageStudentPrices}
+            />
+          ) : (
+            <div className="rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm text-zinc-500">
+              Дополнительные доступы добавляет руководитель.
+            </div>
+          )}
         </section>
 
         <form action={updateAction} className="space-y-4">
@@ -1664,10 +2050,12 @@ function StudentRegistrationRequestCard({
   request,
   lessonTypes,
   schools,
+  canManageStudentPrices,
 }: {
   request: StudentRegistrationRequest;
   lessonTypes: LessonType[];
   schools: School[];
+  canManageStudentPrices: boolean;
 }) {
   const [approveState, approveAction, isApprovePending] = useActionState(
     approveStudentRegistrationRequestAction,
@@ -1681,6 +2069,12 @@ function StudentRegistrationRequestCard({
   const activeLessonTypes = getActiveLessonTypes(lessonTypes);
   const activeSchools = getActiveSchools(schools);
   const defaultSchoolId = activeSchools[0]?.id ?? "";
+  const [selectedSchoolId, setSelectedSchoolId] = useState(defaultSchoolId);
+  const selectedSchool = activeSchools.find(
+    (school) => school.id === selectedSchoolId,
+  );
+  const canEditPaymentRule =
+    canManageStudentPrices && isPrivateStudentsSchool(selectedSchool);
 
   return (
     <details className="rounded-2xl border border-amber-200 bg-amber-50/70 shadow-sm open:border-amber-400 open:shadow-md">
@@ -1760,7 +2154,8 @@ function StudentRegistrationRequestCard({
                 id={`request-school-${request.id}`}
                 name="school_id"
                 className={selectClassName}
-                defaultValue={defaultSchoolId}
+                value={selectedSchoolId}
+                onChange={(event) => setSelectedSchoolId(event.target.value)}
                 required
               >
                 {activeSchools.length === 0 && (
@@ -1788,7 +2183,29 @@ function StudentRegistrationRequestCard({
             <summary className="cursor-pointer list-none px-3 py-3 text-sm font-semibold">
               Дополнительно
             </summary>
-            <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-2">
+            <div className="grid gap-4 border-t px-3 py-4 md:grid-cols-3">
+              {canManageStudentPrices && (
+                <div className="space-y-2">
+                  <Label htmlFor={`request-custom-price-${request.id}`}>
+                    Индивидуальная цена за занятие
+                  </Label>
+                  <Input
+                    id={`request-custom-price-${request.id}`}
+                    name="custom_price_amount"
+                    type="number"
+                    min={0}
+                    max={10000000}
+                    placeholder="По настройкам школы"
+                  />
+                </div>
+              )}
+
+              {canEditPaymentRule && (
+                <PaymentRuleOverrideField
+                  id={`request-payment-rule-${request.id}`}
+                />
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor={`request-total-limit-${request.id}`}>
                   Лимит всего занятий
@@ -1815,7 +2232,7 @@ function StudentRegistrationRequestCard({
                   placeholder="Например: 2"
                 />
               </div>
-              <label className="flex items-center gap-2 text-sm font-medium md:col-span-2">
+              <label className="flex items-center gap-2 text-sm font-medium md:col-span-3">
                 <input
                   type="checkbox"
                   name="is_active"
@@ -1880,25 +2297,32 @@ function ArchivedAccessCard({
       }`}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Archive className="size-4 text-zinc-400" />
-            <p className="truncate font-semibold text-zinc-600">
-              {access.display_label}
-            </p>
-          </div>
-          <p className="text-muted-foreground mt-1 text-xs">
-            Логин: <span className="font-semibold">{access.login}</span>
-            {access.archived_at
-              ? ` · В архиве с ${formatLocalDateTime(access.archived_at)}`
-              : ""}
-          </p>
-          {access.student_phone && (
+        <div className="flex min-w-0 items-start gap-3">
+          <StudentAvatar
+            label={access.display_label}
+            photoUrl={access.student_photo_url}
+            className="size-10 opacity-80"
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Archive className="size-4 text-zinc-400" />
+              <p className="truncate font-semibold text-zinc-600">
+                {access.display_label}
+              </p>
+            </div>
             <p className="text-muted-foreground mt-1 text-xs">
-              Способ связи:{" "}
-              <span className="font-semibold">{access.student_phone}</span>
+              Логин: <span className="font-semibold">{access.login}</span>
+              {access.archived_at
+                ? ` · В архиве с ${formatLocalDateTime(access.archived_at)}`
+                : ""}
             </p>
-          )}
+            {access.student_phone && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                Способ связи:{" "}
+                <span className="font-semibold">{access.student_phone}</span>
+              </p>
+            )}
+          </div>
         </div>
         <Badge className="shrink-0 bg-zinc-200 text-zinc-600">Архив</Badge>
       </div>
@@ -2059,6 +2483,8 @@ export function StudentAccessesPanel({
   registrationLink,
   registrationLinkUpdatedAt,
   canDeleteStudents = false,
+  canManageStudentPrices = false,
+  canManageStudentLessonPackages = false,
   highlightedStudentAccessId,
 }: {
   instructors: Instructor[];
@@ -2073,6 +2499,8 @@ export function StudentAccessesPanel({
   registrationLink: string | null;
   registrationLinkUpdatedAt: string | null;
   canDeleteStudents?: boolean;
+  canManageStudentPrices?: boolean;
+  canManageStudentLessonPackages?: boolean;
   highlightedStudentAccessId?: string | null;
 }) {
   const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
@@ -2174,6 +2602,7 @@ export function StudentAccessesPanel({
           schools={schools}
           selectedInstructorId={selectedInstructorId}
           canSelectInstructor={canSelectInstructor}
+          canManageStudentPrices={canManageStudentPrices}
         />
       )}
 
@@ -2254,6 +2683,8 @@ export function StudentAccessesPanel({
                   lessonTypes={lessonTypes}
                   schools={schools}
                   canDeleteStudents={canDeleteStudents}
+                  canManageStudentPrices={canManageStudentPrices}
+                  canManageStudentLessonPackages={canManageStudentLessonPackages}
                   isHighlighted={access.id === highlightedStudentAccessId}
                 />
               ))}
@@ -2276,6 +2707,7 @@ export function StudentAccessesPanel({
                   request={request}
                   lessonTypes={lessonTypes}
                   schools={schools}
+                  canManageStudentPrices={canManageStudentPrices}
                 />
               ))}
             </div>

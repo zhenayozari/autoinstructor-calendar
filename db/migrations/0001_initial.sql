@@ -25,10 +25,48 @@ create table public.app_users (
   )
 );
 
+create table public.auth_login_rate_limits (
+  scope text not null,
+  key_hash text not null,
+  failed_count integer not null default 0,
+  window_started_at timestamptz not null default now(),
+  last_failed_at timestamptz not null default now(),
+  blocked_until timestamptz,
+  primary key (scope, key_hash),
+  constraint auth_login_rate_limits_scope_check check (
+    scope in ('account', 'account_ip', 'ip')
+  ),
+  constraint auth_login_rate_limits_key_hash_check check (
+    key_hash ~ '^[a-f0-9]{64}$'
+  ),
+  constraint auth_login_rate_limits_failed_count_check check (failed_count >= 0)
+);
+
+create index auth_login_rate_limits_blocked_until_idx
+  on public.auth_login_rate_limits(blocked_until);
+
+create table public.app_user_sessions (
+  id uuid primary key default gen_random_uuid(),
+  app_user_id uuid not null references public.app_users(id) on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint app_user_sessions_token_hash_format check (
+    token_hash ~ '^[a-f0-9]{64}$'
+  ),
+  constraint app_user_sessions_expiry_check check (expires_at > created_at)
+);
+
+create index app_user_sessions_active_user_idx
+  on public.app_user_sessions(app_user_id, expires_at)
+  where revoked_at is null;
+
 create table public.organizations (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text not null unique,
+  include_owner_in_payouts boolean not null default false,
   created_at timestamptz not null default now(),
   constraint organizations_name_not_blank check (length(trim(name)) > 0),
   constraint organizations_slug_format check (
@@ -49,6 +87,7 @@ create table public.instructors (
   public_name text,
   short_bio text,
   contact_text text,
+  show_contact_in_student_cabinet boolean not null default false,
   car_description text,
   experience_text text,
   public_is_visible boolean not null default true,
@@ -291,6 +330,7 @@ create table public.student_accesses (
     on delete cascade,
   display_label text not null,
   student_phone text,
+  student_photo_url text,
   login text not null,
   password_hash text not null,
   total_lesson_limit integer,
@@ -328,6 +368,23 @@ create table public.student_accesses (
   constraint student_accesses_org_login_unique unique (organization_id, login)
 );
 
+create table public.student_access_sessions (
+  id uuid primary key default gen_random_uuid(),
+  student_access_id uuid not null references public.student_accesses(id) on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint student_access_sessions_token_hash_format check (
+    token_hash ~ '^[a-f0-9]{64}$'
+  ),
+  constraint student_access_sessions_expiry_check check (expires_at > created_at)
+);
+
+create index student_access_sessions_active_access_idx
+  on public.student_access_sessions(student_access_id, expires_at)
+  where revoked_at is null;
+
 create index student_accesses_instructor_idx
   on public.student_accesses(instructor_id, is_active, display_label);
 
@@ -353,16 +410,25 @@ create table public.student_lesson_packages (
   student_access_id uuid not null references public.student_accesses(id) on delete cascade,
   organization_id uuid not null references public.organizations(id) on delete cascade,
   instructor_id uuid not null references public.instructors(id) on delete cascade,
-  school_id uuid references public.schools(id) on delete set null,
-  booking_category text not null default 'regular',
-  total_lesson_limit integer,
-  weekly_lesson_limit integer,
+    school_id uuid references public.schools(id) on delete set null,
+    booking_category text not null default 'regular',
+    custom_price_amount integer,
+    payment_rule_override text,
+    total_lesson_limit integer,
+    weekly_lesson_limit integer,
   is_active boolean not null default true,
   sort_order integer not null default 100,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint student_lesson_packages_booking_category_check
     check (booking_category in ('regular', 'extra', 'gift')),
+  constraint student_lesson_packages_custom_price_check
+    check (custom_price_amount is null or custom_price_amount between 0 and 10000000),
+  constraint student_lesson_packages_payment_rule_override_check
+    check (
+      payment_rule_override is null
+      or payment_rule_override in ('manual', 'prepaid', 'settle_later')
+    ),
   constraint student_lesson_packages_total_limit_check
     check (total_lesson_limit is null or total_lesson_limit > 0),
   constraint student_lesson_packages_weekly_limit_check
@@ -1130,4 +1196,3 @@ where schedule_days.published_at is not null
   and instructors.is_active
   and instructors.public_is_visible
   and lesson_types.is_active;
-

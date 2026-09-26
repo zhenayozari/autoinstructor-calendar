@@ -23,6 +23,11 @@ import {
   selectStudentLessonPackageForBooking,
   selectStudentLessonPackageForBookingPostgres,
 } from "@/lib/student-lesson-packages";
+import {
+  correctInstructorPayoutForBooking,
+  createInstructorPayoutEntryForBookingWithCurrentPolicy,
+} from "@/lib/instructor-payouts";
+import { assertInstructorWeeklyLessonLimit } from "@/lib/instructor-weekly-limit";
 
 export type SlotActionState = {
   status: "idle" | "success" | "error";
@@ -2815,6 +2820,13 @@ export async function cancelBookingAction(formData: FormData) {
         [new Date().toISOString(), bookingId],
       );
 
+      await correctInstructorPayoutForBooking({
+        bookingId,
+        correctionType: "cancellation_adjustment",
+        createdByMemberId: membership.id,
+        note: "Booking was cancelled",
+      });
+
       await logAuditEvent({
         membership,
         action: "booking.cancelled",
@@ -3075,6 +3087,12 @@ export async function assignStudentToSlotAction(
         throw new Error("День расписания не найден");
       }
 
+      await assertInstructorWeeklyLessonLimit({
+        organizationId: access.organization_id,
+        instructorId: slot.instructor_id,
+        lessonDate: scheduleDay.date,
+      });
+
       const selectedPackage = await selectStudentLessonPackageForBookingPostgres({
         access,
         lessonTypeId: slot.lesson_type_id,
@@ -3090,22 +3108,28 @@ export async function assignStudentToSlotAction(
           schoolId: selectedPackage.schoolId,
           lessonTypeId: slot.lesson_type_id,
         });
+      const packagePriceAmount =
+        selectedPackage.customPriceAmount ?? configuredPriceAmount;
       const priceAmount = getEffectiveBookingPriceAmount({
-        priceAmount: configuredPriceAmount,
+        priceAmount: packagePriceAmount,
         bookingCategory: selectedPackage.bookingCategory,
       });
-      const paymentRule = await getSchoolPaymentRulePostgres({
-        organizationId: access.organization_id,
-        schoolId: selectedPackage.schoolId,
-      });
+      const paymentRule =
+        selectedPackage.paymentRuleOverride ??
+        (await getSchoolPaymentRulePostgres({
+          organizationId: access.organization_id,
+          schoolId: selectedPackage.schoolId,
+        }));
       const paymentFields = getInitialBookingPaymentFields({
         priceAmount,
         paymentRule,
         bookingCategory: selectedPackage.bookingCategory,
       });
 
+      let createdBookingId: string | null = null;
+
       try {
-        await executeQuery(
+        const createdBooking = await queryOne<{ id: string }>(
           `
             insert into public.bookings (
               slot_id, student_access_id, student_label,
@@ -3113,6 +3137,7 @@ export async function assignStudentToSlotAction(
               paid_amount, is_paid, paid_at, booking_category, status
             )
             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed')
+            returning id
           `,
           [
             slot.id,
@@ -3127,12 +3152,21 @@ export async function assignStudentToSlotAction(
             selectedPackage.bookingCategory,
           ],
         );
+
+        createdBookingId = createdBooking?.id ?? null;
       } catch (error) {
         if (isPostgresErrorCode(error, "23505")) {
           throw new Error("Этот слот уже занят");
         }
 
         throw error;
+      }
+
+      if (createdBookingId) {
+        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+          bookingId: createdBookingId,
+          createdByMemberId: membership.id,
+        });
       }
 
       await logAuditEvent({
@@ -3259,15 +3293,19 @@ export async function assignStudentToSlotAction(
       selectedPackage.schoolId,
       slot.lesson_type_id,
     );
+    const packagePriceAmount =
+      selectedPackage.customPriceAmount ?? configuredPriceAmount;
     const priceAmount = getEffectiveBookingPriceAmount({
-      priceAmount: configuredPriceAmount,
+      priceAmount: packagePriceAmount,
       bookingCategory: selectedPackage.bookingCategory,
     });
-    const paymentRule = await getSchoolPaymentRule({
-      supabase,
-      organizationId: access.organization_id,
-      schoolId: selectedPackage.schoolId,
-    });
+    const paymentRule =
+      selectedPackage.paymentRuleOverride ??
+      (await getSchoolPaymentRule({
+        supabase,
+        organizationId: access.organization_id,
+        schoolId: selectedPackage.schoolId,
+      }));
     const insertError = await insertAssignedStudentBooking({
       supabase,
       slotId: slot.id,
@@ -4560,6 +4598,26 @@ export async function updateBookingLessonStateAction(formData: FormData) {
           bookingId,
         ],
       );
+
+      if (lessonState === "completed") {
+        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+          bookingId,
+          createdByMemberId: membership.id,
+        });
+      } else {
+        await correctInstructorPayoutForBooking({
+          bookingId,
+          correctionType:
+            lessonState === "no_show"
+              ? "no_show_adjustment"
+              : "manual_adjustment",
+          createdByMemberId: membership.id,
+          note:
+            lessonState === "no_show"
+              ? "Booking was marked as no-show"
+              : "Booking was returned to scheduled",
+        });
+      }
 
       await logAuditEvent({
         membership,

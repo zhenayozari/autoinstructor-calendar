@@ -35,6 +35,7 @@ export function AdminScheduleWorkspace({
   initialInstructorId,
   canSelectInstructor,
   adminEnabled,
+  showClientPrices = true,
   initialSlotDate,
   initialOpenSlotForm = false,
 }: {
@@ -49,6 +50,7 @@ export function AdminScheduleWorkspace({
   initialInstructorId: string;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  showClientPrices?: boolean;
   initialSlotDate?: string;
   initialOpenSlotForm?: boolean;
 }) {
@@ -90,7 +92,7 @@ export function AdminScheduleWorkspace({
   return (
     <div className="space-y-4 sm:space-y-5">
       <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
+        <CardHeader className="px-6 py-4 pb-2">
           <div>
             <CardTitle>Недельный календарь</CardTitle>
             <CardDescription>
@@ -98,7 +100,7 @@ export function AdminScheduleWorkspace({
             </CardDescription>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-6 pb-6 pt-1">
           <AdminWeekCalendar
             instructors={instructors}
             lessonTypes={lessonTypes}
@@ -114,6 +116,7 @@ export function AdminScheduleWorkspace({
             onInstructorChange={setInstructorId}
             canSelectInstructor={canSelectInstructor}
             adminEnabled={adminEnabled}
+            showClientPrices={showClientPrices}
             onCreateSlotForDate={handleCreateSlotForDate}
           />
         </CardContent>

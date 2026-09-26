@@ -2,6 +2,7 @@ import "server-only";
 
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryRows } from "@/lib/db/postgres";
+import { createInstructorPayoutEntryForBookingWithCurrentPolicy } from "@/lib/instructor-payouts";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 
 type AutoCompletePastBookingsOptions = {
@@ -64,6 +65,11 @@ export async function autoCompletePastBookings({
           `,
           [booking.id, booking.completed_at],
         );
+
+        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+          bookingId: booking.id,
+          plannedAt: booking.completed_at,
+        });
       }
 
       return bookings.length;

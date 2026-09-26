@@ -15,6 +15,11 @@ import { requireActiveOrganizationMember } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import {
+  getInstructorPayoutSettings,
+  getInstructorPayoutSummary,
+  getInstructorSourceVisibility,
+} from "@/lib/instructor-payouts";
+import {
   formatDate,
   formatMoney,
   formatTime,
@@ -85,11 +90,13 @@ function SlotRow({
   timezone,
   compact = false,
   adminEnabled = false,
+  showClientPrices = true,
 }: {
   slot: DashboardSlot;
   timezone: string;
   compact?: boolean;
   adminEnabled?: boolean;
+  showClientPrices?: boolean;
 }) {
   const note = getVisibleSlotNote(slot.note);
 
@@ -151,14 +158,16 @@ function SlotRow({
               {slot.booking.student_label}
             </p>
           </div>
-          {slot.booking.price_amount !== null && slot.booking.price_amount !== undefined && (
+          {showClientPrices &&
+            slot.booking.price_amount !== null &&
+            slot.booking.price_amount !== undefined && (
             <p className="mt-1.5 text-xs font-semibold text-amber-900">
               К оплате: {formatMoney(slot.booking.price_amount)}
               {" · "}
               Получено: {formatMoney(slot.booking.paid_amount ?? 0)}
             </p>
           )}
-          {slot.booking.is_paid && slot.booking.paid_at && (
+          {showClientPrices && slot.booking.is_paid && slot.booking.paid_at && (
             <p className="mt-1.5 flex items-center gap-1 text-xs text-emerald-700">
               <CheckCircle2 className="size-3" />
               Оплачено {formatTime(slot.booking.paid_at, timezone)}
@@ -172,21 +181,27 @@ function SlotRow({
               disabled={!adminEnabled}
             />
           </div>
-          <details className="mt-2 rounded-xl border border-amber-200 bg-white/70">
-            <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold text-amber-950">
-              Оплата
-            </summary>
-            <div className="border-t border-amber-100 p-2">
-              <BookingPaymentForm
-                bookingId={slot.booking.id}
-                priceAmount={slot.booking.price_amount ?? null}
-                paidAmount={slot.booking.paid_amount ?? null}
-                paymentNote={slot.booking.payment_note ?? null}
-                isPaid={slot.booking.is_paid}
-                disabled={!adminEnabled}
-              />
-            </div>
-          </details>
+          {showClientPrices ? (
+            <details className="mt-2 rounded-xl border border-amber-200 bg-white/70">
+              <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold text-amber-950">
+                Оплата
+              </summary>
+              <div className="border-t border-amber-100 p-2">
+                <BookingPaymentForm
+                  bookingId={slot.booking.id}
+                  priceAmount={slot.booking.price_amount ?? null}
+                  paidAmount={slot.booking.paid_amount ?? null}
+                  paymentNote={slot.booking.payment_note ?? null}
+                  isPaid={slot.booking.is_paid}
+                  disabled={!adminEnabled}
+                />
+              </div>
+            </details>
+          ) : (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-white/70 px-3 py-2 text-xs text-amber-900">
+              Клиентские цены скрыты настройками руководителя.
+            </p>
+          )}
         </div>
       )}
 
@@ -401,16 +416,67 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const scheduleDaysById = new Map(
     scheduleDays.map((scheduleDay) => [scheduleDay.id, scheduleDay]),
   );
-  const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  let showClientPrices = true;
+  let visibleSchoolIds: Set<string> | null = null;
+  let instructorPayoutSummary: {
+    planned_amount: number;
+    paid_amount: number;
+    remaining_amount: number;
+  } | null = null;
+
+  if (postgresBackend && membership.isInstructor && selectedInstructor) {
+    const [payoutSettings, payoutSummary] = await Promise.all([
+      getInstructorPayoutSettings({
+        organizationId: membership.organizationId,
+        instructorId: selectedInstructor.id,
+      }),
+      getInstructorPayoutSummary({
+        organizationId: membership.organizationId,
+        instructorId: selectedInstructor.id,
+      }),
+    ]);
+
+    showClientPrices = payoutSettings?.show_client_prices !== false;
+    instructorPayoutSummary = payoutSummary;
+
+    if (payoutSettings?.source_visibility_mode === "selected_only") {
+      const sourceVisibility = await getInstructorSourceVisibility({
+        organizationId: membership.organizationId,
+        instructorId: selectedInstructor.id,
+      });
+      visibleSchoolIds = new Set(
+        sourceVisibility
+          .filter((item) => item.is_visible)
+          .map((item) => item.school_id),
+      );
+    }
+  }
+  const visibleSchoolsById = new Map(
+    schools
+      .filter((school) => !visibleSchoolIds || visibleSchoolIds.has(school.id))
+      .map((school) => [school.id, school]),
+  );
   const bookingsBySlotId = new Map(
-    bookings.map((booking) => [booking.slot_id, booking]),
+    bookings.map((booking) => [
+      booking.slot_id,
+      showClientPrices
+        ? booking
+        : {
+            ...booking,
+            price_amount: null,
+            paid_amount: null,
+            is_paid: false,
+            paid_at: null,
+            payment_note: null,
+          },
+    ]),
   );
   const dashboardSlots: DashboardSlot[] = slots
     .map((slot) => ({
       ...slot,
       lessonType: lessonTypesById.get(slot.lesson_type_id) ?? null,
       scheduleDay: scheduleDaysById.get(slot.schedule_day_id) ?? null,
-      school: slot.school_id ? schoolsById.get(slot.school_id) ?? null : null,
+      school: slot.school_id ? visibleSchoolsById.get(slot.school_id) ?? null : null,
       booking: bookingsBySlotId.get(slot.id) ?? null,
     }))
     .sort(
@@ -440,12 +506,18 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const todayCompletedSlots = todaySlots.filter(
     (slot) => slot.booking?.lesson_state === "completed",
   );
-  const todayEarnedAmount = todayCompletedSlots.reduce(
-    (sum, slot) => sum + (slot.booking?.price_amount ?? 0),
-    0,
-  );
-  const todayPaidAmount = todayCompletedSlots
-    .reduce((sum, slot) => sum + (slot.booking?.paid_amount ?? 0), 0);
+  const todayEarnedAmount = showClientPrices
+    ? todayCompletedSlots.reduce(
+        (sum, slot) => sum + (slot.booking?.price_amount ?? 0),
+        0,
+      )
+    : 0;
+  const todayPaidAmount = showClientPrices
+    ? todayCompletedSlots.reduce(
+        (sum, slot) => sum + (slot.booking?.paid_amount ?? 0),
+        0,
+      )
+    : 0;
   const todayDebtSlots = todayCompletedSlots.filter(
     (slot) => !slot.booking?.is_paid,
   );
@@ -511,19 +583,59 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 {todayCompletedSlots.length}
               </p>
             </div>
+            {showClientPrices ? (
+              <>
+                <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
+                  <p className="text-xs font-medium text-zinc-500">Заработано / получено</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-950">
+                    {formatMoney(todayEarnedAmount)} / {formatMoney(todayPaidAmount)}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
+                  <p className="text-xs font-medium text-amber-700">Долг сегодня</p>
+                  <p className="mt-1 text-xl font-semibold text-amber-950">
+                    {formatMoney(todayDebtAmount)}
+                  </p>
+                  <p className="mt-0.5 text-xs text-amber-700">
+                    {todayDebtSlots.length} занятий
+                  </p>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm sm:col-span-2">
+                <p className="text-xs font-medium text-zinc-500">Деньги</p>
+                <p className="mt-1 text-sm font-semibold text-zinc-950">
+                  Клиентские цены скрыты руководителем
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {selectedInstructor && instructorPayoutSummary && (
+          <section className="grid gap-2 sm:grid-cols-3">
             <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
-              <p className="text-xs font-medium text-zinc-500">Заработано / получено</p>
+              <p className="text-xs font-medium text-zinc-500">
+                Начислено инструктору
+              </p>
               <p className="mt-1 text-xl font-semibold text-zinc-950">
-                {formatMoney(todayEarnedAmount)} / {formatMoney(todayPaidAmount)}
+                {formatMoney(instructorPayoutSummary.planned_amount)}
               </p>
             </div>
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
-              <p className="text-xs font-medium text-amber-700">Долг сегодня</p>
-              <p className="mt-1 text-xl font-semibold text-amber-950">
-                {formatMoney(todayDebtAmount)}
+            <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
+              <p className="text-xs font-medium text-zinc-500">
+                Выдано инструктору
               </p>
-              <p className="mt-0.5 text-xs text-amber-700">
-                {todayDebtSlots.length} занятий
+              <p className="mt-1 text-xl font-semibold text-zinc-950">
+                {formatMoney(instructorPayoutSummary.paid_amount)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
+              <p className="text-xs font-medium text-emerald-700">
+                К выдаче
+              </p>
+              <p className="mt-1 text-xl font-semibold text-emerald-950">
+                {formatMoney(instructorPayoutSummary.remaining_amount)}
               </p>
             </div>
           </section>
@@ -545,7 +657,12 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 </CardHeader>
                 <CardContent>
                                     {nextSlot ? (
-                    <SlotRow slot={nextSlot} timezone={timezone} adminEnabled={adminEnabled} />
+                    <SlotRow
+                      slot={nextSlot}
+                      timezone={timezone}
+                      adminEnabled={adminEnabled}
+                      showClientPrices={showClientPrices}
+                    />
                   ) : (
                     <EmptyState>
                       На сегодня и завтра ближайших занятий нет.
@@ -622,6 +739,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                         timezone={timezone}
                         compact
                         adminEnabled={adminEnabled}
+                        showClientPrices={showClientPrices}
                       />
                     ))
                   ) : (
@@ -646,6 +764,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                         timezone={timezone}
                         compact
                         adminEnabled={adminEnabled}
+                        showClientPrices={showClientPrices}
                       />
                     ))
                   ) : (

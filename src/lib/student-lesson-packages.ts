@@ -3,7 +3,7 @@ import "server-only";
 import { isMissingPricingTableError } from "@/lib/pricing";
 import { queryOne, queryRows } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { BookingCategory } from "@/lib/types";
+import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
 
 type SupabaseAdminClient = ReturnType<typeof createAdminClient>;
 
@@ -20,6 +20,8 @@ export type SelectedStudentLessonPackage = {
   id: string | null;
   schoolId: string | null;
   bookingCategory: BookingCategory;
+  customPriceAmount: number | null;
+  paymentRuleOverride: SchoolPaymentRule | null;
   usesLegacyAccess: boolean;
 };
 
@@ -27,6 +29,8 @@ type PackageRow = {
   id: string;
   school_id: string | null;
   booking_category: BookingCategory | string | null;
+  custom_price_amount: number | null;
+  payment_rule_override: SchoolPaymentRule | string | null;
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
   student_lesson_package_types?: { lesson_type_id: string }[];
@@ -38,6 +42,14 @@ function normalizeBookingCategory(value: unknown): BookingCategory {
   }
 
   return "regular";
+}
+
+function normalizePaymentRuleOverride(value: unknown): SchoolPaymentRule | null {
+  if (value === "manual" || value === "prepaid" || value === "settle_later") {
+    return value;
+  }
+
+  return null;
 }
 
 function addDaysToDate(value: string, days: number) {
@@ -347,7 +359,7 @@ export async function selectStudentLessonPackageForBooking({
   const { data, error } = await supabase
     .from("student_lesson_packages")
     .select(
-      "id, school_id, booking_category, total_lesson_limit, weekly_lesson_limit, student_lesson_package_types(lesson_type_id)",
+      "id, school_id, booking_category, custom_price_amount, payment_rule_override, total_lesson_limit, weekly_lesson_limit, student_lesson_package_types(lesson_type_id)",
     )
     .eq("student_access_id", access.id)
     .eq("organization_id", access.organization_id)
@@ -382,6 +394,8 @@ export async function selectStudentLessonPackageForBooking({
       id: null,
       schoolId: access.school_id,
       bookingCategory: "regular",
+      customPriceAmount: null,
+      paymentRuleOverride: null,
       usesLegacyAccess: true,
     };
   }
@@ -416,6 +430,10 @@ export async function selectStudentLessonPackageForBooking({
       id: item.id,
       schoolId: item.school_id,
       bookingCategory: normalizeBookingCategory(item.booking_category),
+      customPriceAmount: item.custom_price_amount,
+      paymentRuleOverride: normalizePaymentRuleOverride(
+        item.payment_rule_override,
+      ),
       usesLegacyAccess: false,
     };
   }
@@ -440,7 +458,8 @@ export async function selectStudentLessonPackageForBookingPostgres({
 }): Promise<SelectedStudentLessonPackage> {
   const packages = await queryRows<PackageRow>(
     `
-      select id, school_id, booking_category, total_lesson_limit, weekly_lesson_limit
+      select id, school_id, booking_category, custom_price_amount,
+             payment_rule_override, total_lesson_limit, weekly_lesson_limit
       from public.student_lesson_packages
       where student_access_id = $1
         and organization_id = $2
@@ -472,6 +491,8 @@ export async function selectStudentLessonPackageForBookingPostgres({
       id: null,
       schoolId: access.school_id,
       bookingCategory: "regular",
+      customPriceAmount: null,
+      paymentRuleOverride: null,
       usesLegacyAccess: true,
     };
   }
@@ -523,6 +544,10 @@ export async function selectStudentLessonPackageForBookingPostgres({
       id: item.id,
       schoolId: item.school_id,
       bookingCategory: normalizeBookingCategory(item.booking_category),
+      customPriceAmount: item.custom_price_amount,
+      paymentRuleOverride: normalizePaymentRuleOverride(
+        item.payment_rule_override,
+      ),
       usesLegacyAccess: false,
     };
   }

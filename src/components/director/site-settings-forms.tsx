@@ -692,7 +692,11 @@ export function OrganizationSiteSettingsForm({
 
       <StateMessage state={state} />
 
-      <Button type="submit" disabled={isPending}>
+      <Button
+        type="submit"
+        disabled={isPending}
+        className="shadow-md shadow-zinc-950/15"
+      >
         {isPending ? <Check /> : <Save />}
         {isPending ? "Сохраняем..." : "Сохранить сайт"}
       </Button>
@@ -788,7 +792,11 @@ export function LegalDocumentsSettings({
             label="Сразу опубликовать документ"
             defaultChecked
           />
-          <Button type="submit" disabled={isPending}>
+          <Button
+            type="submit"
+            disabled={isPending}
+            className="shadow-md shadow-zinc-950/15"
+          >
             {isPending ? <Check /> : <Upload />}
             {isPending ? "Загружаем..." : "Загрузить документ"}
           </Button>
@@ -897,7 +905,7 @@ export function LegalDocumentsSettings({
                           />
                           <Button
                             type="submit"
-                            variant="outline"
+                            variant="accent"
                             className="sm:col-span-3"
                           >
                             <Save />
@@ -1091,7 +1099,7 @@ export function InstructorSiteSettingsForm({
       </div>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
-        <Button type="submit" variant="outline" disabled={isPending}>
+        <Button type="submit" variant="accent" disabled={isPending}>
           {isPending ? <Check /> : <Save />}
           {isPending ? "Сохраняем..." : "Сохранить инструктора"}
         </Button>

@@ -39,7 +39,7 @@ export function LegalConsentCheckboxes({
   required?: boolean;
   requiredDocumentTypes?: LegalDocumentType[];
 }) {
-  if ((!required || requiredDocumentTypes.length === 0) && documents.length === 0) {
+  if (!required && requiredDocumentTypes.length === 0 && documents.length === 0) {
     return null;
   }
 
@@ -68,8 +68,9 @@ export function LegalConsentCheckboxes({
       )}
 
       {requiredDocumentTypes.length === 0 && (
-        <div className="rounded-xl border bg-white px-3 py-3 text-sm leading-6 text-zinc-600">
-          Для этой формы руководитель не включил обязательные документы.
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-950">
+          Для этой формы пока не опубликованы документы. Проверьте настройки
+          правовых документов и обновите страницу.
         </div>
       )}
 

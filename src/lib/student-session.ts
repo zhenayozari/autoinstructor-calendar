@@ -1,13 +1,19 @@
 import "server-only";
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { isPostgresBackend } from "@/lib/backend-mode";
-import { queryRows, queryOne } from "@/lib/db/postgres";
+import { executeQuery, queryRows, queryOne } from "@/lib/db/postgres";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const STUDENT_SESSION_COOKIE = "student_access_session";
+const STUDENT_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 export type CurrentStudentAccess = {
   id: string;
@@ -18,6 +24,7 @@ export type CurrentStudentAccess = {
   firstName: string | null;
   lastName: string | null;
   studentPhone: string | null;
+  studentPhotoUrl: string | null;
   login: string;
   totalLessonLimit: number | null;
   weeklyLessonLimit: number | null;
@@ -58,21 +65,70 @@ export function createStudentSessionValue(accessId: string) {
   return `${accessId}.${signStudentAccessId(accessId)}`;
 }
 
+function hashSessionToken(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
 export async function setStudentSession(accessId: string) {
   const cookieStore = await cookies();
+  let value: string;
 
-  cookieStore.set(STUDENT_SESSION_COOKIE, createStudentSessionValue(accessId), {
+  if (isPostgresBackend()) {
+    value = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(
+      Date.now() + STUDENT_SESSION_TTL_SECONDS * 1000,
+    );
+
+    await executeQuery(
+      `
+        insert into public.student_access_sessions (
+          student_access_id, token_hash, expires_at
+        )
+        values ($1, $2, $3)
+      `,
+      [accessId, hashSessionToken(value), expiresAt.toISOString()],
+    );
+  } else {
+    value = createStudentSessionValue(accessId);
+  }
+
+  cookieStore.set(STUDENT_SESSION_COOKIE, value, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: STUDENT_SESSION_TTL_SECONDS,
   });
 }
 
 export async function clearStudentSession() {
   const cookieStore = await cookies();
+  const value = cookieStore.get(STUDENT_SESSION_COOKIE)?.value;
+
+  if (value && isPostgresBackend()) {
+    await executeQuery(
+      `
+        update public.student_access_sessions
+        set revoked_at = coalesce(revoked_at, now())
+        where token_hash = $1
+      `,
+      [hashSessionToken(value)],
+    );
+  }
+
   cookieStore.delete(STUDENT_SESSION_COOKIE);
+}
+
+export async function revokeAllStudentSessions(accessId: string) {
+  await executeQuery(
+    `
+      update public.student_access_sessions
+      set revoked_at = coalesce(revoked_at, now())
+      where student_access_id = $1
+        and revoked_at is null
+    `,
+    [accessId],
+  );
 }
 
 export async function getCurrentStudentAccess() {
@@ -83,13 +139,24 @@ export async function getCurrentStudentAccess() {
     return null;
   }
 
-  const [accessId, signature] = value.split(".");
-
-  if (!accessId || !signature || !isValidSignature(accessId, signature)) {
-    return null;
-  }
-
   if (isPostgresBackend()) {
+    const session = await queryOne<{ student_access_id: string }>(
+      `
+        select student_access_id
+        from public.student_access_sessions
+        where token_hash = $1
+          and revoked_at is null
+          and expires_at > now()
+        limit 1
+      `,
+      [hashSessionToken(value)],
+    );
+
+    if (!session) {
+      return null;
+    }
+
+    const accessId = session.student_access_id;
     const access = await queryOne<{
       id: string;
       organization_id: string;
@@ -99,6 +166,7 @@ export async function getCurrentStudentAccess() {
       first_name: string | null;
       last_name: string | null;
       student_phone: string | null;
+      student_photo_url: string | null;
       login: string;
       total_lesson_limit: number | null;
       weekly_lesson_limit: number | null;
@@ -108,7 +176,7 @@ export async function getCurrentStudentAccess() {
     }>(
       `
         select id, organization_id, instructor_id, school_id, display_label,
-               first_name, last_name, student_phone, login,
+               first_name, last_name, student_phone, student_photo_url, login,
                total_lesson_limit, weekly_lesson_limit, is_active,
                profile_completed_at::text as profile_completed_at,
                personal_data_consent_at::text as personal_data_consent_at
@@ -141,6 +209,7 @@ export async function getCurrentStudentAccess() {
       firstName: access.first_name,
       lastName: access.last_name,
       studentPhone: access.student_phone,
+      studentPhotoUrl: access.student_photo_url,
       login: access.login,
       totalLessonLimit: access.total_lesson_limit,
       weeklyLessonLimit: access.weekly_lesson_limit,
@@ -149,6 +218,12 @@ export async function getCurrentStudentAccess() {
       personalDataConsentAt: access.personal_data_consent_at,
       lessonTypeIds: lessonTypes.map((item) => item.lesson_type_id),
     } satisfies CurrentStudentAccess;
+  }
+
+  const [accessId, signature] = value.split(".");
+
+  if (!accessId || !signature || !isValidSignature(accessId, signature)) {
+    return null;
   }
 
   const supabase = createAdminClient();
@@ -182,6 +257,7 @@ export async function getCurrentStudentAccess() {
     firstName: null,
     lastName: null,
     studentPhone: null,
+    studentPhotoUrl: null,
     login: access.login,
     totalLessonLimit: access.total_lesson_limit,
     weeklyLessonLimit: access.weekly_lesson_limit,

@@ -1,8 +1,11 @@
 import Link from "next/link";
 import {
   Archive,
+  ChevronDown,
   CircleDollarSign,
   Filter,
+  LayoutGrid,
+  List,
   RefreshCw,
   Trash2,
   UserRoundCheck,
@@ -12,6 +15,7 @@ import {
   deleteStudentAccessDirectAction,
   restoreStudentAccessDirectAction,
 } from "@/app/admin/students/actions";
+import { StudentAvatar } from "@/components/student/student-avatar";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -40,6 +44,7 @@ type DirectorStudentsPageProps = {
     debt?: string;
     delete_status?: string;
     restore_status?: string;
+    view?: string;
   }>;
 };
 
@@ -173,19 +178,75 @@ function StatusPill({ student }: { student: DirectorStudent }) {
   );
 }
 
+function StudentAccessActions({ student }: { student: DirectorStudent }) {
+  return (
+    <>
+      {student.is_archived && (
+        <form action={restoreStudentAccessDirectAction} className="mt-3">
+          <input type="hidden" name="student_access_id" value={student.id} />
+          <Button
+            type="submit"
+            variant="outline"
+            className="h-10 w-full border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
+          >
+            <RefreshCw className="size-4" />
+            Восстановить из архива
+          </Button>
+        </form>
+      )}
+
+      <details className="mt-3 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
+        <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
+          Удалить ученика
+        </summary>
+        <form action={deleteStudentAccessDirectAction} className="mt-3 space-y-3">
+          <input type="hidden" name="student_access_id" value={student.id} />
+          <label className="flex items-start gap-2 text-xs text-red-800">
+            <input
+              type="checkbox"
+              name="confirm_delete"
+              value="yes"
+              required
+              className="mt-0.5 size-4 shrink-0"
+            />
+            <span>
+              Удалить ученика «{student.display_label}» вместе с его записями.
+              Это действие нельзя отменить.
+            </span>
+          </label>
+          <Button
+            type="submit"
+            variant="outline"
+            className="h-10 w-full border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-800"
+          >
+            <Trash2 className="size-4" />
+            Удалить навсегда
+          </Button>
+        </form>
+      </details>
+    </>
+  );
+}
+
 function StudentCard({ student }: { student: DirectorStudent }) {
   return (
     <article className="rounded-2xl border bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-lg font-semibold">
-            {student.display_label}
-          </h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {student.instructor?.public_name ??
-              student.instructor?.name ??
-              "Инструктор не найден"}
-          </p>
+        <div className="flex min-w-0 items-start gap-3">
+          <StudentAvatar
+            label={student.display_label}
+            photoUrl={student.student_photo_url}
+          />
+          <div className="min-w-0">
+            <h2 className="truncate text-lg font-semibold">
+              {student.display_label}
+            </h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              {student.instructor?.public_name ??
+                student.instructor?.name ??
+                "Инструктор не найден"}
+            </p>
+          </div>
         </div>
         <StatusPill student={student} />
       </div>
@@ -260,50 +321,140 @@ function StudentCard({ student }: { student: DirectorStudent }) {
         </div>
       </div>
 
-      {student.is_archived && (
-        <form action={restoreStudentAccessDirectAction} className="mt-3">
-          <input type="hidden" name="student_access_id" value={student.id} />
-          <Button
-            type="submit"
-            variant="outline"
-            className="h-10 w-full border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
-          >
-            <RefreshCw className="size-4" />
-            Восстановить из архива
-          </Button>
-        </form>
-      )}
-
-      <details className="mt-3 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2">
-        <summary className="cursor-pointer list-none text-sm font-semibold text-red-700">
-          Удалить ученика
-        </summary>
-        <form action={deleteStudentAccessDirectAction} className="mt-3 space-y-3">
-          <input type="hidden" name="student_access_id" value={student.id} />
-          <label className="flex items-start gap-2 text-xs text-red-800">
-            <input
-              type="checkbox"
-              name="confirm_delete"
-              value="yes"
-              required
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <span>
-              Удалить ученика «{student.display_label}» вместе с его записями.
-              Это действие нельзя отменить.
-            </span>
-          </label>
-          <Button
-            type="submit"
-            variant="outline"
-            className="h-10 w-full border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-800"
-          >
-            <Trash2 className="size-4" />
-            Удалить навсегда
-          </Button>
-        </form>
-      </details>
+      <StudentAccessActions student={student} />
     </article>
+  );
+}
+
+function StudentListMetric({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "emerald" | "amber";
+}) {
+  const className =
+    tone === "emerald"
+      ? "border-emerald-100 bg-emerald-50/70 text-emerald-950"
+      : tone === "amber"
+        ? "border-amber-100 bg-amber-50/70 text-amber-950"
+        : "border-zinc-100 bg-zinc-50 text-zinc-950";
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${className}`}>
+      <p className="text-xs font-medium opacity-70">{label}</p>
+      <p className="mt-1 font-semibold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function StudentListItem({ student }: { student: DirectorStudent }) {
+  const instructorName =
+    student.instructor?.public_name ??
+    student.instructor?.name ??
+    "Инструктор не найден";
+  const sourceName = student.school?.name ?? "Частный ученик";
+
+  return (
+    <details className="group rounded-2xl border bg-white shadow-sm open:shadow-md">
+      <summary className="grid cursor-pointer list-none gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+        <div className="flex min-w-0 items-start gap-3">
+          <StudentAvatar
+            label={student.display_label}
+            photoUrl={student.student_photo_url}
+            className="size-10"
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-base font-semibold">
+                {student.display_label}
+              </h2>
+              <StatusPill student={student} />
+            </div>
+            <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
+              <span>{instructorName}</span>
+              <span>·</span>
+              <span>{sourceName}</span>
+              {student.student_phone && (
+                <>
+                  <span>·</span>
+                  <span>{student.student_phone}</span>
+                </>
+              )}
+              <span>·</span>
+              <span>Логин: {student.login}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:min-w-[520px] sm:grid-cols-[90px_90px_110px_110px_32px] sm:items-center">
+          <StudentListMetric
+            label="План"
+            value={`${student.summary.plannedCount}`}
+          />
+          <StudentListMetric
+            label="Проведено"
+            value={`${student.summary.completedCount}`}
+          />
+          <StudentListMetric
+            label="Получено"
+            value={formatMoney(student.summary.paidAmount)}
+            tone="emerald"
+          />
+          <StudentListMetric
+            label="Долг"
+            value={formatMoney(student.summary.debtAmount)}
+            tone={student.summary.debtAmount > 0 ? "amber" : "default"}
+          />
+          <ChevronDown className="hidden size-5 text-zinc-400 transition group-open:rotate-180 sm:block" />
+        </div>
+      </summary>
+
+      <div className="border-t px-4 py-4">
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          <StudentListMetric
+            label="План"
+            value={`${student.summary.plannedCount}`}
+          />
+          <StudentListMetric
+            label="Проведено"
+            value={`${student.summary.completedCount}`}
+          />
+          <StudentListMetric
+            label="Неявки"
+            value={`${student.summary.noShowCount}`}
+          />
+          <StudentListMetric
+            label="Получено"
+            value={formatMoney(student.summary.paidAmount)}
+            tone="emerald"
+          />
+          <StudentListMetric
+            label="Долг"
+            value={formatMoney(student.summary.debtAmount)}
+            tone={student.summary.debtAmount > 0 ? "amber" : "default"}
+          />
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
+          <span className="rounded-full bg-zinc-100 px-2 py-1 font-medium">
+            {sourceName}
+          </span>
+          {student.student_phone && (
+            <span className="rounded-full bg-zinc-100 px-2 py-1 font-medium">
+              {student.student_phone}
+            </span>
+          )}
+          <span className="rounded-full bg-zinc-100 px-2 py-1 font-medium">
+            Логин: {student.login}
+          </span>
+        </div>
+
+        <StudentAccessActions student={student} />
+      </div>
+    </details>
   );
 }
 
@@ -363,7 +514,8 @@ export default async function DirectorStudentsPage({
       instructorIds.length > 0
         ? queryRows<StudentAccessRow>(
             `
-              select id, instructor_id, display_label, student_phone, login,
+              select id, instructor_id, display_label, student_phone,
+                     student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
                      is_active, is_archived, archived_at::text as archived_at,
                      created_at::text as created_at, updated_at::text as updated_at
@@ -391,7 +543,7 @@ export default async function DirectorStudentsPage({
         ? supabase
             .from("student_accesses")
             .select(
-              "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
+              "id, instructor_id, display_label, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
             )
             .eq("organization_id", membership.organizationId)
             .in("instructor_id", instructorIds)
@@ -509,6 +661,7 @@ export default async function DirectorStudentsPage({
       ? params.status
       : "active";
   const selectedDebt = params.debt === "debt" ? "debt" : "all";
+  const selectedView = params.view === "list" ? "list" : "grid";
   const filteredStudents = students.filter((student) => {
     if (
       selectedInstructorId !== "all" &&
@@ -550,6 +703,29 @@ export default async function DirectorStudentsPage({
   const studentsWithDebt = students.filter(
     (student) => student.summary.debtAmount > 0,
   ).length;
+  const getViewHref = (view: "grid" | "list") => {
+    const query = new URLSearchParams();
+
+    if (selectedInstructorId !== "all") {
+      query.set("instructor", selectedInstructorId);
+    }
+
+    if (selectedSchoolId !== "all") {
+      query.set("school", selectedSchoolId);
+    }
+
+    if (selectedStatus !== "active") {
+      query.set("status", selectedStatus);
+    }
+
+    if (selectedDebt !== "all") {
+      query.set("debt", selectedDebt);
+    }
+
+    query.set("view", view);
+
+    return `/director/students?${query.toString()}`;
+  };
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -609,6 +785,7 @@ export default async function DirectorStudentsPage({
             </div>
           </div>
           <form className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+            <input type="hidden" name="view" value={selectedView} />
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="students-instructor">
                 Инструктор
@@ -694,15 +871,39 @@ export default async function DirectorStudentsPage({
                   Просмотр для руководителя. Редактирование остаётся у инструктора.
                 </CardDescription>
               </div>
-              <Button
-                nativeButton={false}
-                render={<Link href="/director/reports" />}
-                variant="outline"
-                className="h-9"
-              >
-                <CircleDollarSign className="size-4" />
-                Итоги
-              </Button>
+              <div className="flex flex-col gap-2 sm:items-end">
+                <div className="grid grid-cols-2 rounded-xl border bg-zinc-50 p-1">
+                  <Button
+                    nativeButton={false}
+                    render={<Link href={getViewHref("grid")} />}
+                    variant={selectedView === "grid" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-8"
+                  >
+                    <LayoutGrid className="size-4" />
+                    Сетка
+                  </Button>
+                  <Button
+                    nativeButton={false}
+                    render={<Link href={getViewHref("list")} />}
+                    variant={selectedView === "list" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-8"
+                  >
+                    <List className="size-4" />
+                    Список
+                  </Button>
+                </div>
+                <Button
+                  nativeButton={false}
+                  render={<Link href="/director/reports" />}
+                  variant="outline"
+                  className="h-9 w-full shadow-sm sm:w-auto"
+                >
+                  <CircleDollarSign className="size-4" />
+                  Итоги
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -711,11 +912,19 @@ export default async function DirectorStudentsPage({
                 По выбранным фильтрам учеников нет.
               </div>
             ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
-                {filteredStudents.map((student) => (
-                  <StudentCard key={student.id} student={student} />
-                ))}
-              </div>
+              selectedView === "list" ? (
+                <div className="space-y-2">
+                  {filteredStudents.map((student) => (
+                    <StudentListItem key={student.id} student={student} />
+                  ))}
+                </div>
+              ) : (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {filteredStudents.map((student) => (
+                    <StudentCard key={student.id} student={student} />
+                  ))}
+                </div>
+              )
             )}
           </CardContent>
         </Card>

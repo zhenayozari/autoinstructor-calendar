@@ -91,7 +91,7 @@ export default async function StaffRegisterPage({
     } else {
       invitation = await queryOne<InvitationView>(
         `
-          select si.token, si.status, si.invited_name, si.invited_email,
+          select si.organization_id, si.token, si.status, si.invited_name, si.invited_email,
                  si.invited_phone, si.expires_at::text as expires_at,
                  jsonb_build_object('name', o.name) as organizations
           from public.staff_invitations si

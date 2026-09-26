@@ -43,7 +43,8 @@ export default async function InstructorProfilePage({
       `
         select id, name, slug, public_name, timezone, is_active, photo_url,
                short_bio, contact_text, car_description, experience_text,
-               public_is_visible, profile_updated_at::text as profile_updated_at
+               show_contact_in_student_cabinet, public_is_visible,
+               profile_updated_at::text as profile_updated_at
         from public.instructors
         where organization_id = $1
           and ($2::uuid is null or id = $2)
@@ -56,7 +57,7 @@ export default async function InstructorProfilePage({
     let instructorsQuery = supabase
       .from("instructors")
       .select(
-        "id, name, slug, public_name, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
+        "id, name, slug, public_name, photo_url, short_bio, contact_text, show_contact_in_student_cabinet, car_description, experience_text, public_is_visible, profile_updated_at",
       )
       .eq("organization_id", membership.organizationId)
       .order("name");

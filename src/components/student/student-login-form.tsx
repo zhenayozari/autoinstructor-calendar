@@ -47,8 +47,15 @@ export function StudentLoginForm() {
       </div>
 
       {state.status === "error" && (
-        <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">
-          {state.message}
+        <div className="space-y-2">
+          <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">
+            {state.message}
+          </div>
+          {state.helpText && (
+            <p className="px-1 text-xs leading-5 text-muted-foreground">
+              {state.helpText}
+            </p>
+          )}
         </div>
       )}
 

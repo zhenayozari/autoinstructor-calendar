@@ -74,7 +74,8 @@ async function loadLandingData() {
       `
         select id, organization_id, name, slug, public_name, timezone,
                is_active, photo_url, short_bio, contact_text,
-               car_description, experience_text, public_is_visible,
+               show_contact_in_student_cabinet, car_description,
+               experience_text, public_is_visible,
                profile_updated_at
         from public.instructors
         where is_active = true
@@ -141,7 +142,7 @@ async function loadLandingData() {
   const { data: instructorData } = await supabase
     .from("instructors")
     .select(
-      "id, organization_id, name, slug, public_name, timezone, is_active, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
+      "id, organization_id, name, slug, public_name, timezone, is_active, photo_url, short_bio, contact_text, show_contact_in_student_cabinet, car_description, experience_text, public_is_visible, profile_updated_at",
     )
     .eq("is_active", true)
     .eq("public_is_visible", true)
@@ -308,25 +309,27 @@ function InstructorCard({ instructor }: { instructor: LandingInstructor }) {
 
   return (
     <article
-      className={`grid overflow-hidden rounded-[2rem] border bg-white shadow-sm ${
-        showPhoto ? "lg:grid-cols-[0.85fr_1.15fr]" : ""
+      className={`overflow-hidden rounded-[2rem] border bg-white shadow-sm ${
+        showPhoto ? "lg:grid lg:grid-cols-[minmax(260px,0.85fr)_1.15fr]" : ""
       }`}
     >
       {showPhoto && (
         instructor.photo_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={instructor.photo_url}
-            alt={publicName}
-            className="h-full min-h-[260px] w-full object-cover"
-          />
+          <div className="overflow-hidden bg-zinc-100 lg:self-stretch">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={instructor.photo_url}
+              alt={publicName}
+              className="aspect-[4/3] w-full object-cover lg:h-full lg:min-h-[280px] lg:max-h-[420px]"
+            />
+          </div>
         ) : (
-          <div className="grid min-h-[260px] place-items-center bg-zinc-100">
+          <div className="grid aspect-[4/3] place-items-center bg-zinc-100 lg:min-h-[280px] lg:max-h-[420px]">
             <UserRound className="size-14 text-zinc-400" />
           </div>
         )
       )}
-      <div className="p-5 sm:p-7">
+      <div className="flex flex-col justify-center p-5 sm:p-7 lg:min-h-[280px]">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-400">
           Инструктор
         </p>
@@ -401,6 +404,7 @@ export default async function Home() {
             short_bio:
               "Помогаю спокойно чувствовать себя за рулём в городе, разобрать сложные моменты и подготовиться к экзамену.",
             contact_text: null,
+            show_contact_in_student_cabinet: false,
             car_description:
               "Практические занятия для начинающих водителей и тех, кто хочет добрать уверенность.",
             experience_text: "Индивидуальный подход к каждому ученику.",

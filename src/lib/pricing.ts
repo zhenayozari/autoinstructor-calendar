@@ -175,14 +175,6 @@ export function getInitialBookingPaymentFields({
     };
   }
 
-  if (bookingCategory === "extra" && priceAmount !== null) {
-    return {
-      paid_amount: priceAmount,
-      is_paid: true,
-      paid_at: new Date().toISOString(),
-    };
-  }
-
   if (paymentRule !== "prepaid" || priceAmount === null) {
     return {
       paid_amount: 0,

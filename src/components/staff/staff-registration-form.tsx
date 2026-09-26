@@ -48,10 +48,10 @@ export function StaffRegistrationForm({
   const requiredDocumentTypes = documents.map(
     (document) => document.documentType,
   );
-  const hasRequiredDocuments = hasRequiredLegalDocuments(
-    documents,
-    requiredDocumentTypes,
-  );
+  const hasRequiredDocuments =
+    !requiresConsent ||
+    (requiredDocumentTypes.length > 0 &&
+      hasRequiredLegalDocuments(documents, requiredDocumentTypes));
 
   return (
     <form action={formAction} className="space-y-4">

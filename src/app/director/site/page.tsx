@@ -217,6 +217,7 @@ export default async function DirectorSitePage() {
               nativeButton={false}
               render={<Link href="/" target="_blank" />}
               variant="outline"
+              className="shadow-sm"
             >
               <ExternalLink />
               Открыть сайт

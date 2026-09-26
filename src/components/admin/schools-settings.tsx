@@ -132,7 +132,11 @@ function CreateSchoolForm({ enabled }: { enabled: boolean }) {
     <form action={formAction} className="space-y-4">
       <SchoolFields idPrefix="new-school" />
       <StateMessage state={state} />
-      <Button type="submit" disabled={isPending || !enabled}>
+      <Button
+        type="submit"
+        disabled={isPending || !enabled}
+        className="shadow-md shadow-zinc-950/15"
+      >
         <Plus />
         {isPending ? "Добавляем..." : "Добавить источник"}
       </Button>
@@ -156,7 +160,7 @@ function EditSchoolForm({
     <form action={formAction} className="space-y-4">
       <SchoolFields school={school} idPrefix={`school-${school.id}`} />
       <StateMessage state={state} />
-      <Button type="submit" variant="outline" disabled={isPending || !enabled}>
+      <Button type="submit" variant="accent" disabled={isPending || !enabled}>
         <Pencil />
         {isPending ? "Сохраняем..." : "Сохранить изменения"}
       </Button>

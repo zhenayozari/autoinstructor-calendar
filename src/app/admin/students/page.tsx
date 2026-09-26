@@ -14,6 +14,10 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
+import {
+  getInstructorPayoutSettings,
+  getInstructorSourceVisibility,
+} from "@/lib/instructor-payouts";
 import type {
   Booking,
   Instructor,
@@ -48,6 +52,7 @@ type StudentAccessRow = {
   first_name?: string | null;
   last_name?: string | null;
   student_phone: string | null;
+  student_photo_url?: string | null;
   login: string;
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
@@ -94,6 +99,11 @@ type StudentSlotRow = Pick<
   "id" | "lesson_type_id" | "start_time" | "end_time" | "school_id"
 >;
 
+type StudentBookingPaymentChangeRow = {
+  entity_id: string;
+  created_at: string;
+};
+
 export default async function AdminStudentsPage({
   searchParams,
 }: AdminStudentsPageProps) {
@@ -114,6 +124,7 @@ export default async function AdminStudentsPage({
   let packageLessonTypes: StudentLessonPackageTypeRow[] = [];
   let studentBookings: StudentBookingRow[] = [];
   let studentSlots: StudentSlotRow[] = [];
+  let studentPaymentChanges: StudentBookingPaymentChangeRow[] = [];
   let loadError: { message: string } | null = null;
 
   if (postgresBackend) {
@@ -153,6 +164,38 @@ export default async function AdminStudentsPage({
     selectedInstructorId,
   );
   const selectedInstructorIds = selectedInstructor ? [selectedInstructor.id] : [];
+  const canManageStudentPrices = membership.role === "owner";
+  let canManageStudentLessonPackages = membership.role === "owner";
+  let sourceVisibilityMode: "all_active" | "selected_only" = "all_active";
+  let visibleSchoolIds = new Set<string>();
+
+  if (
+    postgresBackend &&
+    selectedInstructor &&
+    !canManageStudentLessonPackages
+  ) {
+    const [payoutSettings, sourceVisibility] = await Promise.all([
+      getInstructorPayoutSettings({
+        organizationId: membership.organizationId,
+        instructorId: selectedInstructor.id,
+      }),
+      getInstructorSourceVisibility({
+        organizationId: membership.organizationId,
+        instructorId: selectedInstructor.id,
+      }),
+    ]);
+
+    canManageStudentLessonPackages =
+      payoutSettings?.can_manage_student_packages ?? false;
+    sourceVisibilityMode =
+      payoutSettings?.source_visibility_mode ?? "all_active";
+    visibleSchoolIds = new Set(
+      sourceVisibility
+        .filter((item) => item.is_visible)
+        .map((item) => item.school_id),
+    );
+  }
+
   await autoCompletePastBookings({ instructorIds: selectedInstructorIds });
 
   if (postgresBackend) {
@@ -185,7 +228,7 @@ export default async function AdminStudentsPage({
         ? queryRows<StudentAccessRow>(
             `
               select id, instructor_id, display_label, first_name, last_name,
-                     student_phone, login,
+                     student_phone, student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
                      is_active, is_archived, archived_at::text as archived_at,
                      profile_completed_at::text as profile_completed_at,
@@ -261,7 +304,7 @@ export default async function AdminStudentsPage({
         ? supabase
             .from("student_accesses")
             .select(
-              "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
+              "id, instructor_id, display_label, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
             )
             .eq("organization_id", membership.organizationId)
             .in("instructor_id", selectedInstructorIds)
@@ -321,7 +364,8 @@ export default async function AdminStudentsPage({
         ? await queryRows<StudentLessonPackageRow>(
             `
               select id, student_access_id, organization_id, instructor_id,
-                     school_id, booking_category, total_lesson_limit,
+                     school_id, booking_category, custom_price_amount,
+                     payment_rule_override, total_lesson_limit,
                      weekly_lesson_limit, is_active, sort_order,
                      created_at::text as created_at, updated_at::text as updated_at
               from public.student_lesson_packages
@@ -345,7 +389,7 @@ export default async function AdminStudentsPage({
         ? await supabase
             .from("student_lesson_packages")
             .select(
-              "id, student_access_id, organization_id, instructor_id, school_id, booking_category, total_lesson_limit, weekly_lesson_limit, is_active, sort_order, created_at, updated_at",
+              "id, student_access_id, organization_id, instructor_id, school_id, booking_category, custom_price_amount, payment_rule_override, total_lesson_limit, weekly_lesson_limit, is_active, sort_order, created_at, updated_at",
             )
             .in("student_access_id", accessIds)
             .order("sort_order")
@@ -452,6 +496,46 @@ export default async function AdminStudentsPage({
     loadError = loadError ?? slotError;
   }
 
+  const bookingIds = studentBookings.map((booking) => booking.id);
+
+  if (postgresBackend) {
+    studentPaymentChanges =
+      bookingIds.length > 0
+        ? await queryRows<StudentBookingPaymentChangeRow>(
+            `
+              select entity_id, created_at::text as created_at
+              from public.audit_logs
+              where organization_id = $1
+                and entity_type = 'booking'
+                and entity_id = any($2::text[])
+                and action = any($3::text[])
+              order by created_at desc
+            `,
+            [
+              membership.organizationId,
+              bookingIds,
+              ["booking.payment_updated", "booking.payment_toggled"],
+            ],
+          )
+        : [];
+  } else {
+    const supabase = adminEnabled ? createAdminClient() : await createClient();
+    const { data: paymentChangeData, error: paymentChangeError } =
+      adminEnabled && bookingIds.length > 0
+        ? await supabase
+            .from("audit_logs")
+            .select("entity_id, created_at")
+            .eq("organization_id", membership.organizationId)
+            .eq("entity_type", "booking")
+            .in("entity_id", bookingIds)
+            .in("action", ["booking.payment_updated", "booking.payment_toggled"])
+            .order("created_at", { ascending: false })
+        : { data: [], error: null };
+
+    studentPaymentChanges = (paymentChangeData ?? []) as StudentBookingPaymentChangeRow[];
+    loadError = loadError ?? paymentChangeError;
+  }
+
   const lessonTypeIdsByAccessId = new Map<string, string[]>();
 
   for (const item of accessLessonTypes) {
@@ -474,6 +558,10 @@ export default async function AdminStudentsPage({
       ? `${origin}/student/register?token=${registrationSettings.student_registration_token}`
       : null;
   const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  const panelSchools =
+    membership.role === "owner" || sourceVisibilityMode === "all_active"
+      ? schools
+      : schools.filter((school) => visibleSchoolIds.has(school.id));
   const lessonTypesById = new Map(
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
   );
@@ -482,6 +570,13 @@ export default async function AdminStudentsPage({
   const packageLessonTypeIdsByPackageId = new Map<string, string[]>();
   const packagesByAccessId = new Map<string, StudentLessonPackageRow[]>();
   const bookingsByPackageId = new Map<string, StudentBookingRow[]>();
+  const paymentChangesByBookingId = new Map<string, string[]>();
+
+  for (const change of studentPaymentChanges) {
+    const changes = paymentChangesByBookingId.get(change.entity_id) ?? [];
+    changes.push(change.created_at);
+    paymentChangesByBookingId.set(change.entity_id, changes);
+  }
 
   for (const booking of studentBookings) {
     const items = bookingsByAccessId.get(booking.student_access_id) ?? [];
@@ -569,6 +664,7 @@ export default async function AdminStudentsPage({
         isPaid: booking.is_paid,
         priceAmount: booking.price_amount ?? null,
         paidAmount: booking.paid_amount ?? 0,
+        paymentChanges: paymentChangesByBookingId.get(booking.id) ?? [],
       })),
     };
 
@@ -651,7 +747,7 @@ export default async function AdminStudentsPage({
           <StudentAccessesPanel
             instructors={instructors}
             lessonTypes={schedulableLessonTypes}
-            schools={schools}
+            schools={panelSchools}
             accesses={activeAccesses}
             archivedAccesses={archivedAccesses}
             pendingRequests={pendingRequests}
@@ -663,6 +759,8 @@ export default async function AdminStudentsPage({
               registrationSettings?.student_registration_token_updated_at ?? null
             }
             canDeleteStudents={membership.role === "owner"}
+            canManageStudentPrices={canManageStudentPrices}
+            canManageStudentLessonPackages={canManageStudentLessonPackages}
             highlightedStudentAccessId={params.student ?? null}
           />
         ) : (

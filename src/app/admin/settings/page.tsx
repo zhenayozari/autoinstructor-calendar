@@ -8,6 +8,10 @@ import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
+import {
+  getInstructorPayoutSettings,
+  getInstructorSourceVisibility,
+} from "@/lib/instructor-payouts";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
 import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
@@ -89,6 +93,7 @@ export default async function AdminSettingsPage() {
   let prices: SchoolLessonTypePrice[] = [];
   let loadError: { message: string } | null = null;
   let priceError: { message: string } | null = null;
+  let instructorVisibleSchoolIds: Set<string> | null = null;
 
   if (postgresBackend) {
     [lessonTypes, schools, prices] = await Promise.all([
@@ -120,6 +125,26 @@ export default async function AdminSettingsPage() {
         [membership.organizationId],
       ),
     ]);
+
+    if (membership.isInstructor && membership.instructorId) {
+      const payoutSettings = await getInstructorPayoutSettings({
+        organizationId: membership.organizationId,
+        instructorId: membership.instructorId,
+      });
+
+      if (payoutSettings?.source_visibility_mode === "selected_only") {
+        const sourceVisibility = await getInstructorSourceVisibility({
+          organizationId: membership.organizationId,
+          instructorId: membership.instructorId,
+        });
+
+        instructorVisibleSchoolIds = new Set(
+          sourceVisibility
+            .filter((item) => item.is_visible)
+            .map((item) => item.school_id),
+        );
+      }
+    }
   } else {
     const supabase = adminEnabled ? createAdminClient() : await createClient();
     const [
@@ -155,9 +180,14 @@ export default async function AdminSettingsPage() {
     schools = (schoolData ?? []) as School[];
     prices = (priceData ?? []) as SchoolLessonTypePrice[];
   }
-  const visibleSchools = canManageCatalog
+  const baseVisibleSchools = canManageCatalog
     ? schools
     : schools.filter((school) => school.is_active);
+  const visibleSchools = instructorVisibleSchoolIds
+    ? baseVisibleSchools.filter((school) =>
+        instructorVisibleSchoolIds?.has(school.id),
+      )
+    : baseVisibleSchools;
   const visibleLessonTypes = canManageCatalog
     ? lessonTypes
     : lessonTypes.filter((lessonType) => lessonType.is_active);

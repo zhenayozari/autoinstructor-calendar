@@ -1,7 +1,17 @@
 import "server-only";
 
 import { queryOne } from "@/lib/db/postgres";
-import { verifyAppUserPassword } from "@/lib/app-users/password";
+import {
+  hashAppUserPassword,
+  verifyAppUserPassword,
+} from "@/lib/app-users/password";
+
+let dummyPasswordHash: string | null = null;
+
+function getDummyPasswordHash() {
+  dummyPasswordHash ??= hashAppUserPassword("invalid-login-password");
+  return dummyPasswordHash;
+}
 
 export type AppUser = {
   id: string;
@@ -46,7 +56,9 @@ export async function verifyAppUserCredentials({
     [email.trim().toLowerCase()],
   );
 
-  if (!user || !verifyAppUserPassword(password, user.password_hash)) {
+  const passwordHash = user?.password_hash ?? getDummyPasswordHash();
+
+  if (!verifyAppUserPassword(password, passwordHash) || !user) {
     return null;
   }
 
@@ -55,4 +67,3 @@ export async function verifyAppUserCredentials({
 
   return safeUser;
 }
-

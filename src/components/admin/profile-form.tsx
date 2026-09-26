@@ -29,6 +29,7 @@ export function ProfileForm({
     | "photo_url"
     | "short_bio"
     | "contact_text"
+    | "show_contact_in_student_cabinet"
     | "car_description"
     | "experience_text"
     | "public_is_visible"
@@ -96,6 +97,22 @@ export function ProfileForm({
             className="min-h-24"
           />
           <p className="text-muted-foreground text-xs">До 300 символов.</p>
+          <label className="mt-3 flex items-start gap-3 rounded-lg border p-3">
+            <input
+              type="checkbox"
+              name="show_contact_in_student_cabinet"
+              defaultChecked={profile.show_contact_in_student_cabinet}
+              className="mt-0.5 size-4 rounded border-zinc-300"
+            />
+            <span>
+              <span className="block text-sm font-medium">
+                Показывать в кабинете учеников
+              </span>
+              <span className="text-muted-foreground mt-1 block text-xs">
+                Ученики увидят этот контакт рядом с именем инструктора.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="space-y-2">

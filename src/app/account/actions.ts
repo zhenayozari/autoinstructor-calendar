@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { setAppUserSession } from "@/lib/app-users/session";
+import {
+  revokeAllAppUserSessions,
+  setAppUserSession,
+} from "@/lib/app-users/session";
 import {
   hashAppUserPassword,
   verifyAppUserPassword,
@@ -134,10 +137,8 @@ export async function updateAccountCredentialsAction(
       ],
     );
 
-    await setAppUserSession({
-      userId: membership.user.id,
-      email,
-    });
+    await revokeAllAppUserSessions(membership.user.id);
+    await setAppUserSession(membership.user.id);
 
     await logAuditEvent({
       membership,

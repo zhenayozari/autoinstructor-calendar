@@ -9,6 +9,7 @@ const SCRYPT_PARALLELIZATION = 1;
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
 const LEGACY_SHA256_HASH_PATTERN = /^[a-f0-9]{64}$/i;
+let dummyStudentAccessSecretHash: string | null = null;
 
 function getStudentAccessSalt() {
   const salt = process.env.STUDENT_ACCESS_SALT ?? process.env.BOOKING_CODE_SALT;
@@ -74,6 +75,13 @@ export function hashStudentAccessSecret(value: string) {
     salt.toString("base64url"),
     hash.toString("base64url"),
   ].join("$");
+}
+
+export function getDummyStudentAccessSecretHash() {
+  dummyStudentAccessSecretHash ??= hashStudentAccessSecret(
+    "invalid-student-login-secret",
+  );
+  return dummyStudentAccessSecretHash;
 }
 
 export function isLegacyStudentAccessSecretHash(value: string) {

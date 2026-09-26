@@ -1,7 +1,8 @@
 import "server-only";
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import { executeQuery, queryOne } from "@/lib/db/postgres";
 
 export const APP_USER_SESSION_COOKIE = "app_user_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -13,91 +14,24 @@ type AppUserSessionPayload = {
   exp: number;
 };
 
-function getSessionSecret() {
-  const secret =
-    process.env.APP_SESSION_SECRET ??
-    process.env.AUTH_SECRET ??
-    process.env.BOOKING_CODE_SALT;
-
-  if (!secret || secret.length < 32) {
-    throw new Error("APP_SESSION_SECRET must be at least 32 characters");
-  }
-
-  return secret;
+function hashSessionToken(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function encode(value: string) {
-  return Buffer.from(value, "utf8").toString("base64url");
-}
-
-function decode(value: string) {
-  return Buffer.from(value, "base64url").toString("utf8");
-}
-
-function sign(data: string) {
-  return createHmac("sha256", getSessionSecret()).update(data).digest("base64url");
-}
-
-function verifySignature(data: string, signature: string) {
-  const actual = Buffer.from(sign(data), "base64url");
-  const expected = Buffer.from(signature, "base64url");
-
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-export function createAppUserSessionToken({
-  userId,
-  email,
-}: {
-  userId: string;
-  email: string;
-}) {
-  const now = Math.floor(Date.now() / 1000);
-  const payload: AppUserSessionPayload = {
-    sub: userId,
-    email,
-    iat: now,
-    exp: now + SESSION_TTL_SECONDS,
-  };
-  const body = encode(JSON.stringify(payload));
-
-  return `${body}.${sign(body)}`;
-}
-
-export function parseAppUserSessionToken(token: string) {
-  const [body, signature] = token.split(".");
-
-  if (!body || !signature || !verifySignature(body, signature)) {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(decode(body)) as AppUserSessionPayload;
-
-    if (
-      !payload.sub ||
-      !payload.email ||
-      !payload.exp ||
-      payload.exp < Math.floor(Date.now() / 1000)
-    ) {
-      return null;
-    }
-
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-export async function setAppUserSession({
-  userId,
-  email,
-}: {
-  userId: string;
-  email: string;
-}) {
+export async function setAppUserSession(userId: string) {
   const cookieStore = await cookies();
-  const token = createAppUserSessionToken({ userId, email });
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
+
+  await executeQuery(
+    `
+      insert into public.app_user_sessions (
+        app_user_id, token_hash, expires_at
+      )
+      values ($1, $2, $3)
+    `,
+    [userId, hashSessionToken(token), expiresAt.toISOString()],
+  );
 
   cookieStore.set(APP_USER_SESSION_COOKIE, token, {
     httpOnly: true,
@@ -110,14 +44,72 @@ export async function setAppUserSession({
 
 export async function clearAppUserSession() {
   const cookieStore = await cookies();
+  const token = cookieStore.get(APP_USER_SESSION_COOKIE)?.value;
+
+  if (token) {
+    await executeQuery(
+      `
+        update public.app_user_sessions
+        set revoked_at = coalesce(revoked_at, now())
+        where token_hash = $1
+      `,
+      [hashSessionToken(token)],
+    );
+  }
 
   cookieStore.delete(APP_USER_SESSION_COOKIE);
+}
+
+export async function revokeAllAppUserSessions(userId: string) {
+  await executeQuery(
+    `
+      update public.app_user_sessions
+      set revoked_at = coalesce(revoked_at, now())
+      where app_user_id = $1
+        and revoked_at is null
+    `,
+    [userId],
+  );
 }
 
 export async function getAppUserSession() {
   const cookieStore = await cookies();
   const token = cookieStore.get(APP_USER_SESSION_COOKIE)?.value;
 
-  return token ? parseAppUserSessionToken(token) : null;
-}
+  if (!token) {
+    return null;
+  }
 
+  const session = await queryOne<{
+    app_user_id: string;
+    email: string;
+    created_at: string;
+    expires_at: string;
+  }>(
+    `
+      select sessions.app_user_id,
+             users.email,
+             sessions.created_at::text as created_at,
+             sessions.expires_at::text as expires_at
+      from public.app_user_sessions sessions
+      join public.app_users users on users.id = sessions.app_user_id
+      where sessions.token_hash = $1
+        and sessions.revoked_at is null
+        and sessions.expires_at > now()
+        and users.is_active = true
+      limit 1
+    `,
+    [hashSessionToken(token)],
+  );
+
+  if (!session) {
+    return null;
+  }
+
+  return {
+    sub: session.app_user_id,
+    email: session.email,
+    iat: Math.floor(new Date(session.created_at).getTime() / 1000),
+    exp: Math.floor(new Date(session.expires_at).getTime() / 1000),
+  } satisfies AppUserSessionPayload;
+}

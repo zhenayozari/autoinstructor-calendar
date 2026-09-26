@@ -3,6 +3,10 @@ import { CalendarPlus } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
+import {
+  getInstructorPayoutSettings,
+  getInstructorSourceVisibility,
+} from "@/lib/instructor-payouts";
 import { getLocalDate } from "@/lib/formatters";
 import {
   buildActiveInstructorsQuery,
@@ -274,10 +278,44 @@ export default async function AdminSchedulePage({
     lessonTypeIdsByAccessId.set(item.student_access_id, current);
   }
 
-  const studentAccesses = baseStudentAccesses.map((access) => ({
-    ...access,
-    lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
-  })) as StudentAccess[];
+  let showClientPrices = true;
+  let visibleSchoolIds: Set<string> | null = null;
+
+  if (postgresBackend && membership.isInstructor && membership.instructorId) {
+    const payoutSettings = await getInstructorPayoutSettings({
+      organizationId: membership.organizationId,
+      instructorId: membership.instructorId,
+    });
+
+    showClientPrices = payoutSettings?.show_client_prices !== false;
+
+    if (payoutSettings?.source_visibility_mode === "selected_only") {
+      const sourceVisibility = await getInstructorSourceVisibility({
+        organizationId: membership.organizationId,
+        instructorId: membership.instructorId,
+      });
+      visibleSchoolIds = new Set(
+        sourceVisibility
+          .filter((item) => item.is_visible)
+          .map((item) => item.school_id),
+      );
+    }
+  }
+
+  const visibleSchools = visibleSchoolIds
+    ? schools.filter((school) => visibleSchoolIds?.has(school.id))
+    : schools;
+  const studentAccesses = baseStudentAccesses
+    .filter(
+      (access) =>
+        !visibleSchoolIds ||
+        !access.school_id ||
+        visibleSchoolIds.has(access.school_id),
+    )
+    .map((access) => ({
+      ...access,
+      lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
+    })) as StudentAccess[];
   const slotIds = slots.map((slot) => slot.id);
 
   if (postgresBackend) {
@@ -312,6 +350,16 @@ export default async function AdminSchedulePage({
     loadError = loadError ?? bookingError;
   }
 
+  const visibleBookings = showClientPrices
+    ? bookings
+    : bookings.map((booking) => ({
+        ...booking,
+        price_amount: null,
+        paid_amount: null,
+        is_paid: false,
+        paid_at: null,
+        payment_note: null,
+      }));
   const schedulableLessonTypes = getSchedulableLessonTypes(lessonTypeCatalog);
   const slotCountsByScheduleDay = new Map<string, number>();
 
@@ -361,18 +409,19 @@ export default async function AdminSchedulePage({
         <AdminScheduleWorkspace
           instructors={instructors}
           lessonTypes={schedulableLessonTypes}
-          schools={schools}
+          schools={visibleSchools}
           scheduleDays={scheduleDays.map((day) => ({
             ...day,
             slot_count: slotCountsByScheduleDay.get(day.id) ?? 0,
           }))}
           slots={slots}
-          bookings={bookings}
+          bookings={visibleBookings}
           studentAccesses={studentAccesses}
           defaultWeekDate={defaultWeekDate}
           initialInstructorId={initialInstructorId}
           canSelectInstructor={false}
           adminEnabled={adminEnabled}
+          showClientPrices={showClientPrices}
           initialOpenSlotForm={createParam === "slot"}
           initialSlotDate={dateParam}
         />

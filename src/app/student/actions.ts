@@ -15,6 +15,9 @@ import {
   getLegalAcceptanceFieldName,
 } from "@/lib/student-legal-requirements";
 import { isStudentProfileConsentRequired } from "@/lib/student-profile-consent";
+import { assertInstructorWeeklyLessonLimit } from "@/lib/instructor-weekly-limit";
+import { createInstructorPayoutEntryForBookingWithCurrentPolicy } from "@/lib/instructor-payouts";
+import { saveLocalImageUpload } from "@/lib/uploads/local-storage";
 import {
   getEffectiveBookingPriceAmount,
   getConfiguredLessonPriceAmount,
@@ -37,6 +40,9 @@ export type StudentBookingActionState = {
 };
 
 export type StudentProfileActionState = StudentBookingActionState;
+export type StudentAvatarActionState = StudentBookingActionState;
+
+const STUDENT_AVATAR_MAX_SIZE = 2 * 1024 * 1024;
 
 export async function studentLogoutAction() {
   await clearStudentSession();
@@ -47,6 +53,20 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error
     ? error.message
     : "Не удалось выполнить операцию";
+}
+
+function getStudentBookingErrorMessage(error: unknown) {
+  const message = getErrorMessage(error);
+
+  if (message.includes("Лимит занятий закончился")) {
+    return "Ваш лимит занятий исчерпан. Свяжитесь с инструктором, чтобы открыть новый доступ или уточнить запись.";
+  }
+
+  if (message.includes("недельный лимит занятий")) {
+    return "На эту неделю запись недоступна. Свяжитесь с инструктором, чтобы уточнить расписание.";
+  }
+
+  return message;
 }
 
 function readRequiredProfileString(formData: FormData, field: string, label: string) {
@@ -190,6 +210,60 @@ export async function completeStudentProfileAction(
   redirect("/student");
 }
 
+export async function updateStudentAvatarAction(
+  previousState: StudentAvatarActionState,
+  formData: FormData,
+): Promise<StudentAvatarActionState> {
+  void previousState;
+
+  if (!isPostgresBackend()) {
+    return {
+      status: "error",
+      message: "Фото профиля доступно в PostgreSQL-режиме.",
+    };
+  }
+
+  try {
+    const access = await requireCurrentStudentAccess();
+    const file = formData.get("photo");
+
+    if (!(file instanceof File) || file.size === 0) {
+      throw new Error("Выберите фото");
+    }
+
+    const upload = await saveLocalImageUpload({
+      file,
+      bucket: "student-avatars",
+      maxSize: STUDENT_AVATAR_MAX_SIZE,
+    });
+
+    await executeQuery(
+      `
+        update public.student_accesses
+        set student_photo_url = $1,
+            updated_at = now()
+        where id = $2
+      `,
+      [upload.publicUrl, access.id],
+    );
+
+    revalidatePath("/student");
+    revalidatePath("/admin/students");
+
+    return {
+      status: "success",
+      message: "Фото обновлено",
+    };
+  } catch (error) {
+    console.error("updateStudentAvatarAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
 function isMissingColumnError(error: { code?: string; message?: string } | null) {
   const message = error?.message?.toLowerCase() ?? "";
 
@@ -308,7 +382,7 @@ async function insertStudentBookingPostgres({
     bookingCategory,
   });
 
-  await executeQuery(
+  const booking = await queryOne<{ id: string }>(
     `
       insert into public.bookings (
         slot_id, student_access_id, student_label,
@@ -316,6 +390,7 @@ async function insertStudentBookingPostgres({
         paid_amount, is_paid, paid_at, booking_category, status
       )
       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed')
+      returning id
     `,
     [
       slotId,
@@ -330,6 +405,12 @@ async function insertStudentBookingPostgres({
       bookingCategory,
     ],
   );
+
+  if (!booking) {
+    throw new Error("Booking was not created");
+  }
+
+  return booking.id;
 }
 
 export async function studentBookSlotAction(
@@ -389,6 +470,12 @@ export async function studentBookSlotAction(
         throw new Error("Нельзя записаться на прошедшее занятие");
       }
 
+      await assertInstructorWeeklyLessonLimit({
+        organizationId: access.organizationId,
+        instructorId: slot.instructor_id,
+        lessonDate: slot.date,
+      });
+
       const selectedPackage = await selectStudentLessonPackageForBookingPostgres({
         access: {
           id: access.id,
@@ -409,17 +496,21 @@ export async function studentBookSlotAction(
           schoolId: selectedPackage.schoolId,
           lessonTypeId: slot.lesson_type_id,
         });
+      const packagePriceAmount =
+        selectedPackage.customPriceAmount ?? configuredPriceAmount;
       const priceAmount = getEffectiveBookingPriceAmount({
-        priceAmount: configuredPriceAmount,
+        priceAmount: packagePriceAmount,
         bookingCategory: selectedPackage.bookingCategory,
       });
-      const paymentRule = await getSchoolPaymentRulePostgres({
-        organizationId: access.organizationId,
-        schoolId: selectedPackage.schoolId,
-      });
+      const paymentRule =
+        selectedPackage.paymentRuleOverride ??
+        (await getSchoolPaymentRulePostgres({
+          organizationId: access.organizationId,
+          schoolId: selectedPackage.schoolId,
+        }));
 
       try {
-        await insertStudentBookingPostgres({
+        const createdBookingId = await insertStudentBookingPostgres({
           slotId: slot.id,
           accessId: access.id,
           studentLabel: access.displayLabel,
@@ -428,6 +519,10 @@ export async function studentBookSlotAction(
           bookingCategory: selectedPackage.bookingCategory,
           priceAmount,
           paymentRule,
+        });
+
+        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+          bookingId: createdBookingId,
         });
       } catch (error) {
         if (isPostgresUniqueViolation(error)) {
@@ -500,15 +595,19 @@ export async function studentBookSlotAction(
       schoolId: selectedPackage.schoolId,
       lessonTypeId: slot.lesson_type_id,
     });
+    const packagePriceAmount =
+      selectedPackage.customPriceAmount ?? configuredPriceAmount;
     const priceAmount = getEffectiveBookingPriceAmount({
-      priceAmount: configuredPriceAmount,
+      priceAmount: packagePriceAmount,
       bookingCategory: selectedPackage.bookingCategory,
     });
-    const paymentRule = await getSchoolPaymentRule({
-      supabase,
-      organizationId: access.organizationId,
-      schoolId: selectedPackage.schoolId,
-    });
+    const paymentRule =
+      selectedPackage.paymentRuleOverride ??
+      (await getSchoolPaymentRule({
+        supabase,
+        organizationId: access.organizationId,
+        schoolId: selectedPackage.schoolId,
+      }));
     const error = await insertStudentBooking({
       supabase,
       slotId: slot.id,
@@ -545,7 +644,7 @@ export async function studentBookSlotAction(
 
     return {
       status: "error",
-      message: getErrorMessage(error),
+      message: getStudentBookingErrorMessage(error),
     };
   }
 }

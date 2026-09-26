@@ -1,0 +1,1090 @@
+import "server-only";
+
+import { queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
+import type {
+  BookingCategory,
+  InstructorPayoutAccrualPolicy,
+  InstructorPayoutRateRule,
+  InstructorPayoutSettings,
+  InstructorPayoutSummary,
+  InstructorSourceVisibility,
+  InstructorSourceVisibilityMode,
+} from "@/lib/types";
+
+export type InstructorPayoutSettingsInput = {
+  organizationId: string;
+  instructorId: string;
+  accrualPolicy: InstructorPayoutAccrualPolicy;
+  weeklyLessonLimit: number | null;
+  sourceVisibilityMode: InstructorSourceVisibilityMode;
+  showClientPrices: boolean;
+  canManageStudentPackages: boolean;
+};
+
+export type InstructorPayoutRateRuleInput = {
+  organizationId: string;
+  instructorId: string;
+  schoolId: string | null;
+  lessonTypeId: string | null;
+  bookingCategory: BookingCategory | null;
+  amount: number;
+  isActive: boolean;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  note: string | null;
+};
+
+export type InstructorPayoutRateLookupInput = {
+  organizationId: string;
+  instructorId: string;
+  schoolId: string | null;
+  lessonTypeId: string | null;
+  bookingCategory: BookingCategory;
+  lessonDate: string;
+};
+
+export type InstructorPayoutPaymentInput = {
+  organizationId: string;
+  instructorId: string;
+  amount: number;
+  paymentNote: string | null;
+  createdByMemberId: string | null;
+};
+
+export type InstructorPayoutBackfillResult = {
+  checkedCount: number;
+  createdCount: number;
+  skippedCount: number;
+  skippedReasons: Record<string, number>;
+};
+
+export type InstructorPayoutSetup = {
+  settings: InstructorPayoutSettings;
+  sourceVisibility: InstructorSourceVisibility[];
+  rateRules: InstructorPayoutRateRule[];
+  summary: InstructorPayoutSummary;
+};
+
+export type InstructorPayoutEntryCreationResult =
+  | { status: "created"; entryId: string; amount: number }
+  | {
+      status: "skipped";
+      reason:
+        | "policy_mismatch"
+        | "not_completed"
+        | "no_rate"
+        | "zero_rate"
+        | "already_exists"
+        | "booking_not_found"
+        | "owner_excluded";
+    };
+
+export type InstructorPayoutCorrectionResult =
+  | { status: "cancelled"; entryId: string }
+  | { status: "adjustment_created"; entryId: string; amount: number }
+  | { status: "skipped"; reason: "no_entry" | "already_adjusted" };
+
+function assertUuidLike(value: string, label: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+}
+
+function assertAmount(value: number, label = "amount") {
+  if (!Number.isInteger(value) || value < 0 || value > 10_000_000) {
+    throw new Error(`${label} must be an integer from 0 to 10000000`);
+  }
+}
+
+function assertDateValue(value: string, label: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${label} must be YYYY-MM-DD`);
+  }
+}
+
+function assertWeeklyLimit(value: number | null) {
+  if (value === null) return;
+
+  if (!Number.isInteger(value) || value < 1 || value > 200) {
+    throw new Error("weeklyLessonLimit must be empty or from 1 to 200");
+  }
+}
+
+function normalizeSummary(
+  row: InstructorPayoutSummary | null,
+  organizationId: string,
+  instructorId: string,
+): InstructorPayoutSummary {
+  return (
+    row ?? {
+      organization_id: organizationId,
+      instructor_id: instructorId,
+      planned_amount: 0,
+      paid_amount: 0,
+      remaining_amount: 0,
+    }
+  );
+}
+
+export async function getOwnerPayoutPolicy({
+  organizationId,
+}: {
+  organizationId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+
+  const row = await queryOne<{ include_owner_in_payouts: boolean }>(
+    `
+      select include_owner_in_payouts
+      from public.organizations
+      where id = $1
+      limit 1
+    `,
+    [organizationId],
+  );
+
+  return row?.include_owner_in_payouts ?? false;
+}
+
+export async function updateOwnerPayoutPolicy({
+  organizationId,
+  includeOwnerInPayouts,
+}: {
+  organizationId: string;
+  includeOwnerInPayouts: boolean;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+
+  const row = await queryOne<{ include_owner_in_payouts: boolean }>(
+    `
+      update public.organizations
+      set include_owner_in_payouts = $2
+      where id = $1
+      returning include_owner_in_payouts
+    `,
+    [organizationId, includeOwnerInPayouts],
+  );
+
+  if (!row) {
+    throw new Error("Organization payout policy was not saved");
+  }
+
+  return row.include_owner_in_payouts;
+}
+
+export async function getOwnerInstructorIds({
+  organizationId,
+}: {
+  organizationId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+
+  const rows = await queryRows<{ instructor_id: string }>(
+    `
+      select instructor_id
+      from public.organization_members
+      where organization_id = $1
+        and role = 'owner'
+        and is_active = true
+        and instructor_id is not null
+    `,
+    [organizationId],
+  );
+
+  return rows.map((row) => row.instructor_id);
+}
+
+async function getInstructorPayoutEligibility({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  const row = await queryOne<{
+    include_owner_in_payouts: boolean;
+    is_owner: boolean;
+  }>(
+    `
+      select org.include_owner_in_payouts,
+             exists (
+               select 1
+               from public.organization_members member
+               where member.organization_id = org.id
+                 and member.instructor_id = $2
+                 and member.role = 'owner'
+                 and member.is_active = true
+             ) as is_owner
+      from public.organizations org
+      where org.id = $1
+      limit 1
+    `,
+    [organizationId, instructorId],
+  );
+
+  return {
+    includeOwnerInPayouts: row?.include_owner_in_payouts ?? false,
+    isOwner: row?.is_owner ?? false,
+  };
+}
+
+export async function ensureInstructorPayoutSettingsForOrganization(
+  organizationId: string,
+) {
+  assertUuidLike(organizationId, "organizationId");
+
+  await queryRows(
+    `
+      insert into public.instructor_payout_settings (
+        instructor_id,
+        organization_id
+      )
+      select id, organization_id
+      from public.instructors
+      where organization_id = $1
+      on conflict (instructor_id) do nothing
+      returning instructor_id
+    `,
+    [organizationId],
+  );
+}
+
+export async function getInstructorPayoutSettings({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  await ensureInstructorPayoutSettingsForOrganization(organizationId);
+
+  return queryOne<InstructorPayoutSettings>(
+    `
+      select instructor_id, organization_id, accrual_policy, weekly_lesson_limit,
+             source_visibility_mode, show_client_prices, can_manage_student_packages,
+             created_at::text as created_at, updated_at::text as updated_at
+      from public.instructor_payout_settings
+      where organization_id = $1
+        and instructor_id = $2
+      limit 1
+    `,
+    [organizationId, instructorId],
+  );
+}
+
+export async function updateInstructorPayoutSettings(
+  input: InstructorPayoutSettingsInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertWeeklyLimit(input.weeklyLessonLimit);
+
+  const settings = await queryOne<InstructorPayoutSettings>(
+    `
+      insert into public.instructor_payout_settings (
+        instructor_id,
+        organization_id,
+        accrual_policy,
+        weekly_lesson_limit,
+        source_visibility_mode,
+        show_client_prices,
+        can_manage_student_packages
+      )
+      values ($1, $2, $3, $4, $5, $6, $7)
+      on conflict (instructor_id) do update
+      set accrual_policy = excluded.accrual_policy,
+          weekly_lesson_limit = excluded.weekly_lesson_limit,
+          source_visibility_mode = excluded.source_visibility_mode,
+          show_client_prices = excluded.show_client_prices,
+          can_manage_student_packages = excluded.can_manage_student_packages
+      returning instructor_id, organization_id, accrual_policy, weekly_lesson_limit,
+                source_visibility_mode, show_client_prices, can_manage_student_packages,
+                created_at::text as created_at, updated_at::text as updated_at
+    `,
+    [
+      input.instructorId,
+      input.organizationId,
+      input.accrualPolicy,
+      input.weeklyLessonLimit,
+      input.sourceVisibilityMode,
+      input.showClientPrices,
+      input.canManageStudentPackages,
+    ],
+  );
+
+  if (!settings) {
+    throw new Error("Instructor payout settings were not saved");
+  }
+
+  return settings;
+}
+
+export async function getInstructorSourceVisibility({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  return queryRows<InstructorSourceVisibility>(
+    `
+      select instructor_id, organization_id, school_id, is_visible,
+             created_at::text as created_at, updated_at::text as updated_at
+      from public.instructor_source_visibility
+      where organization_id = $1
+        and instructor_id = $2
+      order by created_at
+    `,
+    [organizationId, instructorId],
+  );
+}
+
+export async function replaceInstructorSourceVisibility({
+  organizationId,
+  instructorId,
+  visibleSchoolIds,
+}: {
+  organizationId: string;
+  instructorId: string;
+  visibleSchoolIds: string[];
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  const uniqueSchoolIds = [...new Set(visibleSchoolIds)];
+
+  for (const schoolId of uniqueSchoolIds) {
+    assertUuidLike(schoolId, "schoolId");
+  }
+
+  return withTransaction(async (client) => {
+    await client.query(
+      `
+        delete from public.instructor_source_visibility
+        where organization_id = $1
+          and instructor_id = $2
+      `,
+      [organizationId, instructorId],
+    );
+
+    for (const schoolId of uniqueSchoolIds) {
+      await client.query(
+        `
+          insert into public.instructor_source_visibility (
+            instructor_id,
+            organization_id,
+            school_id,
+            is_visible
+          )
+          values ($1, $2, $3, true)
+        `,
+        [instructorId, organizationId, schoolId],
+      );
+    }
+  });
+}
+
+export async function listInstructorPayoutRateRules({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId?: string | null;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+
+  if (instructorId) {
+    assertUuidLike(instructorId, "instructorId");
+  }
+
+  return queryRows<InstructorPayoutRateRule>(
+    `
+      select id, organization_id, instructor_id, school_id, lesson_type_id,
+             booking_category, amount, is_active,
+             effective_from::text as effective_from,
+             effective_to::text as effective_to,
+             note, created_at::text as created_at, updated_at::text as updated_at
+      from public.instructor_payout_rate_rules
+      where organization_id = $1
+        and ($2::uuid is null or instructor_id = $2::uuid)
+      order by is_active desc, effective_from desc, created_at desc
+    `,
+    [organizationId, instructorId ?? null],
+  );
+}
+
+export async function createInstructorPayoutRateRule(
+  input: InstructorPayoutRateRuleInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertAmount(input.amount);
+  assertDateValue(input.effectiveFrom, "effectiveFrom");
+
+  if (input.schoolId) assertUuidLike(input.schoolId, "schoolId");
+  if (input.lessonTypeId) assertUuidLike(input.lessonTypeId, "lessonTypeId");
+  if (input.effectiveTo) assertDateValue(input.effectiveTo, "effectiveTo");
+
+  const rule = await queryOne<InstructorPayoutRateRule>(
+    `
+      insert into public.instructor_payout_rate_rules (
+        organization_id,
+        instructor_id,
+        school_id,
+        lesson_type_id,
+        booking_category,
+        amount,
+        is_active,
+        effective_from,
+        effective_to,
+        note
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10)
+      returning id, organization_id, instructor_id, school_id, lesson_type_id,
+                booking_category, amount, is_active,
+                effective_from::text as effective_from,
+                effective_to::text as effective_to,
+                note, created_at::text as created_at, updated_at::text as updated_at
+    `,
+    [
+      input.organizationId,
+      input.instructorId,
+      input.schoolId,
+      input.lessonTypeId,
+      input.bookingCategory,
+      input.amount,
+      input.isActive,
+      input.effectiveFrom,
+      input.effectiveTo,
+      input.note,
+    ],
+  );
+
+  if (!rule) {
+    throw new Error("Instructor payout rate rule was not created");
+  }
+
+  return rule;
+}
+
+export async function findInstructorPayoutRateRule(
+  input: InstructorPayoutRateLookupInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertDateValue(input.lessonDate, "lessonDate");
+
+  if (input.schoolId) assertUuidLike(input.schoolId, "schoolId");
+  if (input.lessonTypeId) assertUuidLike(input.lessonTypeId, "lessonTypeId");
+
+  return queryOne<InstructorPayoutRateRule>(
+    `
+      select id, organization_id, instructor_id, school_id, lesson_type_id,
+             booking_category, amount, is_active,
+             effective_from::text as effective_from,
+             effective_to::text as effective_to,
+             note, created_at::text as created_at, updated_at::text as updated_at
+      from public.instructor_payout_rate_rules
+      where organization_id = $1
+        and instructor_id = $2
+        and is_active = true
+        and (school_id is null or school_id = $3::uuid)
+        and (lesson_type_id is null or lesson_type_id = $4::uuid)
+        and (booking_category is null or booking_category = $5)
+        and effective_from <= $6::date
+        and (effective_to is null or effective_to >= $6::date)
+      order by
+        case when school_id is null then 0 else 1 end desc,
+        case when lesson_type_id is null then 0 else 1 end desc,
+        case when booking_category is null then 0 else 1 end desc,
+        effective_from desc,
+        created_at desc
+      limit 1
+    `,
+    [
+      input.organizationId,
+      input.instructorId,
+      input.schoolId,
+      input.lessonTypeId,
+      input.bookingCategory,
+      input.lessonDate,
+    ],
+  );
+}
+
+export async function getInstructorPayoutSummary({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  const summary = await queryOne<InstructorPayoutSummary>(
+    `
+      select organization_id, instructor_id, planned_amount, paid_amount,
+             remaining_amount
+      from public.instructor_payout_summary
+      where organization_id = $1
+        and instructor_id = $2
+      limit 1
+    `,
+    [organizationId, instructorId],
+  );
+
+  return normalizeSummary(summary, organizationId, instructorId);
+}
+
+export async function getInstructorPayoutSetup({
+  organizationId,
+  instructorId,
+}: {
+  organizationId: string;
+  instructorId: string;
+}): Promise<InstructorPayoutSetup> {
+  const [settings, sourceVisibility, rateRules, summary] = await Promise.all([
+    getInstructorPayoutSettings({ organizationId, instructorId }),
+    getInstructorSourceVisibility({ organizationId, instructorId }),
+    listInstructorPayoutRateRules({ organizationId, instructorId }),
+    getInstructorPayoutSummary({ organizationId, instructorId }),
+  ]);
+
+  if (!settings) {
+    throw new Error("Instructor payout settings were not found");
+  }
+
+  return {
+    settings,
+    sourceVisibility,
+    rateRules,
+    summary,
+  };
+}
+
+export async function createInstructorPayoutPayment(
+  input: InstructorPayoutPaymentInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertAmount(input.amount);
+
+  if (input.amount <= 0) {
+    throw new Error("amount must be greater than zero");
+  }
+
+  if (input.createdByMemberId) {
+    assertUuidLike(input.createdByMemberId, "createdByMemberId");
+  }
+
+  const summary = await getInstructorPayoutSummary({
+    organizationId: input.organizationId,
+    instructorId: input.instructorId,
+  });
+  const amountToPay = Math.min(input.amount, summary.remaining_amount);
+
+  if (amountToPay <= 0) {
+    throw new Error("There is no remaining payout amount");
+  }
+
+  const entries = await queryRows<{
+    id: string;
+    remaining_amount: number;
+  }>(
+    `
+      select id, remaining_amount
+      from public.instructor_payout_entry_balances
+      where organization_id = $1
+        and instructor_id = $2
+        and status = 'planned'
+        and amount > 0
+        and remaining_amount > 0
+      order by planned_at, created_at, id
+    `,
+    [input.organizationId, input.instructorId],
+  );
+
+  let remainingToAllocate = amountToPay;
+
+  return withTransaction(async (client) => {
+    const paymentResult = await client.query<{ id: string; amount: number }>(
+      `
+        insert into public.instructor_payout_payments (
+          organization_id,
+          instructor_id,
+          amount,
+          payment_note,
+          created_by_member_id
+        )
+        values ($1, $2, $3, $4, $5)
+        returning id, amount
+      `,
+      [
+        input.organizationId,
+        input.instructorId,
+        amountToPay,
+        input.paymentNote,
+        input.createdByMemberId,
+      ],
+    );
+    const payment = paymentResult.rows[0];
+
+    if (!payment) {
+      throw new Error("Instructor payout payment was not created");
+    }
+
+    for (const entry of entries) {
+      if (remainingToAllocate <= 0) break;
+
+      const allocationAmount = Math.min(
+        entry.remaining_amount,
+        remainingToAllocate,
+      );
+
+      await client.query(
+        `
+          insert into public.instructor_payout_payment_allocations (
+            payment_id,
+            payout_entry_id,
+            amount
+          )
+          values ($1, $2, $3)
+        `,
+        [payment.id, entry.id, allocationAmount],
+      );
+
+      remainingToAllocate -= allocationAmount;
+    }
+
+    if (remainingToAllocate > 0) {
+      throw new Error("Payment amount could not be allocated");
+    }
+
+    return payment;
+  });
+}
+
+export async function backfillInstructorPayoutEntries({
+  organizationId,
+  instructorId,
+  createdByMemberId = null,
+}: {
+  organizationId: string;
+  instructorId: string;
+  createdByMemberId?: string | null;
+}): Promise<InstructorPayoutBackfillResult> {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  if (createdByMemberId) {
+    assertUuidLike(createdByMemberId, "createdByMemberId");
+  }
+
+  const settings = await getInstructorPayoutSettings({
+    organizationId,
+    instructorId,
+  });
+
+  if (!settings) {
+    throw new Error("Instructor payout settings were not found");
+  }
+
+  const bookings = await queryRows<{
+    id: string;
+    completed_at: string | null;
+    slot_end_time: string;
+  }>(
+    `
+      select b.id,
+             b.completed_at::text as completed_at,
+             s.end_time::text as slot_end_time
+      from public.bookings b
+      join public.slots s on s.id = b.slot_id
+      join public.instructors i on i.id = s.instructor_id
+      left join public.instructor_payout_entries existing
+        on existing.booking_id = b.id
+       and existing.entry_type = 'booking_accrual'
+      where i.organization_id = $1
+        and s.instructor_id = $2
+        and b.status = 'confirmed'
+        and existing.id is null
+        and (
+          $3 = 'prepaid'
+          or (
+            $3 = 'postpaid'
+            and b.lesson_state = 'completed'
+          )
+        )
+      order by s.start_time, b.created_at
+    `,
+    [organizationId, instructorId, settings.accrual_policy],
+  );
+  const result: InstructorPayoutBackfillResult = {
+    checkedCount: bookings.length,
+    createdCount: 0,
+    skippedCount: 0,
+    skippedReasons: {},
+  };
+
+  for (const booking of bookings) {
+    const creationResult = await createInstructorPayoutEntryForBooking({
+      bookingId: booking.id,
+      requiredPolicy: settings.accrual_policy,
+      createdByMemberId,
+      plannedAt:
+        settings.accrual_policy === "postpaid"
+          ? (booking.completed_at ?? booking.slot_end_time)
+          : new Date().toISOString(),
+    });
+
+    if (creationResult.status === "created") {
+      result.createdCount += 1;
+      continue;
+    }
+
+    result.skippedCount += 1;
+    result.skippedReasons[creationResult.reason] =
+      (result.skippedReasons[creationResult.reason] ?? 0) + 1;
+  }
+
+  return result;
+}
+
+type BookingPayoutContext = {
+  booking_id: string;
+  booking_status: string;
+  booking_category: BookingCategory;
+  lesson_state: string;
+  completed_at: string | null;
+  slot_id: string;
+  instructor_id: string;
+  organization_id: string;
+  school_id: string | null;
+  lesson_type_id: string;
+  student_access_id: string | null;
+  lesson_date: string;
+  slot_end_time: string;
+};
+
+async function getBookingPayoutContext(bookingId: string) {
+  assertUuidLike(bookingId, "bookingId");
+
+  return queryOne<BookingPayoutContext>(
+    `
+      select b.id as booking_id,
+             b.status as booking_status,
+             b.booking_category,
+             b.lesson_state,
+             b.completed_at::text as completed_at,
+             s.id as slot_id,
+             s.instructor_id,
+             i.organization_id,
+             coalesce(b.school_id, sa.school_id, s.school_id) as school_id,
+             s.lesson_type_id,
+             b.student_access_id,
+             d.date::text as lesson_date,
+             s.end_time::text as slot_end_time
+      from public.bookings b
+      join public.slots s on s.id = b.slot_id
+      join public.schedule_days d on d.id = s.schedule_day_id
+      join public.instructors i on i.id = s.instructor_id
+      left join public.student_accesses sa on sa.id = b.student_access_id
+      where b.id = $1
+      limit 1
+    `,
+    [bookingId],
+  );
+}
+
+export async function createInstructorPayoutEntryForBooking({
+  bookingId,
+  requiredPolicy,
+  createdByMemberId = null,
+  plannedAt = new Date().toISOString(),
+}: {
+  bookingId: string;
+  requiredPolicy: InstructorPayoutAccrualPolicy;
+  createdByMemberId?: string | null;
+  plannedAt?: string;
+}): Promise<InstructorPayoutEntryCreationResult> {
+  const context = await getBookingPayoutContext(bookingId);
+
+  if (!context || context.booking_status !== "confirmed") {
+    return { status: "skipped", reason: "booking_not_found" };
+  }
+
+  const eligibility = await getInstructorPayoutEligibility({
+    organizationId: context.organization_id,
+    instructorId: context.instructor_id,
+  });
+
+  if (eligibility.isOwner && !eligibility.includeOwnerInPayouts) {
+    return { status: "skipped", reason: "owner_excluded" };
+  }
+
+  const settings = await getInstructorPayoutSettings({
+    organizationId: context.organization_id,
+    instructorId: context.instructor_id,
+  });
+
+  if (!settings || settings.accrual_policy !== requiredPolicy) {
+    return { status: "skipped", reason: "policy_mismatch" };
+  }
+
+  if (requiredPolicy === "postpaid" && context.lesson_state !== "completed") {
+    return { status: "skipped", reason: "not_completed" };
+  }
+
+  const existing = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.instructor_payout_entries
+      where booking_id = $1
+        and entry_type = 'booking_accrual'
+      limit 1
+    `,
+    [bookingId],
+  );
+
+  if (existing) {
+    return { status: "skipped", reason: "already_exists" };
+  }
+
+  const rateRule = await findInstructorPayoutRateRule({
+    organizationId: context.organization_id,
+    instructorId: context.instructor_id,
+    schoolId: context.school_id,
+    lessonTypeId: context.lesson_type_id,
+    bookingCategory: context.booking_category,
+    lessonDate: context.lesson_date,
+  });
+
+  if (!rateRule) {
+    return { status: "skipped", reason: "no_rate" };
+  }
+
+  if (rateRule.amount === 0) {
+    return { status: "skipped", reason: "zero_rate" };
+  }
+
+  const entry = await queryOne<{ id: string; amount: number }>(
+    `
+      insert into public.instructor_payout_entries (
+        organization_id,
+        instructor_id,
+        booking_id,
+        slot_id,
+        school_id,
+        lesson_type_id,
+        student_access_id,
+        rate_rule_id,
+        entry_type,
+        accrual_policy,
+        status,
+        amount,
+        planned_at,
+        event_at,
+        created_by_member_id
+      )
+      values (
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        'booking_accrual', $9, 'planned', $10, $11, $12, $13
+      )
+      on conflict do nothing
+      returning id, amount
+    `,
+    [
+      context.organization_id,
+      context.instructor_id,
+      context.booking_id,
+      context.slot_id,
+      context.school_id,
+      context.lesson_type_id,
+      context.student_access_id,
+      rateRule.id,
+      requiredPolicy,
+      rateRule.amount,
+      plannedAt,
+      requiredPolicy === "postpaid"
+        ? (context.completed_at ?? context.slot_end_time)
+        : plannedAt,
+      createdByMemberId,
+    ],
+  );
+
+  if (!entry) {
+    return { status: "skipped", reason: "already_exists" };
+  }
+
+  return { status: "created", entryId: entry.id, amount: entry.amount };
+}
+
+export async function createInstructorPayoutEntryForBookingWithCurrentPolicy({
+  bookingId,
+  createdByMemberId = null,
+  plannedAt = new Date().toISOString(),
+}: {
+  bookingId: string;
+  createdByMemberId?: string | null;
+  plannedAt?: string;
+}): Promise<InstructorPayoutEntryCreationResult> {
+  const context = await getBookingPayoutContext(bookingId);
+
+  if (!context || context.booking_status !== "confirmed") {
+    return { status: "skipped", reason: "booking_not_found" };
+  }
+
+  const settings = await getInstructorPayoutSettings({
+    organizationId: context.organization_id,
+    instructorId: context.instructor_id,
+  });
+
+  if (!settings) {
+    return { status: "skipped", reason: "policy_mismatch" };
+  }
+
+  return createInstructorPayoutEntryForBooking({
+    bookingId,
+    requiredPolicy: settings.accrual_policy,
+    createdByMemberId,
+    plannedAt:
+      settings.accrual_policy === "postpaid"
+        ? (context.completed_at ?? context.slot_end_time)
+        : plannedAt,
+  });
+}
+
+export async function correctInstructorPayoutForBooking({
+  bookingId,
+  correctionType,
+  createdByMemberId = null,
+  note = null,
+}: {
+  bookingId: string;
+  correctionType: "manual_adjustment" | "cancellation_adjustment" | "no_show_adjustment";
+  createdByMemberId?: string | null;
+  note?: string | null;
+}): Promise<InstructorPayoutCorrectionResult> {
+  assertUuidLike(bookingId, "bookingId");
+
+  const entry = await queryOne<{
+    id: string;
+    organization_id: string;
+    instructor_id: string;
+    booking_id: string;
+    slot_id: string | null;
+    school_id: string | null;
+    lesson_type_id: string | null;
+    student_access_id: string | null;
+    accrual_policy: InstructorPayoutAccrualPolicy;
+    amount: number;
+    paid_amount: number;
+  }>(
+    `
+      select id, organization_id, instructor_id, booking_id, slot_id, school_id,
+             lesson_type_id, student_access_id, accrual_policy, amount, paid_amount
+      from public.instructor_payout_entry_balances
+      where booking_id = $1
+        and entry_type = 'booking_accrual'
+        and status = 'planned'
+      limit 1
+    `,
+    [bookingId],
+  );
+
+  if (!entry) {
+    return { status: "skipped", reason: "no_entry" };
+  }
+
+  if (entry.paid_amount <= 0) {
+    await queryRows(
+      `
+        update public.instructor_payout_entries
+        set status = 'cancelled',
+            cancelled_at = now(),
+            note = coalesce($2, note)
+        where id = $1
+      `,
+      [entry.id, note],
+    );
+
+    return { status: "cancelled", entryId: entry.id };
+  }
+
+  const existingAdjustment = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.instructor_payout_entries
+      where booking_id = $1
+        and entry_type = $2
+        and status = 'planned'
+      limit 1
+    `,
+    [bookingId, correctionType],
+  );
+
+  if (existingAdjustment) {
+    return { status: "skipped", reason: "already_adjusted" };
+  }
+
+  const adjustment = await queryOne<{ id: string; amount: number }>(
+    `
+      insert into public.instructor_payout_entries (
+        organization_id,
+        instructor_id,
+        booking_id,
+        slot_id,
+        school_id,
+        lesson_type_id,
+        student_access_id,
+        entry_type,
+        accrual_policy,
+        status,
+        amount,
+        planned_at,
+        event_at,
+        note,
+        created_by_member_id
+      )
+      values (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, 'planned', $10, now(), now(), $11, $12
+      )
+      returning id, amount
+    `,
+    [
+      entry.organization_id,
+      entry.instructor_id,
+      entry.booking_id,
+      entry.slot_id,
+      entry.school_id,
+      entry.lesson_type_id,
+      entry.student_access_id,
+      correctionType,
+      entry.accrual_policy,
+      -entry.amount,
+      note,
+      createdByMemberId,
+    ],
+  );
+
+  if (!adjustment) {
+    return { status: "skipped", reason: "already_adjusted" };
+  }
+
+  return {
+    status: "adjustment_created",
+    entryId: adjustment.id,
+    amount: adjustment.amount,
+  };
+}

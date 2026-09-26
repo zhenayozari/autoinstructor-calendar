@@ -5,9 +5,23 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { logAuditEvent } from "@/lib/audit-log";
+import { revokeAllAppUserSessions } from "@/lib/app-users/session";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne, withTransaction } from "@/lib/db/postgres";
+import {
+  backfillInstructorPayoutEntries,
+  createInstructorPayoutPayment,
+  createInstructorPayoutRateRule,
+  replaceInstructorSourceVisibility,
+  updateInstructorPayoutSettings,
+  updateOwnerPayoutPolicy,
+} from "@/lib/instructor-payouts";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type {
+  BookingCategory,
+  InstructorPayoutAccrualPolicy,
+  InstructorSourceVisibilityMode,
+} from "@/lib/types";
 
 function readOptionalString(formData: FormData, field: string) {
   const value = formData.get(field);
@@ -41,8 +55,14 @@ function normalizeEmail(email: string | null) {
   return email ? email.toLowerCase() : null;
 }
 
-function redirectWithStatus(status: string) {
-  redirect(`/director/staff?invite=${encodeURIComponent(status)}`);
+function redirectWithStatus(status: string, staffId?: string | null) {
+  const params = new URLSearchParams({ invite: status });
+
+  if (staffId) {
+    params.set("staff", staffId);
+  }
+
+  redirect(`/director/staff?${params.toString()}`);
 }
 
 function isNextRedirectError(error: unknown) {
@@ -156,7 +176,7 @@ export async function createStaffInvitationAction(formData: FormData) {
     status = "error";
   }
 
-  redirectWithStatus(status);
+  redirectWithStatus(status, readOptionalString(formData, "instructor_id"));
 }
 
 export async function approveStaffInvitationAction(formData: FormData) {
@@ -329,7 +349,7 @@ export async function approveStaffInvitationAction(formData: FormData) {
     status = "error";
   }
 
-  redirectWithStatus(status);
+  redirectWithStatus(status, readOptionalString(formData, "instructor_id"));
 }
 
 export async function rejectStaffInvitationAction(formData: FormData) {
@@ -396,6 +416,10 @@ export async function rejectStaffInvitationAction(formData: FormData) {
           [invitation.id],
         );
       });
+
+      if (invitation.user_id) {
+        await revokeAllAppUserSessions(invitation.user_id);
+      }
 
       await logAuditEvent({
         membership,
@@ -472,7 +496,7 @@ export async function rejectStaffInvitationAction(formData: FormData) {
     status = "error";
   }
 
-  redirectWithStatus(status);
+  redirectWithStatus(status, readOptionalString(formData, "instructor_id"));
 }
 
 export async function deleteStaffInvitationAction(formData: FormData) {
@@ -583,7 +607,7 @@ export async function deleteStaffInvitationAction(formData: FormData) {
     status = "error";
   }
 
-  redirectWithStatus(status);
+  redirectWithStatus(status, readOptionalString(formData, "instructor_id"));
 }
 
 export async function updateStaffInstructorStatusAction(formData: FormData) {
@@ -638,6 +662,10 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
           );
         }
       });
+
+      if (!nextActive && member?.user_id) {
+        await revokeAllAppUserSessions(member.user_id);
+      }
 
       await logAuditEvent({
         membership,
@@ -717,7 +745,7 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
     status = "error";
   }
 
-  redirectWithStatus(status);
+  redirectWithStatus(status, readOptionalString(formData, "instructor_id"));
 }
 
 export async function deleteStaffInstructorAction(formData: FormData) {
@@ -808,6 +836,10 @@ export async function deleteStaffInstructorAction(formData: FormData) {
           );
         }
       });
+
+      if (staffUserId && !shouldDeleteAppUser) {
+        await revokeAllAppUserSessions(staffUserId);
+      }
 
       await logAuditEvent({
         membership,
@@ -927,4 +959,382 @@ export async function deleteStaffInstructorAction(formData: FormData) {
   }
 
   redirectWithStatus(status);
+}
+
+function readOptionalUuid(formData: FormData, field: string) {
+  const value = readOptionalString(formData, field);
+  return value === "all" ? null : value;
+}
+
+function readOptionalInteger(formData: FormData, field: string) {
+  const value = readOptionalString(formData, field);
+
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Поле "${field}" должно быть целым числом`);
+  }
+
+  return parsed;
+}
+
+function readAccrualPolicy(value: string): InstructorPayoutAccrualPolicy {
+  if (value === "prepaid" || value === "postpaid") {
+    return value;
+  }
+
+  throw new Error("Некорректный режим начисления");
+}
+
+function readSourceVisibilityMode(value: string): InstructorSourceVisibilityMode {
+  if (value === "all_active" || value === "selected_only") {
+    return value;
+  }
+
+  throw new Error("Некорректная видимость источников");
+}
+
+function readBookingCategory(value: string | null): BookingCategory | null {
+  if (!value || value === "all") {
+    return null;
+  }
+
+  if (value === "regular" || value === "extra" || value === "gift") {
+    return value;
+  }
+
+  throw new Error("Некорректная категория записи");
+}
+
+function readStringList(formData: FormData, field: string) {
+  return formData
+    .getAll(field)
+    .filter((value): value is string => typeof value === "string" && Boolean(value));
+}
+
+export async function updateStaffPayoutSettingsAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "payout-updated";
+  let instructorId: string | null = null;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Настройки выплат доступны только в PostgreSQL-режиме");
+    }
+
+    instructorId = readRequiredString(formData, "instructor_id");
+    const accrualPolicy = readAccrualPolicy(
+      readRequiredString(formData, "accrual_policy"),
+    );
+    const sourceVisibilityMode = readSourceVisibilityMode(
+      readRequiredString(formData, "source_visibility_mode"),
+    );
+    const weeklyLessonLimit = readOptionalInteger(
+      formData,
+      "weekly_lesson_limit",
+    );
+    const showClientPrices = formData.get("show_client_prices") === "true";
+    const canManageStudentPackages =
+      formData.get("can_manage_student_packages") === "true";
+    const visibleSchoolIds = readStringList(formData, "visible_school_id");
+
+    await updateInstructorPayoutSettings({
+      organizationId: membership.organizationId,
+      instructorId,
+      accrualPolicy,
+      weeklyLessonLimit,
+      sourceVisibilityMode,
+      showClientPrices,
+      canManageStudentPackages,
+    });
+
+    await replaceInstructorSourceVisibility({
+      organizationId: membership.organizationId,
+      instructorId,
+      visibleSchoolIds,
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "staff_payout_settings.updated",
+      entityType: "instructor",
+      entityId: instructorId,
+      metadata: {
+        accrual_policy: accrualPolicy,
+        weekly_lesson_limit: weeklyLessonLimit,
+        source_visibility_mode: sourceVisibilityMode,
+        show_client_prices: showClientPrices,
+        can_manage_student_packages: canManageStudentPackages,
+        visible_school_count: visibleSchoolIds.length,
+      },
+    });
+
+    revalidatePath("/director/staff");
+    revalidatePath("/director");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("updateStaffPayoutSettingsAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status, instructorId);
+}
+
+export async function updateOwnerPayoutPolicyAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "owner-payout-updated";
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Настройка выплат владельцу доступна только в PostgreSQL-режиме");
+    }
+
+    const includeOwnerInPayouts =
+      formData.get("include_owner_in_payouts") === "true";
+
+    await updateOwnerPayoutPolicy({
+      organizationId: membership.organizationId,
+      includeOwnerInPayouts,
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "owner_payout_policy.updated",
+      entityType: "organization",
+      entityId: membership.organizationId,
+      metadata: {
+        include_owner_in_payouts: includeOwnerInPayouts,
+      },
+    });
+
+    revalidatePath("/director/staff");
+    revalidatePath("/director/reports");
+    revalidatePath("/director");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("updateOwnerPayoutPolicyAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status);
+}
+
+export async function createStaffPayoutRateRuleAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "payout-rate-created";
+  let instructorId: string | null = null;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Ставки выплат доступны только в PostgreSQL-режиме");
+    }
+
+    instructorId = readRequiredString(formData, "instructor_id");
+    const amount = readOptionalInteger(formData, "amount");
+
+    if (amount === null || amount < 0) {
+      throw new Error("Укажите сумму выплаты инструктору");
+    }
+
+    const rule = await createInstructorPayoutRateRule({
+      organizationId: membership.organizationId,
+      instructorId,
+      schoolId: readOptionalUuid(formData, "school_id"),
+      lessonTypeId: readOptionalUuid(formData, "lesson_type_id"),
+      bookingCategory: readBookingCategory(readOptionalString(formData, "booking_category")),
+      amount,
+      isActive: true,
+      effectiveFrom: readRequiredString(formData, "effective_from"),
+      effectiveTo: readOptionalString(formData, "effective_to"),
+      note: validateLength(readOptionalString(formData, "note"), 300, "Комментарий"),
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "staff_payout_rate.created",
+      entityType: "instructor_payout_rate_rule",
+      entityId: rule.id,
+      metadata: {
+        instructor_id: instructorId,
+        amount,
+      },
+    });
+
+    revalidatePath("/director/staff");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("createStaffPayoutRateRuleAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status, instructorId);
+}
+
+export async function disableStaffPayoutRateRuleAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "payout-rate-disabled";
+  let instructorId: string | null = null;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Ставки выплат доступны только в PostgreSQL-режиме");
+    }
+
+    const ruleId = readRequiredString(formData, "rule_id");
+
+    const rule = await queryOne<{
+      id: string;
+      instructor_id: string;
+      organization_id: string;
+    }>(
+      `
+        update public.instructor_payout_rate_rules
+        set is_active = false,
+            updated_at = now()
+        where id = $1
+          and organization_id = $2
+        returning id, instructor_id, organization_id
+      `,
+      [ruleId, membership.organizationId],
+    );
+
+    if (!rule) {
+      throw new Error("Ставка не найдена");
+    }
+
+    instructorId = rule.instructor_id;
+
+    await logAuditEvent({
+      membership,
+      action: "staff_payout_rate.disabled",
+      entityType: "instructor_payout_rate_rule",
+      entityId: rule.id,
+      metadata: {
+        instructor_id: rule.instructor_id,
+      },
+    });
+
+    revalidatePath("/director/staff");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("disableStaffPayoutRateRuleAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status, instructorId);
+}
+
+export async function createStaffPayoutPaymentAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "payout-paid";
+  let instructorId: string | null = null;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Выплаты доступны только в PostgreSQL-режиме");
+    }
+
+    instructorId = readRequiredString(formData, "instructor_id");
+    const amount = readOptionalInteger(formData, "amount");
+
+    if (amount === null || amount <= 0) {
+      throw new Error("Укажите сумму выдачи");
+    }
+
+    const payment = await createInstructorPayoutPayment({
+      organizationId: membership.organizationId,
+      instructorId,
+      amount,
+      paymentNote: validateLength(
+        readOptionalString(formData, "payment_note"),
+        500,
+        "Комментарий",
+      ),
+      createdByMemberId: membership.id,
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "staff_payout_payment.created",
+      entityType: "instructor_payout_payment",
+      entityId: payment.id,
+      metadata: {
+        instructor_id: instructorId,
+        amount: payment.amount,
+      },
+    });
+
+    revalidatePath("/director/staff");
+    revalidatePath("/director");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("createStaffPayoutPaymentAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status, instructorId);
+}
+
+export async function backfillStaffPayoutEntriesAction(formData: FormData) {
+  const membership = await requireDirectorAccess();
+  let status = "payout-backfilled";
+  let instructorId: string | null = null;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Начисления доступны только в PostgreSQL-режиме");
+    }
+
+    instructorId = readRequiredString(formData, "instructor_id");
+    const result = await backfillInstructorPayoutEntries({
+      organizationId: membership.organizationId,
+      instructorId,
+      createdByMemberId: membership.id,
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "staff_payout_entries.backfilled",
+      entityType: "instructor",
+      entityId: instructorId,
+      metadata: {
+        checked_count: result.checkedCount,
+        created_count: result.createdCount,
+        skipped_count: result.skippedCount,
+        skipped_reasons: result.skippedReasons,
+      },
+    });
+
+    revalidatePath("/director/staff");
+    revalidatePath("/director");
+    revalidatePath("/admin");
+  } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
+    console.error("backfillStaffPayoutEntriesAction:", error);
+    status = "error";
+  }
+
+  redirectWithStatus(status, instructorId);
 }

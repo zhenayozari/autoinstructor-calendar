@@ -2,10 +2,19 @@
 
 import { redirect } from "next/navigation";
 import {
+  getDummyStudentAccessSecretHash,
   hashStudentAccessSecret,
   isLegacyStudentAccessSecretHash,
   verifyStudentAccessSecret,
 } from "@/lib/student-access";
+import {
+  checkLoginRateLimit,
+  clearLoginRateLimit,
+  getLoginRateLimitHelpText,
+  getLoginRateLimitMessage,
+  getRequestIp,
+  recordFailedLogin,
+} from "@/lib/auth/login-rate-limit";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne } from "@/lib/db/postgres";
 import { setStudentSession } from "@/lib/student-session";
@@ -18,6 +27,8 @@ const LOCK_MINUTES = 15;
 export type StudentLoginActionState = {
   status: "idle" | "error";
   message: string;
+  retryAfterSeconds?: number;
+  helpText?: string;
 };
 
 type LoginAttemptRow = {
@@ -39,77 +50,6 @@ function isMissingAttemptsTableError(error: { code?: string; message?: string })
     error.code === "PGRST204" ||
     message.includes("student_login_attempts") ||
     message.includes("schema cache")
-  );
-}
-
-async function getPostgresLoginAttemptStatus(login: string) {
-  const attempt = await queryOne<LoginAttemptRow>(
-    `
-      select login, failed_count, locked_until, first_failed_at
-      from public.student_login_attempts
-      where login = $1
-      limit 1
-    `,
-    [login],
-  );
-  const lockedUntil = attempt?.locked_until
-    ? new Date(attempt.locked_until)
-    : null;
-
-  return {
-    isLocked: Boolean(lockedUntil && lockedUntil.getTime() > Date.now()),
-    attempt,
-  };
-}
-
-async function recordPostgresFailedLoginAttempt({
-  login,
-  attempt,
-}: {
-  login: string;
-  attempt: LoginAttemptRow | null;
-}) {
-  const now = new Date();
-  const windowStartedAt = attempt?.first_failed_at
-    ? new Date(attempt.first_failed_at)
-    : null;
-  const isSameWindow =
-    windowStartedAt &&
-    now.getTime() - windowStartedAt.getTime() <=
-      ATTEMPT_WINDOW_MINUTES * 60 * 1000;
-  const failedCount = isSameWindow && attempt ? attempt.failed_count + 1 : 1;
-  const lockedUntil =
-    failedCount >= MAX_FAILED_ATTEMPTS ? addMinutes(now, LOCK_MINUTES) : null;
-
-  await executeQuery(
-    `
-      insert into public.student_login_attempts (
-        login, failed_count, locked_until, first_failed_at, last_failed_at
-      )
-      values ($1, $2, $3, $4, $5)
-      on conflict (login) do update
-      set failed_count = excluded.failed_count,
-          locked_until = excluded.locked_until,
-          first_failed_at = excluded.first_failed_at,
-          last_failed_at = excluded.last_failed_at
-    `,
-    [
-      login,
-      failedCount,
-      lockedUntil?.toISOString() ?? null,
-      isSameWindow && attempt ? attempt.first_failed_at : now.toISOString(),
-      now.toISOString(),
-    ],
-  );
-}
-
-async function clearPostgresLoginAttempts(login: string) {
-  await executeQuery(
-    `
-      delete from public.student_login_attempts
-      where login = $1
-    `,
-    [login],
   );
 }
 
@@ -226,20 +166,19 @@ export async function studentLoginAction(
   const secret = rawSecret.trim();
 
   if (isPostgresBackend()) {
-    let attempt: LoginAttemptRow | null = null;
+    const ipAddress = await getRequestIp();
+    const rateLimit = await checkLoginRateLimit({
+      identifier: login,
+      ipAddress,
+    });
 
-    try {
-      const attemptStatus = await getPostgresLoginAttemptStatus(login);
-      attempt = attemptStatus.attempt;
-
-      if (attemptStatus.isLocked) {
-        return {
-          status: "error",
-          message: "Слишком много попыток входа. Попробуйте ещё раз через 15 минут",
-        };
-      }
-    } catch (error) {
-      console.error("studentLoginAction postgres attempts lookup:", error);
+    if (rateLimit.isBlocked) {
+      return {
+        status: "error",
+        message: getLoginRateLimitMessage(rateLimit.retryAfterSeconds),
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        helpText: getLoginRateLimitHelpText("инструктором"),
+      };
     }
 
     const access = await queryOne<{
@@ -255,15 +194,15 @@ export async function studentLoginAction(
       `,
       [login],
     );
-    const isValidSecret =
-      access && verifyStudentAccessSecret(secret, access.password_hash);
+    const passwordHash =
+      access?.password_hash ?? getDummyStudentAccessSecretHash();
+    const isValidSecret = verifyStudentAccessSecret(secret, passwordHash);
 
     if (!access || !access.is_active || !isValidSecret) {
-      try {
-        await recordPostgresFailedLoginAttempt({ login, attempt });
-      } catch (attemptError) {
-        console.error("studentLoginAction postgres failed attempt:", attemptError);
-      }
+      await recordFailedLogin({
+        identifier: login,
+        ipAddress,
+      });
 
       return {
         status: "error",
@@ -282,11 +221,10 @@ export async function studentLoginAction(
       );
     }
 
-    try {
-      await clearPostgresLoginAttempts(login);
-    } catch (attemptError) {
-      console.error("studentLoginAction postgres clear attempts:", attemptError);
-    }
+    await clearLoginRateLimit({
+      identifier: login,
+      ipAddress,
+    });
 
     await setStudentSession(access.id);
     redirect("/student");

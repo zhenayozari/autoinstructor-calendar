@@ -32,7 +32,18 @@ import { formatMoney, selectClassName } from "@/lib/formatters";
 import { buildActiveInstructorsQuery } from "@/lib/queries";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { Booking, Instructor, LessonState, School, Slot, StudentAccess } from "@/lib/types";
+import type {
+  Booking,
+  Instructor,
+  LessonState,
+  LessonType,
+  School,
+  SchoolLessonTypePrice,
+  Slot,
+  StudentAccess,
+  StudentPrepaidCredit,
+} from "@/lib/types";
+import { StudentPrepaidCreditsPanel } from "@/components/admin/student-prepaid-credits-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -45,10 +56,16 @@ type DirectorStudentsPageProps = {
     delete_status?: string;
     restore_status?: string;
     view?: string;
+    student?: string;
   }>;
 };
 
 type StudentAccessRow = Omit<StudentAccess, "lesson_type_ids">;
+
+type StudentAccessLessonTypeRow = {
+  student_access_id: string;
+  lesson_type_id: string;
+};
 
 type StudentBookingRow = Pick<
   Booking,
@@ -74,6 +91,8 @@ type StudentSummary = {
 type DirectorStudent = StudentAccessRow & {
   instructor: Instructor | null;
   school: School | null;
+  lesson_type_ids: string[];
+  prepaidCredits: StudentPrepaidCredit[];
   summary: StudentSummary;
 };
 
@@ -228,9 +247,22 @@ function StudentAccessActions({ student }: { student: DirectorStudent }) {
   );
 }
 
-function StudentCard({ student }: { student: DirectorStudent }) {
+function StudentCard({
+  student,
+  schools,
+  lessonTypes,
+  prices,
+}: {
+  student: DirectorStudent;
+  schools: School[];
+  lessonTypes: LessonType[];
+  prices: SchoolLessonTypePrice[];
+}) {
   return (
-    <article className="rounded-2xl border bg-white p-4 shadow-sm">
+    <article
+      id={`student-${student.id}`}
+      className="scroll-mt-4 rounded-2xl border bg-white p-4 shadow-sm"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <StudentAvatar
@@ -321,6 +353,19 @@ function StudentCard({ student }: { student: DirectorStudent }) {
         </div>
       </div>
 
+      <div className="mt-3">
+        <StudentPrepaidCreditsPanel
+          accessId={student.id}
+          accessSchoolId={student.school_id}
+          accessLessonTypeIds={student.lesson_type_ids}
+          credits={student.prepaidCredits}
+          schools={student.school_id ? schools.filter((school) => school.id === student.school_id) : schools}
+          lessonTypes={lessonTypes}
+          prices={prices}
+          canManage
+        />
+      </div>
+
       <StudentAccessActions student={student} />
     </article>
   );
@@ -350,7 +395,19 @@ function StudentListMetric({
   );
 }
 
-function StudentListItem({ student }: { student: DirectorStudent }) {
+function StudentListItem({
+  student,
+  schools,
+  lessonTypes,
+  prices,
+  isInitiallyOpen = false,
+}: {
+  student: DirectorStudent;
+  schools: School[];
+  lessonTypes: LessonType[];
+  prices: SchoolLessonTypePrice[];
+  isInitiallyOpen?: boolean;
+}) {
   const instructorName =
     student.instructor?.public_name ??
     student.instructor?.name ??
@@ -358,7 +415,11 @@ function StudentListItem({ student }: { student: DirectorStudent }) {
   const sourceName = student.school?.name ?? "Частный ученик";
 
   return (
-    <details className="group rounded-2xl border bg-white shadow-sm open:shadow-md">
+    <details
+      id={`student-${student.id}`}
+      open={isInitiallyOpen}
+      className="group scroll-mt-4 rounded-2xl border bg-white shadow-sm open:shadow-md"
+    >
       <summary className="grid cursor-pointer list-none gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div className="flex min-w-0 items-start gap-3">
           <StudentAvatar
@@ -452,6 +513,19 @@ function StudentListItem({ student }: { student: DirectorStudent }) {
           </span>
         </div>
 
+        <div className="mt-3">
+          <StudentPrepaidCreditsPanel
+            accessId={student.id}
+            accessSchoolId={student.school_id}
+            accessLessonTypeIds={student.lesson_type_ids}
+            credits={student.prepaidCredits}
+            schools={student.school_id ? schools.filter((school) => school.id === student.school_id) : schools}
+            lessonTypes={lessonTypes}
+            prices={prices}
+            canManage
+          />
+        </div>
+
         <StudentAccessActions student={student} />
       </div>
     </details>
@@ -470,6 +544,10 @@ export default async function DirectorStudentsPage({
   let accesses: StudentAccessRow[] = [];
   let bookings: StudentBookingRow[] = [];
   let slots: StudentSlotRow[] = [];
+  let lessonTypes: LessonType[] = [];
+  let schoolLessonTypePrices: SchoolLessonTypePrice[] = [];
+  let prepaidCredits: StudentPrepaidCredit[] = [];
+  let accessLessonTypeRows: StudentAccessLessonTypeRow[] = [];
   let loadError: { message: string } | null = null;
 
   if (postgresBackend) {
@@ -559,6 +637,94 @@ export default async function DirectorStudentsPage({
   const accessIds = accesses.map((access) => access.id);
 
   if (postgresBackend) {
+    [lessonTypes, schoolLessonTypePrices, prepaidCredits, accessLessonTypeRows] =
+      await Promise.all([
+        queryRows<LessonType>(
+          `
+            select id, code, name, color, kind, tags, sort_order, is_active,
+                   default_duration_minutes, default_price_amount, requires_vehicle
+            from public.lesson_types
+            order by sort_order, name
+          `,
+        ),
+        queryRows<SchoolLessonTypePrice>(
+          `
+            select id, organization_id, school_id, lesson_type_id, price_amount,
+                   created_at::text as created_at, updated_at::text as updated_at
+            from public.school_lesson_type_prices
+            where organization_id = $1
+          `,
+          [membership.organizationId],
+        ),
+        accessIds.length > 0
+          ? queryRows<StudentPrepaidCredit>(
+              `
+                select credits.id,
+                       credits.organization_id,
+                       credits.student_access_id,
+                       credits.instructor_id,
+                       credits.school_id,
+                       credits.lesson_type_id,
+                       credits.quantity,
+                       credits.calculated_unit_price,
+                       credits.calculated_total_amount,
+                       credits.final_unit_price,
+                       credits.final_total_amount,
+                       credits.paid_at::text as paid_at,
+                       credits.payment_note,
+                       credits.status,
+                       credits.cancelled_at::text as cancelled_at,
+                       credits.cancellation_note,
+                       (
+                         select coalesce(sum(refunds.amount), 0)::integer
+                         from public.student_prepaid_refunds refunds
+                         where refunds.credit_id = credits.id
+                           and refunds.cancelled_at is null
+                       ) as refunded_amount,
+                       coalesce((
+                         select jsonb_agg(
+                           jsonb_build_object(
+                             'id', refunds.id,
+                             'amount', refunds.amount,
+                             'refunded_at', refunds.refunded_at,
+                             'refund_note', refunds.refund_note,
+                             'cancelled_at', refunds.cancelled_at,
+                             'cancellation_note', refunds.cancellation_note
+                           )
+                           order by refunds.refunded_at desc, refunds.created_at desc
+                         )
+                         from public.student_prepaid_refunds refunds
+                         where refunds.credit_id = credits.id
+                       ), '[]'::jsonb) as refunds,
+                       credits.created_at::text as created_at,
+                       credits.updated_at::text as updated_at,
+                       count(usages.id) filter (where usages.status = 'active')::integer
+                         as used_quantity
+                from public.student_prepaid_credits credits
+                left join public.student_prepaid_credit_usages usages
+                  on usages.credit_id = credits.id
+                where credits.organization_id = $1
+                  and credits.student_access_id = any($2::uuid[])
+                group by credits.id
+                order by credits.paid_at desc, credits.created_at desc
+              `,
+              [membership.organizationId, accessIds],
+            )
+          : Promise.resolve([]),
+        accessIds.length > 0
+          ? queryRows<StudentAccessLessonTypeRow>(
+              `
+                select student_access_id, lesson_type_id
+                from public.student_access_lesson_types
+                where student_access_id = any($1::uuid[])
+              `,
+              [accessIds],
+            )
+          : Promise.resolve([]),
+      ]);
+  }
+
+  if (postgresBackend) {
     bookings =
       accessIds.length > 0
         ? await queryRows<StudentBookingRow>(
@@ -623,6 +789,20 @@ export default async function DirectorStudentsPage({
   const schoolsById = new Map(schools.map((school) => [school.id, school]));
   const slotsById = new Map(slots.map((slot) => [slot.id, slot]));
   const bookingsByAccessId = new Map<string, StudentBookingRow[]>();
+  const lessonTypeIdsByAccessId = new Map<string, string[]>();
+  const prepaidCreditsByAccessId = new Map<string, StudentPrepaidCredit[]>();
+
+  for (const row of accessLessonTypeRows) {
+    const ids = lessonTypeIdsByAccessId.get(row.student_access_id) ?? [];
+    ids.push(row.lesson_type_id);
+    lessonTypeIdsByAccessId.set(row.student_access_id, ids);
+  }
+
+  for (const credit of prepaidCredits) {
+    const credits = prepaidCreditsByAccessId.get(credit.student_access_id) ?? [];
+    credits.push(credit);
+    prepaidCreditsByAccessId.set(credit.student_access_id, credits);
+  }
 
   for (const booking of bookings) {
     const items = bookingsByAccessId.get(booking.student_access_id) ?? [];
@@ -649,6 +829,8 @@ export default async function DirectorStudentsPage({
       ...access,
       instructor: instructorsById.get(access.instructor_id) ?? null,
       school: access.school_id ? schoolsById.get(access.school_id) ?? null : null,
+      lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
+      prepaidCredits: prepaidCreditsByAccessId.get(access.id) ?? [],
       summary,
     };
   });
@@ -915,13 +1097,26 @@ export default async function DirectorStudentsPage({
               selectedView === "list" ? (
                 <div className="space-y-2">
                   {filteredStudents.map((student) => (
-                    <StudentListItem key={student.id} student={student} />
+                    <StudentListItem
+                      key={student.id}
+                      student={student}
+                      schools={schools}
+                      lessonTypes={lessonTypes}
+                      prices={schoolLessonTypePrices}
+                      isInitiallyOpen={params.student === student.id}
+                    />
                   ))}
                 </div>
               ) : (
                 <div className="grid gap-3 lg:grid-cols-2">
                   {filteredStudents.map((student) => (
-                    <StudentCard key={student.id} student={student} />
+                    <StudentCard
+                      key={student.id}
+                      student={student}
+                      schools={schools}
+                      lessonTypes={lessonTypes}
+                      prices={schoolLessonTypePrices}
+                    />
                   ))}
                 </div>
               )

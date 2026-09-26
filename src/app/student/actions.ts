@@ -33,6 +33,7 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { BookingCategory } from "@/lib/types";
+import { applyPrepaidCreditToBooking } from "@/lib/student-prepaid-credits";
 
 export type StudentBookingActionState = {
   status: "idle" | "success" | "error";
@@ -519,6 +520,14 @@ export async function studentBookSlotAction(
           bookingCategory: selectedPackage.bookingCategory,
           priceAmount,
           paymentRule,
+        });
+
+        await applyPrepaidCreditToBooking({
+          bookingId: createdBookingId,
+          studentAccessId: access.id,
+          schoolId: selectedPackage.schoolId,
+          lessonTypeId: slot.lesson_type_id,
+          amount: priceAmount ?? 0,
         });
 
         await createInstructorPayoutEntryForBookingWithCurrentPolicy({

@@ -9,7 +9,7 @@ import {
   type ActiveOrganizationMembership,
 } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
-import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
+import { executeQuery, queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
 import { logAuditEvent } from "@/lib/audit-log";
 import { hashStudentAccessSecret } from "@/lib/student-access";
 import { revokeAllStudentSessions } from "@/lib/student-session";
@@ -20,6 +20,10 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingPricingTableError } from "@/lib/pricing";
 import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
+import {
+  createInstructorPayoutEntryForPrepaidCredit,
+  syncInstructorPayoutEntryForPrepaidCredit,
+} from "@/lib/instructor-payouts";
 
 export type StudentAccessActionState = {
   status: "idle" | "success" | "error";
@@ -3151,5 +3155,875 @@ export async function refreshStudentRegistrationLinkAction(
       status: "error",
       message: getErrorMessage(error),
     };
+  }
+}
+
+async function getPrepaidLessonPrice({
+  organizationId,
+  schoolId,
+  lessonTypeId,
+}: {
+  organizationId: string;
+  schoolId: string;
+  lessonTypeId: string;
+}) {
+  const row = await queryOne<{ price_amount: number }>(
+    `
+      select price_amount
+      from public.school_lesson_type_prices
+      where organization_id = $1
+        and school_id = $2
+        and lesson_type_id = $3
+      limit 1
+    `,
+    [organizationId, schoolId, lessonTypeId],
+  );
+
+  if (!row) {
+    throw new Error("Для выбранного источника и типа занятия цена не задана");
+  }
+
+  return row.price_amount;
+}
+
+async function validatePrepaidLessonType(lessonTypeId: string) {
+  const row = await queryOne<{ id: string; kind: "driving" | "theory" }>(
+    `
+      select id, kind
+      from public.lesson_types
+      where id = $1
+        and is_active = true
+      limit 1
+    `,
+    [lessonTypeId],
+  );
+
+  if (!row) {
+    throw new Error("Выберите активный тип занятия");
+  }
+
+  return row;
+}
+
+async function validatePrepaidAccessSelection({
+  accessId,
+  schoolId,
+  lessonTypeId,
+}: {
+  accessId: string;
+  schoolId: string;
+  lessonTypeId: string;
+}) {
+  const access = await queryOne<{ school_id: string | null }>(
+    `
+      select school_id
+      from public.student_accesses
+      where id = $1
+      limit 1
+    `,
+    [accessId],
+  );
+
+  if (access?.school_id && access.school_id !== schoolId) {
+    throw new Error("Источник оплаты должен совпадать с источником доступа ученика");
+  }
+
+  const allowedType = await queryOne<{ lesson_type_id: string }>(
+    `
+      select lesson_type_id
+      from public.student_access_lesson_types
+      where student_access_id = $1
+        and lesson_type_id = $2
+      limit 1
+    `,
+    [accessId, lessonTypeId],
+  );
+
+  if (!allowedType) {
+    throw new Error("Выбранный тип занятия не входит в доступ ученика");
+  }
+}
+
+export async function createStudentPrepaidCreditAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Предоплаты доступны только в PostgreSQL-режиме");
+    }
+
+    const accessId = readRequiredString(formData, "student_access_id");
+    const { membership, access } = await getManageableAccess(accessId);
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: access.instructor_id,
+    });
+
+    const schoolId = await validateRequiredSchoolId(
+      formData,
+      membership.organizationId,
+    );
+    const lessonTypeId = readRequiredString(formData, "lesson_type_id");
+    await validatePrepaidLessonType(lessonTypeId);
+    await validatePrepaidAccessSelection({
+      accessId,
+      schoolId,
+      lessonTypeId,
+    });
+    const quantity = readOptionalLimit(formData, "quantity", 5000);
+    if (quantity === null) {
+      throw new Error("Укажите количество предоплаченных занятий");
+    }
+
+    const calculatedUnitPrice = await getPrepaidLessonPrice({
+      organizationId: membership.organizationId,
+      schoolId,
+      lessonTypeId,
+    });
+    const finalTotalAmount = readOptionalMoneyAmount(
+      formData,
+      "final_total_amount",
+    );
+    if (finalTotalAmount === null) {
+      throw new Error("Укажите итоговую сумму оплаты");
+    }
+    if (finalTotalAmount % quantity !== 0) {
+      throw new Error("Итоговая сумма должна делиться на количество занятий без остатка");
+    }
+
+    const paidAt = readOptionalString(formData, "paid_at");
+    const paymentNote = readOptionalString(formData, "payment_note");
+    if (paymentNote && paymentNote.length > 1000) {
+      throw new Error("Комментарий не должен быть длиннее 1000 символов");
+    }
+
+    const credit = await queryOne<{ id: string }>(
+      `
+        insert into public.student_prepaid_credits (
+          organization_id,
+          student_access_id,
+          instructor_id,
+          school_id,
+          lesson_type_id,
+          quantity,
+          calculated_unit_price,
+          calculated_total_amount,
+          final_unit_price,
+          final_total_amount,
+          paid_at,
+          payment_note,
+          created_by_member_id
+        )
+        values (
+          $1, $2, $3, $4, $5, $6::integer, $7::integer,
+          $7::bigint * $6::integer,
+          $8::bigint / $6::integer, $8::bigint,
+          coalesce($9::date, current_date), $10, $11
+        )
+        returning id
+      `,
+      [
+        membership.organizationId,
+        access.id,
+        access.instructor_id,
+        schoolId,
+        lessonTypeId,
+        quantity,
+        calculatedUnitPrice,
+        finalTotalAmount,
+        paidAt,
+        paymentNote,
+        membership.id,
+      ],
+    );
+
+    if (!credit) {
+      throw new Error("Не удалось сохранить предоплату");
+    }
+
+    await createInstructorPayoutEntryForPrepaidCredit({
+      creditId: credit.id,
+      createdByMemberId: membership.id,
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_credit.created",
+      entityType: "student_prepaid_credit",
+      entityId: credit.id,
+      metadata: {
+        student_access_id: access.id,
+        instructor_id: access.instructor_id,
+        school_id: schoolId,
+        lesson_type_id: lessonTypeId,
+        quantity,
+        final_total_amount: finalTotalAmount,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return { status: "success", message: "Предоплата добавлена" };
+  } catch (error) {
+    console.error("createStudentPrepaidCreditAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
+  }
+}
+
+export async function updateStudentPrepaidCreditAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Предоплаты доступны только в PostgreSQL-режиме");
+    }
+
+    const creditId = readRequiredString(formData, "student_prepaid_credit_id");
+    const membership = await requireActiveOrganizationMember();
+    const credit = await queryOne<{
+      id: string;
+      student_access_id: string;
+      instructor_id: string;
+      organization_id: string;
+      school_id: string;
+      lesson_type_id: string;
+      quantity: number;
+      status: "active" | "cancelled";
+      used_quantity: number;
+      payout_paid_amount: number;
+    }>(
+      `
+        select credits.id,
+               credits.student_access_id,
+               credits.instructor_id,
+               credits.organization_id,
+               credits.school_id,
+               credits.lesson_type_id,
+               credits.quantity,
+               credits.status,
+               count(usages.id) filter (where usages.status = 'active')::integer
+                 as used_quantity,
+               (
+                 select coalesce(sum(allocations.amount), 0)::integer
+                 from public.instructor_payout_entries payout_entries
+                 join public.instructor_payout_payment_allocations allocations
+                   on allocations.payout_entry_id = payout_entries.id
+                 where payout_entries.student_prepaid_credit_id = credits.id
+                   and payout_entries.entry_type = 'prepaid_credit_accrual'
+               ) as payout_paid_amount
+        from public.student_prepaid_credits credits
+        left join public.student_prepaid_credit_usages usages
+          on usages.credit_id = credits.id
+        where credits.id = $1
+          and credits.organization_id = $2
+        group by credits.id
+        limit 1
+      `,
+      [creditId, membership.organizationId],
+    );
+
+    if (!credit) {
+      throw new Error("Предоплата не найдена");
+    }
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: credit.instructor_id,
+    });
+    if (credit.status !== "active") {
+      throw new Error("Отменённую предоплату нельзя редактировать");
+    }
+
+    const schoolId = await validateRequiredSchoolId(
+      formData,
+      membership.organizationId,
+    );
+    const lessonTypeId = readRequiredString(formData, "lesson_type_id");
+    await validatePrepaidLessonType(lessonTypeId);
+    await validatePrepaidAccessSelection({
+      accessId: credit.student_access_id,
+      schoolId,
+      lessonTypeId,
+    });
+    const quantity = readOptionalLimit(formData, "quantity", 5000);
+    if (quantity === null || quantity < credit.used_quantity) {
+      throw new Error("Количество не может быть меньше уже использованных занятий");
+    }
+    if (
+      credit.used_quantity > 0 &&
+      (schoolId !== credit.school_id || lessonTypeId !== credit.lesson_type_id)
+    ) {
+      throw new Error("Источник и тип занятия нельзя менять после списания занятий");
+    }
+    if (
+      credit.payout_paid_amount > 0 &&
+      (quantity !== credit.quantity ||
+        schoolId !== credit.school_id ||
+        lessonTypeId !== credit.lesson_type_id)
+    ) {
+      throw new Error(
+        "Количество, источник и тип нельзя менять после выплаты инструктору. Используйте отмену остатка предоплаты",
+      );
+    }
+
+    const calculatedUnitPrice = await getPrepaidLessonPrice({
+      organizationId: membership.organizationId,
+      schoolId,
+      lessonTypeId,
+    });
+    const finalTotalAmount = readOptionalMoneyAmount(
+      formData,
+      "final_total_amount",
+    );
+    if (finalTotalAmount === null) {
+      throw new Error("Укажите итоговую сумму оплаты");
+    }
+    if (finalTotalAmount % quantity !== 0) {
+      throw new Error("Итоговая сумма должна делиться на количество занятий без остатка");
+    }
+
+    const paidAt = readOptionalString(formData, "paid_at");
+    const paymentNote = readOptionalString(formData, "payment_note");
+    if (paymentNote && paymentNote.length > 1000) {
+      throw new Error("Комментарий не должен быть длиннее 1000 символов");
+    }
+
+    await executeQuery(
+      `
+        update public.student_prepaid_credits
+        set school_id = $1::uuid,
+            lesson_type_id = $2::uuid,
+            quantity = $3::integer,
+            calculated_unit_price = $4::integer,
+            calculated_total_amount = $4::bigint * $3::integer,
+            final_unit_price = $5::bigint / $3::integer,
+            final_total_amount = $5::bigint,
+            paid_at = coalesce($6::date, paid_at),
+            payment_note = $7,
+            updated_at = now()
+        where id = $8
+          and organization_id = $9
+      `,
+      [
+        schoolId,
+        lessonTypeId,
+        quantity,
+        calculatedUnitPrice,
+        finalTotalAmount,
+        paidAt,
+        paymentNote,
+        credit.id,
+        membership.organizationId,
+      ],
+    );
+
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_credit.updated",
+      entityType: "student_prepaid_credit",
+      entityId: credit.id,
+      metadata: {
+        student_access_id: credit.student_access_id,
+        school_id: schoolId,
+        lesson_type_id: lessonTypeId,
+        quantity,
+        final_total_amount: finalTotalAmount,
+      },
+    });
+
+    await syncInstructorPayoutEntryForPrepaidCredit(credit.id);
+
+    revalidateStudentAccessPaths();
+    return { status: "success", message: "Предоплата обновлена" };
+  } catch (error) {
+    console.error("updateStudentPrepaidCreditAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
+  }
+}
+
+export async function cancelStudentPrepaidCreditAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Предоплаты доступны только в PostgreSQL-режиме");
+    }
+
+    const creditId = readRequiredString(formData, "student_prepaid_credit_id");
+    const cancellationNote = readRequiredString(formData, "cancellation_note");
+    if (cancellationNote.length > 900) {
+      throw new Error("Причина отмены не должна быть длиннее 900 символов");
+    }
+
+    const membership = await requireActiveOrganizationMember();
+    const access = await queryOne<{ instructor_id: string }>(
+      `
+        select instructor_id
+        from public.student_prepaid_credits
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [creditId, membership.organizationId],
+    );
+    if (!access) {
+      throw new Error("Предоплата не найдена");
+    }
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: access.instructor_id,
+    });
+
+    const result = await withTransaction(async (client) => {
+      const creditResult = await client.query<{
+        id: string;
+        student_access_id: string;
+        organization_id: string;
+        instructor_id: string;
+        school_id: string;
+        lesson_type_id: string;
+        quantity: number;
+        final_unit_price: number;
+        status: "active" | "cancelled";
+        used_quantity: number;
+      }>(
+        `
+          select credits.id,
+                 credits.student_access_id,
+                 credits.organization_id,
+                 credits.instructor_id,
+                 credits.school_id,
+                 credits.lesson_type_id,
+                 credits.quantity,
+                 credits.final_unit_price,
+                 credits.status,
+                 (
+                   select count(*)::integer
+                   from public.student_prepaid_credit_usages usages
+                   where usages.credit_id = credits.id
+                     and usages.status = 'active'
+                 ) as used_quantity
+          from public.student_prepaid_credits credits
+          where credits.id = $1
+            and credits.organization_id = $2
+          for update
+        `,
+        [creditId, membership.organizationId],
+      );
+      const credit = creditResult.rows[0];
+      if (!credit) {
+        throw new Error("Предоплата не найдена");
+      }
+      if (credit.status !== "active") {
+        throw new Error("Предоплата уже отменена");
+      }
+
+      const cancelledQuantity = credit.quantity - credit.used_quantity;
+      if (cancelledQuantity <= 0) {
+        throw new Error("Все оплаченные занятия уже использованы, отменять нечего");
+      }
+
+      const payoutResult = await client.query<{
+        id: string;
+        amount: number;
+        paid_amount: number;
+        rate_rule_id: string | null;
+      }>(
+        `
+          select entries.id,
+                 entries.amount,
+                 entries.rate_rule_id,
+                 (
+                   select coalesce(sum(allocations.amount), 0)::integer
+                   from public.instructor_payout_payment_allocations allocations
+                   where allocations.payout_entry_id = entries.id
+                 ) as paid_amount
+          from public.instructor_payout_entries entries
+          where entries.student_prepaid_credit_id = $1
+            and entries.entry_type = 'prepaid_credit_accrual'
+            and entries.status = 'planned'
+          limit 1
+          for update of entries
+        `,
+        [credit.id],
+      );
+      const payout = payoutResult.rows[0] ?? null;
+      let payoutCorrectionAmount = 0;
+
+      if (payout) {
+        const rateAmount = Math.round(payout.amount / credit.quantity);
+        const targetAmount = rateAmount * credit.used_quantity;
+        payoutCorrectionAmount = targetAmount - payout.amount;
+
+        if (payout.paid_amount === 0) {
+          if (targetAmount === 0) {
+            await client.query(
+              `
+                update public.instructor_payout_entries
+                set status = 'cancelled',
+                    cancelled_at = now(),
+                    note = $2,
+                    updated_at = now()
+                where id = $1
+              `,
+              [payout.id, `Отмена предоплаты ученика: ${cancellationNote}`],
+            );
+          } else {
+            await client.query(
+              `
+                update public.instructor_payout_entries
+                set amount = $2,
+                    note = $3,
+                    updated_at = now()
+                where id = $1
+              `,
+              [
+                payout.id,
+                targetAmount,
+                `Оставлено начисление только за использованные занятия. ${cancellationNote}`,
+              ],
+            );
+          }
+        } else if (payoutCorrectionAmount !== 0) {
+          await client.query(
+            `
+              insert into public.instructor_payout_entries (
+                organization_id,
+                instructor_id,
+                student_prepaid_credit_id,
+                school_id,
+                lesson_type_id,
+                student_access_id,
+                rate_rule_id,
+                entry_type,
+                accrual_policy,
+                status,
+                amount,
+                planned_at,
+                event_at,
+                created_by_member_id,
+                note
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7,
+                'cancellation_adjustment', 'prepaid', 'planned',
+                $8, now(), now(), $9, $10
+              )
+            `,
+            [
+              credit.organization_id,
+              credit.instructor_id,
+              credit.id,
+              credit.school_id,
+              credit.lesson_type_id,
+              credit.student_access_id,
+              payout.rate_rule_id,
+              payoutCorrectionAmount,
+              membership.id,
+              `Корректировка после отмены предоплаты: ${cancellationNote}`,
+            ],
+          );
+        }
+      }
+
+      await client.query(
+        `
+          update public.student_prepaid_credits
+          set status = 'cancelled',
+              cancelled_at = now(),
+              cancelled_by_member_id = $2,
+              cancellation_note = $3,
+              updated_at = now()
+          where id = $1
+        `,
+        [credit.id, membership.id, cancellationNote],
+      );
+
+      return {
+        studentAccessId: credit.student_access_id,
+        cancelledQuantity,
+        usedQuantity: credit.used_quantity,
+        refundableAmount: credit.final_unit_price * cancelledQuantity,
+        payoutCorrectionAmount,
+      };
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_credit.cancelled",
+      entityType: "student_prepaid_credit",
+      entityId: creditId,
+      metadata: {
+        student_access_id: result.studentAccessId,
+        cancelled_quantity: result.cancelledQuantity,
+        used_quantity: result.usedQuantity,
+        refundable_amount: result.refundableAmount,
+        payout_correction_amount: result.payoutCorrectionAmount,
+        cancellation_note: cancellationNote,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return {
+      status: "success",
+      message: `Предоплата отменена. Отменено занятий: ${result.cancelledQuantity}. Сумма остатка: ${result.refundableAmount} ₽`,
+    };
+  } catch (error) {
+    console.error("cancelStudentPrepaidCreditAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
+  }
+}
+
+export async function createStudentPrepaidRefundAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Возвраты доступны только в PostgreSQL-режиме");
+    }
+
+    const creditId = readRequiredString(formData, "student_prepaid_credit_id");
+    const amount = readOptionalMoneyAmount(formData, "refund_amount");
+    if (amount === null || amount <= 0) {
+      throw new Error("Укажите сумму возврата ученику");
+    }
+    const refundedAt = readOptionalString(formData, "refunded_at");
+    const refundNote = readOptionalString(formData, "refund_note");
+    if (refundNote && refundNote.length > 1000) {
+      throw new Error("Комментарий не должен быть длиннее 1000 символов");
+    }
+
+    const membership = await requireActiveOrganizationMember();
+    const access = await queryOne<{ instructor_id: string }>(
+      `
+        select instructor_id
+        from public.student_prepaid_credits
+        where id = $1
+          and organization_id = $2
+        limit 1
+      `,
+      [creditId, membership.organizationId],
+    );
+    if (!access) {
+      throw new Error("Предоплата не найдена");
+    }
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: access.instructor_id,
+    });
+
+    const result = await withTransaction(async (client) => {
+      const creditResult = await client.query<{
+        id: string;
+        student_access_id: string;
+        quantity: number;
+        final_unit_price: number;
+        status: "active" | "cancelled";
+        used_quantity: number;
+        refunded_amount: number;
+      }>(
+        `
+          select credits.id,
+                 credits.student_access_id,
+                 credits.quantity,
+                 credits.final_unit_price,
+                 credits.status,
+                 (
+                   select count(*)::integer
+                   from public.student_prepaid_credit_usages usages
+                   where usages.credit_id = credits.id
+                     and usages.status = 'active'
+                 ) as used_quantity,
+                 (
+                   select coalesce(sum(refunds.amount), 0)::integer
+                   from public.student_prepaid_refunds refunds
+                   where refunds.credit_id = credits.id
+                     and refunds.cancelled_at is null
+                 ) as refunded_amount
+          from public.student_prepaid_credits credits
+          where credits.id = $1
+            and credits.organization_id = $2
+          for update
+        `,
+        [creditId, membership.organizationId],
+      );
+      const credit = creditResult.rows[0];
+      if (!credit) {
+        throw new Error("Предоплата не найдена");
+      }
+      if (credit.status !== "cancelled") {
+        throw new Error("Возврат ученику можно отметить только после отмены предоплаты");
+      }
+
+      const refundableAmount =
+        credit.final_unit_price * (credit.quantity - credit.used_quantity);
+      const remainingRefundAmount = refundableAmount - credit.refunded_amount;
+      if (remainingRefundAmount <= 0) {
+        throw new Error("Вся сумма остатка уже возвращена ученику");
+      }
+      if (amount > remainingRefundAmount) {
+        throw new Error("Сумма возврата превышает остаток к возврату ученику");
+      }
+
+      const refundResult = await client.query<{ id: string; amount: number }>(
+        `
+          insert into public.student_prepaid_refunds (
+            organization_id,
+            credit_id,
+            amount,
+            refunded_at,
+            refund_note,
+            created_by_member_id
+          )
+          values ($1, $2, $3, coalesce($4::date, current_date), $5, $6)
+          returning id, amount
+        `,
+        [
+          membership.organizationId,
+          credit.id,
+          amount,
+          refundedAt,
+          refundNote,
+          membership.id,
+        ],
+      );
+      const refund = refundResult.rows[0];
+      if (!refund) {
+        throw new Error("Не удалось сохранить возврат ученику");
+      }
+
+      return {
+        id: refund.id,
+        amount: refund.amount,
+        studentAccessId: credit.student_access_id,
+        remainingAmount: remainingRefundAmount - refund.amount,
+      };
+    });
+
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_refund.created",
+      entityType: "student_prepaid_refund",
+      entityId: result.id,
+      metadata: {
+        student_prepaid_credit_id: creditId,
+        student_access_id: result.studentAccessId,
+        amount: result.amount,
+        remaining_amount: result.remainingAmount,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return {
+      status: "success",
+      message:
+        result.remainingAmount > 0
+          ? `Возврат ученику отмечен. Осталось вернуть: ${result.remainingAmount} ₽`
+          : "Возврат ученику отмечен полностью",
+    };
+  } catch (error) {
+    console.error("createStudentPrepaidRefundAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
+  }
+}
+
+export async function cancelStudentPrepaidRefundAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Отмена возвратов доступна только в PostgreSQL-режиме");
+    }
+
+    const refundId = readRequiredString(formData, "student_prepaid_refund_id");
+    const cancellationNote = readOptionalString(formData, "cancellation_note");
+    if (cancellationNote && cancellationNote.length > 1000) {
+      throw new Error("Комментарий не должен быть длиннее 1000 символов");
+    }
+
+    const membership = await requireActiveOrganizationMember();
+    const refund = await queryOne<{
+      id: string;
+      instructor_id: string;
+    }>(
+      `
+        select refunds.id, credits.instructor_id
+        from public.student_prepaid_refunds refunds
+        join public.student_prepaid_credits credits on credits.id = refunds.credit_id
+        where refunds.id = $1
+          and refunds.organization_id = $2
+          and refunds.cancelled_at is null
+        limit 1
+      `,
+      [refundId, membership.organizationId],
+    );
+    if (!refund) {
+      throw new Error("Возврат не найден или уже отменён");
+    }
+
+    await assertCanManageStudentLessonPackages({
+      membership,
+      instructorId: refund.instructor_id,
+    });
+
+    const cancelledRefund = await queryOne<{
+      id: string;
+      credit_id: string;
+      amount: number;
+    }>(
+      `
+        update public.student_prepaid_refunds
+        set cancelled_at = now(),
+            cancellation_note = $3,
+            cancelled_by_member_id = $4
+        where id = $1
+          and organization_id = $2
+          and cancelled_at is null
+        returning id, credit_id, amount
+      `,
+      [
+        refundId,
+        membership.organizationId,
+        cancellationNote,
+        membership.id,
+      ],
+    );
+    if (!cancelledRefund) {
+      throw new Error("Возврат уже отменён");
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_refund.cancelled",
+      entityType: "student_prepaid_refund",
+      entityId: cancelledRefund.id,
+      metadata: {
+        student_prepaid_credit_id: cancelledRefund.credit_id,
+        amount: cancelledRefund.amount,
+        cancellation_note: cancellationNote,
+      },
+    });
+
+    revalidateStudentAccessPaths();
+    return {
+      status: "success",
+      message: "Ошибочная отметка возврата отменена",
+    };
+  } catch (error) {
+    console.error("cancelStudentPrepaidRefundAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
   }
 }

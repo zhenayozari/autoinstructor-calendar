@@ -1,6 +1,6 @@
 import "server-only";
 
-import { queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
+import { executeQuery, queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
 import type {
   BookingCategory,
   InstructorPayoutAccrualPolicy,
@@ -48,6 +48,15 @@ export type InstructorPayoutPaymentInput = {
   instructorId: string;
   amount: number;
   paymentNote: string | null;
+  createdByMemberId: string | null;
+};
+
+export type InstructorPayoutReturnInput = {
+  organizationId: string;
+  instructorId: string;
+  amount: number;
+  returnedAt: string | null;
+  returnNote: string | null;
   createdByMemberId: string | null;
 };
 
@@ -674,6 +683,179 @@ export async function createInstructorPayoutPayment(
   });
 }
 
+export async function cancelInstructorPayoutPayment({
+  organizationId,
+  paymentId,
+}: {
+  organizationId: string;
+  paymentId: string;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(paymentId, "paymentId");
+
+  return withTransaction(async (client) => {
+    const result = await client.query<{
+      id: string;
+      instructor_id: string;
+      amount: number;
+    }>(
+      `
+        delete from public.instructor_payout_payments
+        where id = $1
+          and organization_id = $2
+        returning id, instructor_id, amount
+      `,
+      [paymentId, organizationId],
+    );
+
+    return result.rows[0] ?? null;
+  });
+}
+
+export async function createInstructorPayoutReturn(
+  input: InstructorPayoutReturnInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertAmount(input.amount);
+
+  if (input.amount <= 0) {
+    throw new Error("Return amount must be greater than zero");
+  }
+  if (input.createdByMemberId) {
+    assertUuidLike(input.createdByMemberId, "createdByMemberId");
+  }
+  if (input.returnedAt) {
+    assertDateValue(input.returnedAt, "returnedAt");
+  }
+
+  return withTransaction(async (client) => {
+    const entriesResult = await client.query<{
+      id: string;
+      remaining_amount: number;
+    }>(
+      `
+        select entries.id, balances.remaining_amount
+        from public.instructor_payout_entries entries
+        join public.instructor_payout_entry_balances balances
+          on balances.id = entries.id
+        where entries.organization_id = $1
+          and entries.instructor_id = $2
+          and entries.status = 'planned'
+          and entries.amount < 0
+          and balances.remaining_amount < 0
+        order by entries.planned_at, entries.created_at, entries.id
+        for update of entries
+      `,
+      [input.organizationId, input.instructorId],
+    );
+    const debtAmount = entriesResult.rows.reduce(
+      (sum, entry) => sum + Math.abs(entry.remaining_amount),
+      0,
+    );
+
+    if (debtAmount <= 0) {
+      throw new Error("There is no instructor debt to return");
+    }
+    if (input.amount > debtAmount) {
+      throw new Error("Return amount exceeds instructor debt");
+    }
+
+    const returnResult = await client.query<{ id: string; amount: number }>(
+      `
+        insert into public.instructor_payout_returns (
+          organization_id,
+          instructor_id,
+          amount,
+          returned_at,
+          return_note,
+          created_by_member_id
+        )
+        values ($1, $2, $3, coalesce($4::date, current_date), $5, $6)
+        returning id, amount
+      `,
+      [
+        input.organizationId,
+        input.instructorId,
+        input.amount,
+        input.returnedAt,
+        input.returnNote,
+        input.createdByMemberId,
+      ],
+    );
+    const payoutReturn = returnResult.rows[0];
+    if (!payoutReturn) {
+      throw new Error("Instructor payout return was not created");
+    }
+
+    let remainingToAllocate = input.amount;
+    for (const entry of entriesResult.rows) {
+      if (remainingToAllocate <= 0) break;
+
+      const allocationAmount = Math.min(
+        Math.abs(entry.remaining_amount),
+        remainingToAllocate,
+      );
+      await client.query(
+        `
+          insert into public.instructor_payout_return_allocations (
+            return_id, payout_entry_id, amount
+          )
+          values ($1, $2, $3)
+        `,
+        [payoutReturn.id, entry.id, allocationAmount],
+      );
+      remainingToAllocate -= allocationAmount;
+    }
+
+    if (remainingToAllocate > 0) {
+      throw new Error("Return amount could not be allocated");
+    }
+
+    return payoutReturn;
+  });
+}
+
+export async function markInstructorDebtForWithholding({
+  organizationId,
+  instructorId,
+  note,
+}: {
+  organizationId: string;
+  instructorId: string;
+  note: string | null;
+}) {
+  assertUuidLike(organizationId, "organizationId");
+  assertUuidLike(instructorId, "instructorId");
+
+  return withTransaction(async (client) => {
+    const result = await client.query<{ id: string }>(
+      `
+        update public.instructor_payout_entries entries
+        set debt_resolution = 'withhold',
+            debt_resolution_at = now(),
+            debt_resolution_note = $3,
+            updated_at = now()
+        from public.instructor_payout_entry_balances balances
+        where balances.id = entries.id
+          and entries.organization_id = $1
+          and entries.instructor_id = $2
+          and entries.status = 'planned'
+          and entries.amount < 0
+          and balances.remaining_amount < 0
+        returning entries.id
+      `,
+      [organizationId, instructorId, note],
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error("There is no instructor debt to withhold");
+    }
+
+    return { updatedCount: result.rows.length };
+  });
+}
+
 export async function backfillInstructorPayoutEntries({
   organizationId,
   instructorId,
@@ -823,6 +1005,21 @@ export async function createInstructorPayoutEntryForBooking({
     return { status: "skipped", reason: "booking_not_found" };
   }
 
+  const prepaidUsage = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.student_prepaid_credit_usages
+      where booking_id = $1
+        and status = 'active'
+      limit 1
+    `,
+    [bookingId],
+  );
+
+  if (prepaidUsage) {
+    return { status: "skipped", reason: "already_exists" };
+  }
+
   const eligibility = await getInstructorPayoutEligibility({
     organizationId: context.organization_id,
     instructorId: context.instructor_id,
@@ -962,6 +1159,164 @@ export async function createInstructorPayoutEntryForBookingWithCurrentPolicy({
         ? (context.completed_at ?? context.slot_end_time)
         : plannedAt,
   });
+}
+
+export async function createInstructorPayoutEntryForPrepaidCredit({
+  creditId,
+  createdByMemberId = null,
+}: {
+  creditId: string;
+  createdByMemberId?: string | null;
+}): Promise<InstructorPayoutEntryCreationResult> {
+  assertUuidLike(creditId, "creditId");
+
+  const credit = await queryOne<{
+    id: string;
+    organization_id: string;
+    instructor_id: string;
+    student_access_id: string;
+    school_id: string;
+    lesson_type_id: string;
+    quantity: number;
+    paid_at: string;
+  }>(
+    `
+      select credits.id,
+             credits.organization_id,
+             credits.instructor_id,
+             credits.student_access_id,
+             credits.school_id,
+             credits.lesson_type_id,
+             credits.quantity,
+             credits.paid_at::text as paid_at
+      from public.student_prepaid_credits credits
+      where credits.id = $1
+        and credits.status = 'active'
+      limit 1
+    `,
+    [creditId],
+  );
+
+  if (!credit) {
+    return { status: "skipped", reason: "booking_not_found" };
+  }
+
+  const eligibility = await getInstructorPayoutEligibility({
+    organizationId: credit.organization_id,
+    instructorId: credit.instructor_id,
+  });
+
+  if (eligibility.isOwner && !eligibility.includeOwnerInPayouts) {
+    return { status: "skipped", reason: "owner_excluded" };
+  }
+
+  const rateRule = await findInstructorPayoutRateRule({
+    organizationId: credit.organization_id,
+    instructorId: credit.instructor_id,
+    schoolId: credit.school_id,
+    lessonTypeId: credit.lesson_type_id,
+    bookingCategory: "regular",
+    lessonDate: credit.paid_at.slice(0, 10),
+  });
+
+  if (!rateRule) {
+    return { status: "skipped", reason: "no_rate" };
+  }
+
+  const amount = rateRule.amount * credit.quantity;
+  if (amount === 0) {
+    return { status: "skipped", reason: "zero_rate" };
+  }
+  if (amount > 10_000_000) {
+    return { status: "skipped", reason: "no_rate" };
+  }
+
+  const entry = await queryOne<{ id: string; amount: number }>(
+    `
+      insert into public.instructor_payout_entries (
+        organization_id,
+        instructor_id,
+        student_prepaid_credit_id,
+        school_id,
+        lesson_type_id,
+        student_access_id,
+        rate_rule_id,
+        entry_type,
+        accrual_policy,
+        status,
+        amount,
+        planned_at,
+        event_at,
+        created_by_member_id,
+        note
+      )
+      values (
+        $1, $2, $3, $4, $5, $6, $7,
+        'prepaid_credit_accrual', 'prepaid', 'planned', $8, $9, $9, $10,
+        'Предоплата инструктора за оплаченный лимит занятий'
+      )
+      on conflict do nothing
+      returning id, amount
+    `,
+    [
+      credit.organization_id,
+      credit.instructor_id,
+      credit.id,
+      credit.school_id,
+      credit.lesson_type_id,
+      credit.student_access_id,
+      rateRule.id,
+      amount,
+      credit.paid_at,
+      createdByMemberId,
+    ],
+  );
+
+  if (!entry) {
+    return { status: "skipped", reason: "already_exists" };
+  }
+
+  return { status: "created", entryId: entry.id, amount: entry.amount };
+}
+
+export async function syncInstructorPayoutEntryForPrepaidCredit(
+  creditId: string,
+) {
+  assertUuidLike(creditId, "creditId");
+
+  await executeQuery(
+    `
+      update public.instructor_payout_entries entries
+      set amount = rules.amount * credits.quantity,
+          rate_rule_id = rules.id,
+          updated_at = now()
+      from public.student_prepaid_credits credits
+      join lateral (
+        select rate_rules.id, rate_rules.amount
+        from public.instructor_payout_rate_rules rate_rules
+        where rate_rules.organization_id = credits.organization_id
+          and rate_rules.instructor_id = credits.instructor_id
+          and rate_rules.is_active = true
+          and (rate_rules.school_id is null or rate_rules.school_id = credits.school_id)
+          and (rate_rules.lesson_type_id is null or rate_rules.lesson_type_id = credits.lesson_type_id)
+          and (rate_rules.booking_category is null or rate_rules.booking_category = 'regular')
+          and rate_rules.effective_from <= credits.paid_at::date
+          and (rate_rules.effective_to is null or rate_rules.effective_to >= credits.paid_at::date)
+        order by
+          case when rate_rules.school_id is null then 0 else 1 end desc,
+          case when rate_rules.lesson_type_id is null then 0 else 1 end desc,
+          case when rate_rules.booking_category is null then 0 else 1 end desc,
+          rate_rules.effective_from desc,
+          rate_rules.created_at desc
+        limit 1
+      ) rules on true
+      where entries.student_prepaid_credit_id = credits.id
+        and entries.entry_type = 'prepaid_credit_accrual'
+        and entries.status = 'planned'
+        and credits.id = $1
+    `,
+    [creditId],
+  );
 }
 
 export async function correctInstructorPayoutForBooking({

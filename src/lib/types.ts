@@ -160,6 +160,39 @@ export type StudentLessonPackage = {
   lesson_type_ids: string[];
 };
 
+export type StudentPrepaidCredit = {
+  id: string;
+  organization_id: string;
+  student_access_id: string;
+  instructor_id: string;
+  school_id: string;
+  lesson_type_id: string;
+  quantity: number;
+  calculated_unit_price: number;
+  calculated_total_amount: number;
+  final_unit_price: number;
+  final_total_amount: number;
+  paid_at: string;
+  payment_note: string | null;
+  status: "active" | "cancelled";
+  cancelled_at: string | null;
+  cancellation_note: string | null;
+  refunded_amount: number;
+  refunds: StudentPrepaidRefund[];
+  created_at: string;
+  updated_at: string;
+  used_quantity: number;
+};
+
+export type StudentPrepaidRefund = {
+  id: string;
+  amount: number;
+  refunded_at: string;
+  refund_note: string | null;
+  cancelled_at: string | null;
+  cancellation_note: string | null;
+};
+
 export type StudentRegistrationRequestStatus =
   | "pending"
   | "approved"
@@ -278,6 +311,7 @@ export type InstructorPayoutAccrualPolicy = "prepaid" | "postpaid";
 export type InstructorSourceVisibilityMode = "all_active" | "selected_only";
 export type InstructorPayoutEntryType =
   | "booking_accrual"
+  | "prepaid_credit_accrual"
   | "manual_adjustment"
   | "cancellation_adjustment"
   | "no_show_adjustment";
@@ -325,6 +359,7 @@ export type InstructorPayoutEntry = {
   organization_id: string;
   instructor_id: string;
   booking_id: string | null;
+  student_prepaid_credit_id: string | null;
   slot_id: string | null;
   school_id: string | null;
   lesson_type_id: string | null;

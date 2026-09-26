@@ -147,6 +147,34 @@ type ReportItemSourceGroup = {
   debtAmount: number;
 };
 
+type InstructorPayoutPeriodSummary = {
+  planned_amount: number;
+  paid_amount: number;
+  remaining_amount: number;
+};
+
+type InstructorPayoutEntryDetail = {
+  id: string;
+  amount: number;
+  paid_amount: number;
+  remaining_amount: number;
+  entry_type: string;
+  planned_at: string | null;
+  event_at: string | null;
+  student_label: string | null;
+  lesson_type_name: string | null;
+  school_name: string | null;
+  booking_category: BookingCategory | null;
+  lesson_state: LessonState | null;
+};
+
+type InstructorPayoutPaymentDetail = {
+  id: string;
+  paid_at: string | null;
+  amount: number;
+  payment_note: string | null;
+};
+
 function getMonthBounds(dateValue: string) {
   const [year, month] = dateValue.split("-").map(Number);
   const start = new Date(Date.UTC(year, month - 1, 1));
@@ -206,6 +234,32 @@ function formatReportDateTime(value: string, timezone: string) {
     minute: "2-digit",
     timeZone: timezone,
   }).format(new Date(value));
+}
+
+function formatPayoutDateTime(value: string | null, timezone: string) {
+  if (!value) {
+    return "Дата не указана";
+  }
+
+  return formatReportDateTime(value, timezone);
+}
+
+function getPayoutEntryTitle(entry: InstructorPayoutEntryDetail) {
+  if (entry.entry_type === "correction") {
+    return "Корректировка";
+  }
+
+  return entry.student_label ?? "Занятие";
+}
+
+function getPayoutEntryMeta(entry: InstructorPayoutEntryDetail) {
+  const parts = [
+    entry.lesson_type_name,
+    entry.school_name,
+    entry.booking_category ? getBookingCategoryLabel(entry.booking_category) : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : "Без деталей занятия";
 }
 
 function getDurationHours(slot: ReportSlot) {
@@ -312,6 +366,112 @@ function SummaryCard({
         <p className={`mt-1 text-xs ${labelClassName}`}>{hint}</p>
       </CardContent>
     </Card>
+  );
+}
+
+function InstructorPayoutDetails({
+  entries,
+  payments,
+  timezone,
+}: {
+  entries: InstructorPayoutEntryDetail[];
+  payments: InstructorPayoutPaymentDetail[];
+  timezone: string;
+}) {
+  return (
+    <section className="grid gap-3 lg:grid-cols-2">
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Начисления за период</CardTitle>
+          <CardDescription>
+            За какие занятия или корректировки появилась сумма к выплате.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {entries.length === 0 ? (
+            <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-zinc-500">
+              За выбранный период начислений нет.
+            </div>
+          ) : (
+            <div className="divide-y rounded-xl border bg-white">
+              {entries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="grid gap-2 px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">
+                      {getPayoutEntryTitle(entry)}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {formatPayoutDateTime(entry.event_at ?? entry.planned_at, timezone)}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {getPayoutEntryMeta(entry)}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[230px]">
+                    <div>
+                      <p className="text-[11px] uppercase text-zinc-500">Начислено</p>
+                      <p className="font-semibold">{formatMoney(entry.amount)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase text-emerald-700">Выплачено</p>
+                      <p className="font-semibold text-emerald-900">
+                        {formatMoney(entry.paid_amount)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase text-amber-700">Осталось</p>
+                      <p className="font-semibold text-amber-900">
+                        {formatMoney(entry.remaining_amount)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Выплаты по этим начислениям</CardTitle>
+          <CardDescription>
+            Когда руководитель отметил выдачу денег, сумма и комментарий.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {payments.length === 0 ? (
+            <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-zinc-500">
+              По этим начислениям выплат ещё нет.
+            </div>
+          ) : (
+            <div className="divide-y rounded-xl border bg-white">
+              {payments.map((payment) => (
+                <div
+                  key={payment.id}
+                  className="grid gap-2 px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"
+                >
+                  <div className="min-w-0">
+                    <p className="font-semibold">
+                      {formatPayoutDateTime(payment.paid_at, timezone)}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {payment.payment_note?.trim() || "Без комментария"}
+                    </p>
+                  </div>
+                  <p className="text-right font-semibold text-emerald-900">
+                    {formatMoney(payment.amount)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </section>
   );
 }
 
@@ -837,49 +997,106 @@ export default async function AdminReportsPage({
         : firstInstructor
           ? [firstInstructor.id]
           : [];
-  const instructorPayoutPeriodSummary =
+  await autoCompletePastBookings({ instructorIds: reportInstructorIds });
+
+  const [
+    instructorPayoutPeriodSummary,
+    instructorPayoutEntries,
+    instructorPayoutPayments,
+  ] =
     isInstructorPayoutReport && selectedInstructor
-      ? ((
-          await queryRows<{
-            planned_amount: number;
-            paid_amount: number;
-            remaining_amount: number;
-          }>(
+      ? await Promise.all([
+          queryRows<InstructorPayoutPeriodSummary>(
+            `
+              select coalesce(sum(entries.amount), 0)::integer as planned_amount,
+                     coalesce(sum(entries.paid_amount), 0)::integer as paid_amount,
+                     greatest(
+                       coalesce(
+                         sum(entries.amount - entries.paid_amount)
+                           filter (where bookings.lesson_state = 'completed'),
+                         0
+                       ),
+                       0
+                     )::integer as remaining_amount
+              from public.instructor_payout_entry_balances entries
+              left join public.bookings bookings on bookings.id = entries.booking_id
+              where entries.organization_id = $1
+                and entries.instructor_id = $2
+                and entries.status = 'planned'
+                and coalesce(entries.event_at, entries.planned_at)::date >= $3::date
+                and coalesce(entries.event_at, entries.planned_at)::date <= $4::date
+            `,
+            [membership.organizationId, selectedInstructor.id, from, to],
+          ).then(
+            (rows) =>
+              rows[0] ?? {
+                planned_amount: 0,
+                paid_amount: 0,
+                remaining_amount: 0,
+              },
+          ),
+          queryRows<InstructorPayoutEntryDetail>(
+            `
+              select entries.id::text,
+                     entries.amount,
+                     entries.paid_amount,
+                     case
+                       when bookings.lesson_state = 'completed'
+                         then greatest(entries.remaining_amount, 0)
+                       else 0
+                     end as remaining_amount,
+                     entries.entry_type,
+                     entries.planned_at::text as planned_at,
+                     entries.event_at::text as event_at,
+                     bookings.student_label,
+                     lesson_types.name as lesson_type_name,
+                     schools.name as school_name,
+                     bookings.booking_category,
+                     bookings.lesson_state
+              from public.instructor_payout_entry_balances entries
+              left join public.bookings bookings on bookings.id = entries.booking_id
+              left join public.lesson_types lesson_types
+                on lesson_types.id = entries.lesson_type_id
+              left join public.schools schools on schools.id = entries.school_id
+              where entries.organization_id = $1
+                and entries.instructor_id = $2
+                and entries.status = 'planned'
+                and coalesce(entries.event_at, entries.planned_at)::date >= $3::date
+                and coalesce(entries.event_at, entries.planned_at)::date <= $4::date
+              order by coalesce(entries.event_at, entries.planned_at), entries.created_at
+            `,
+            [membership.organizationId, selectedInstructor.id, from, to],
+          ),
+          queryRows<InstructorPayoutPaymentDetail>(
             `
               with period_entries as (
-                select id, amount
+                select id
                 from public.instructor_payout_entries
                 where organization_id = $1
                   and instructor_id = $2
                   and status = 'planned'
                   and coalesce(event_at, planned_at)::date >= $3::date
                   and coalesce(event_at, planned_at)::date <= $4::date
-              ),
-              planned as (
-                select coalesce(sum(amount), 0)::integer as planned_amount
-                from period_entries
-              ),
-              paid as (
-                select coalesce(sum(allocations.amount), 0)::integer as paid_amount
-                from public.instructor_payout_payment_allocations allocations
-                join period_entries entries on entries.id = allocations.payout_entry_id
               )
-              select planned.planned_amount,
-                     paid.paid_amount,
-                     greatest(planned.planned_amount - paid.paid_amount, 0)::integer
-                       as remaining_amount
-              from planned
-              cross join paid
+              select payments.id::text,
+                     payments.paid_at::text as paid_at,
+                     coalesce(sum(allocations.amount), 0)::integer as amount,
+                     payments.payment_note
+              from public.instructor_payout_payment_allocations allocations
+              join period_entries entries on entries.id = allocations.payout_entry_id
+              join public.instructor_payout_payments payments
+                on payments.id = allocations.payment_id
+              group by payments.id
+              order by payments.paid_at desc, payments.created_at desc
             `,
             [membership.organizationId, selectedInstructor.id, from, to],
-          )
-        )[0] ?? {
-          planned_amount: 0,
-          paid_amount: 0,
-          remaining_amount: 0,
-        })
-      : null;
-  await autoCompletePastBookings({ instructorIds: reportInstructorIds });
+          ),
+        ])
+      : [
+          null,
+          [],
+          [],
+        ];
 
   if (postgresBackend) {
     const [
@@ -1650,25 +1867,41 @@ export default async function AdminReportsPage({
         </section>
 
         {isInstructorPayoutReport ? (
-          <section className="grid gap-3 md:grid-cols-3">
-            <SummaryCard
-              label="Запланировано"
-              value={formatMoney(instructorPayoutPeriodSummary?.planned_amount ?? 0)}
-              hint="Ожидается к выплате по начислениям"
-            />
-            <SummaryCard
-              label="Получено"
-              value={formatMoney(instructorPayoutPeriodSummary?.paid_amount ?? 0)}
-              hint="Руководитель отметил выдачу денег"
-              tone="emerald"
-            />
-            <SummaryCard
-              label="Осталось получить"
-              value={formatMoney(
-                instructorPayoutPeriodSummary?.remaining_amount ?? 0,
-              )}
-              hint="Запланировано минус получено"
-              tone="amber"
+          <section className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <SummaryCard
+                label="Начислено"
+                value={formatMoney(instructorPayoutPeriodSummary?.planned_amount ?? 0)}
+                hint="Сколько школа должна за период"
+              />
+              <SummaryCard
+                label="Выплачено"
+                value={formatMoney(instructorPayoutPeriodSummary?.paid_amount ?? 0)}
+                hint="Руководитель отметил выдачу денег"
+                tone="emerald"
+              />
+              <SummaryCard
+                label="Осталось получить"
+                value={formatMoney(
+                  instructorPayoutPeriodSummary?.remaining_amount ?? 0,
+                )}
+                hint="Только за проведённые занятия"
+                tone="amber"
+              />
+            </div>
+            <Card className="border-blue-200 bg-blue-50/60">
+              <CardContent className="p-4 text-sm leading-6 text-blue-950">
+                Начислено — сумма за занятия выбранного периода, и проведённые,
+                и непроведённые. Выплачено — деньги, которые руководитель уже
+                отметил как выданные, то есть вы их уже получили. Осталось
+                получить — сколько ещё школа должна вам; считается только по
+                фактически проведённым занятиям.
+              </CardContent>
+            </Card>
+            <InstructorPayoutDetails
+              entries={instructorPayoutEntries}
+              payments={instructorPayoutPayments}
+              timezone={timezone}
             />
           </section>
         ) : isOwnerInstructorReport ? (
@@ -2052,7 +2285,7 @@ export default async function AdminReportsPage({
           </CardHeader>
           <CardContent className="text-sm leading-6 text-blue-950">
             {isInstructorPayoutReport
-              ? "Запланировано показывает начисления инструктору за выбранный период. Получено показывает деньги, которые руководитель уже отметил как выданные. Осталось получить считается как запланировано минус получено."
+              ? "Начислено показывает сумму за занятия выбранного периода, и проведённые, и непроведённые. Выплачено показывает деньги, которые руководитель уже отметил как выданные, то есть вы их уже получили. Осталось получить — сколько ещё школа должна вам; считается только по фактически проведённым занятиям."
               : "План считается по запланированным занятиям. Заработано считается только по проведённым занятиям. Получено и долг считаются по всем подтверждённым записям выбранного периода, потому что оплату могут внести до занятия."}
           </CardContent>
         </Card>

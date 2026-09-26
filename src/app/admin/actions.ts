@@ -28,6 +28,10 @@ import {
   createInstructorPayoutEntryForBookingWithCurrentPolicy,
 } from "@/lib/instructor-payouts";
 import { assertInstructorWeeklyLessonLimit } from "@/lib/instructor-weekly-limit";
+import {
+  applyPrepaidCreditToBooking,
+  releasePrepaidCreditForBooking,
+} from "@/lib/student-prepaid-credits";
 
 export type SlotActionState = {
   status: "idle" | "success" | "error";
@@ -2820,11 +2824,13 @@ export async function cancelBookingAction(formData: FormData) {
         [new Date().toISOString(), bookingId],
       );
 
+      await releasePrepaidCreditForBooking(bookingId);
+
       await correctInstructorPayoutForBooking({
         bookingId,
         correctionType: "cancellation_adjustment",
         createdByMemberId: membership.id,
-        note: "Booking was cancelled",
+        note: "Запись была отменена",
       });
 
       await logAuditEvent({
@@ -3163,6 +3169,14 @@ export async function assignStudentToSlotAction(
       }
 
       if (createdBookingId) {
+        await applyPrepaidCreditToBooking({
+          bookingId: createdBookingId,
+          studentAccessId: access.id,
+          schoolId: selectedPackage.schoolId,
+          lessonTypeId: slot.lesson_type_id,
+          amount: priceAmount ?? 0,
+        });
+
         await createInstructorPayoutEntryForBookingWithCurrentPolicy({
           bookingId: createdBookingId,
           createdByMemberId: membership.id,

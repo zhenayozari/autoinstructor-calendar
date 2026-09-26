@@ -25,7 +25,9 @@ import type {
   School,
   Slot,
   InstructorSetting,
+  SchoolLessonTypePrice,
   StudentLessonPackage,
+  StudentPrepaidCredit,
   StudentRegistrationRequest,
 } from "@/lib/types";
 import {
@@ -79,6 +81,8 @@ type StudentLessonPackageTypeRow = {
   lesson_type_id: string;
 };
 
+type StudentPrepaidCreditRow = StudentPrepaidCredit;
+
 type StudentBookingRow = Pick<
   Booking,
   | "id"
@@ -125,6 +129,8 @@ export default async function AdminStudentsPage({
   let studentBookings: StudentBookingRow[] = [];
   let studentSlots: StudentSlotRow[] = [];
   let studentPaymentChanges: StudentBookingPaymentChangeRow[] = [];
+  let prepaidCredits: StudentPrepaidCreditRow[] = [];
+  let schoolLessonTypePrices: SchoolLessonTypePrice[] = [];
   let loadError: { message: string } | null = null;
 
   if (postgresBackend) {
@@ -346,6 +352,73 @@ export default async function AdminStudentsPage({
   }
 
   const accessIds = accesses.map((access) => access.id);
+
+  if (postgresBackend && accessIds.length > 0) {
+    [schoolLessonTypePrices, prepaidCredits] = await Promise.all([
+      queryRows<SchoolLessonTypePrice>(
+        `
+          select id, organization_id, school_id, lesson_type_id, price_amount,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from public.school_lesson_type_prices
+          where organization_id = $1
+        `,
+        [membership.organizationId],
+      ),
+      queryRows<StudentPrepaidCreditRow>(
+        `
+          select credits.id,
+                 credits.organization_id,
+                 credits.student_access_id,
+                 credits.instructor_id,
+                 credits.school_id,
+                 credits.lesson_type_id,
+                 credits.quantity,
+                 credits.calculated_unit_price,
+                 credits.calculated_total_amount,
+                 credits.final_unit_price,
+                 credits.final_total_amount,
+                 credits.paid_at::text as paid_at,
+                 credits.payment_note,
+                 credits.status,
+                 credits.cancelled_at::text as cancelled_at,
+                 credits.cancellation_note,
+                 (
+                   select coalesce(sum(refunds.amount), 0)::integer
+                   from public.student_prepaid_refunds refunds
+                   where refunds.credit_id = credits.id
+                     and refunds.cancelled_at is null
+                 ) as refunded_amount,
+                 coalesce((
+                   select jsonb_agg(
+                     jsonb_build_object(
+                       'id', refunds.id,
+                       'amount', refunds.amount,
+                       'refunded_at', refunds.refunded_at,
+                       'refund_note', refunds.refund_note,
+                       'cancelled_at', refunds.cancelled_at,
+                       'cancellation_note', refunds.cancellation_note
+                     )
+                     order by refunds.refunded_at desc, refunds.created_at desc
+                   )
+                   from public.student_prepaid_refunds refunds
+                   where refunds.credit_id = credits.id
+                 ), '[]'::jsonb) as refunds,
+                 credits.created_at::text as created_at,
+                 credits.updated_at::text as updated_at,
+                 count(usages.id) filter (where usages.status = 'active')::integer
+                   as used_quantity
+          from public.student_prepaid_credits credits
+          left join public.student_prepaid_credit_usages usages
+            on usages.credit_id = credits.id
+          where credits.organization_id = $1
+            and credits.student_access_id = any($2::uuid[])
+          group by credits.id
+          order by credits.paid_at desc, credits.created_at desc
+        `,
+        [membership.organizationId, accessIds],
+      ),
+    ]);
+  }
 
   if (postgresBackend) {
     accessLessonTypes =
@@ -671,6 +744,9 @@ export default async function AdminStudentsPage({
     return {
       ...access,
       school: access.school_id ? schoolsById.get(access.school_id) ?? null : null,
+      prepaidCredits: prepaidCredits.filter(
+        (credit) => credit.student_access_id === access.id,
+      ),
       crm,
       lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
       packages: (packagesByAccessId.get(access.id) ?? []).map((item) => ({
@@ -748,6 +824,7 @@ export default async function AdminStudentsPage({
             instructors={instructors}
             lessonTypes={schedulableLessonTypes}
             schools={panelSchools}
+            schoolLessonTypePrices={schoolLessonTypePrices}
             accesses={activeAccesses}
             archivedAccesses={archivedAccesses}
             pendingRequests={pendingRequests}

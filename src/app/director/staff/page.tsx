@@ -291,7 +291,7 @@ function StaffPayoutPanel({
       <div className="mt-3 space-y-3">
         <div className="grid gap-2 sm:grid-cols-3">
           <div className="rounded-xl bg-white px-3 py-2">
-            <p className="text-xs text-zinc-500">Запланировано</p>
+            <p className="text-xs text-zinc-500">Начислено</p>
             <p className="font-semibold">
               {formatMoney(payoutSetup.summary.planned_amount)}
             </p>

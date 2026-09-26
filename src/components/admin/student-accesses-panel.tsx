@@ -44,9 +44,11 @@ import type {
   Instructor,
   LessonType,
   School,
+  SchoolLessonTypePrice,
   StudentAccess,
   StudentRegistrationRequest,
   StudentLessonPackage,
+  StudentPrepaidCredit,
   SchoolPaymentRule,
 } from "@/lib/types";
 import {
@@ -58,6 +60,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { StudentPrepaidCreditsPanel } from "@/components/admin/student-prepaid-credits-panel";
 
 const INITIAL_STATE: StudentAccessActionState = {
   status: "idle",
@@ -93,6 +96,7 @@ export type StudentAccessCrm = StudentAccess & {
     lessonTypes?: LessonType[];
     usedCount?: number;
   })[];
+  prepaidCredits?: StudentPrepaidCredit[];
 };
 
 function getInstructorLabel(instructor: Instructor) {
@@ -1633,6 +1637,7 @@ function StudentAccessCard({
   access,
   lessonTypes,
   schools,
+  schoolLessonTypePrices,
   canDeleteStudents,
   canManageStudentPrices,
   canManageStudentLessonPackages,
@@ -1641,6 +1646,7 @@ function StudentAccessCard({
   access: StudentAccessCrm;
   lessonTypes: LessonType[];
   schools: School[];
+  schoolLessonTypePrices: SchoolLessonTypePrice[];
   canDeleteStudents: boolean;
   canManageStudentPrices: boolean;
   canManageStudentLessonPackages: boolean;
@@ -1830,6 +1836,17 @@ function StudentAccessCard({
             </div>
           )}
         </section>
+
+        <StudentPrepaidCreditsPanel
+          accessId={access.id}
+          accessSchoolId={access.school_id}
+          accessLessonTypeIds={access.lesson_type_ids}
+          credits={access.prepaidCredits ?? []}
+          schools={access.school_id ? schools.filter((school) => school.id === access.school_id) : schools}
+          lessonTypes={lessonTypes}
+          prices={schoolLessonTypePrices}
+          canManage={canManageStudentLessonPackages}
+        />
 
         <section className="space-y-3 rounded-2xl border border-emerald-100 bg-emerald-50/50 px-3 py-4">
           <div>
@@ -2474,6 +2491,7 @@ export function StudentAccessesPanel({
   instructors,
   lessonTypes,
   schools,
+  schoolLessonTypePrices,
   accesses,
   archivedAccesses = [],
   pendingRequests = [],
@@ -2490,6 +2508,7 @@ export function StudentAccessesPanel({
   instructors: Instructor[];
   lessonTypes: LessonType[];
   schools: School[];
+  schoolLessonTypePrices: SchoolLessonTypePrice[];
   accesses: StudentAccessCrm[];
   archivedAccesses?: StudentAccessCrm[];
   pendingRequests?: StudentRegistrationRequest[];
@@ -2682,6 +2701,7 @@ export function StudentAccessesPanel({
                   access={access}
                   lessonTypes={lessonTypes}
                   schools={schools}
+                  schoolLessonTypePrices={schoolLessonTypePrices}
                   canDeleteStudents={canDeleteStudents}
                   canManageStudentPrices={canManageStudentPrices}
                   canManageStudentLessonPackages={canManageStudentLessonPackages}

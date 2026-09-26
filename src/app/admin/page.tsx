@@ -498,7 +498,6 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const nextSlot =
     upcomingSlots.find((slot) => slot.booking) ??
     upcomingSlots[0] ??
-    todaySlots[0] ??
     null;
   const nextBookings = dashboardSlots
     .filter((slot) => slot.booking && new Date(slot.end_time) >= now)

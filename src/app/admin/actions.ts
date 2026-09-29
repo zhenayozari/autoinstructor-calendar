@@ -4403,6 +4403,138 @@ export async function settleSourcePaymentsAction(
     }
 
     const membership = await requireInstructorAccess(instructorId);
+
+    if (isPostgresBackend()) {
+      const result = await withTransaction(async (client) => {
+        const schoolResult = await client.query<{ id: string; name: string }>(
+          `
+            select id, name
+            from public.schools
+            where id = $1
+              and organization_id = $2
+            limit 1
+          `,
+          [schoolId, membership.organizationId],
+        );
+        const school = schoolResult.rows[0];
+
+        if (!school) {
+          throw new Error("Источник не найден");
+        }
+
+        const bookingsResult = await client.query<SettlementBookingRow>(
+          `
+            select bookings.id,
+                   bookings.slot_id,
+                   bookings.price_amount,
+                   bookings.paid_amount,
+                   bookings.student_access_id,
+                   bookings.school_id
+            from public.bookings bookings
+            join public.slots slots on slots.id = bookings.slot_id
+            join public.schedule_days days on days.id = slots.schedule_day_id
+            where slots.instructor_id = $1
+              and days.date between $2::date and $3::date
+              and bookings.school_id = $4
+              and slots.status <> 'cancelled'
+              and bookings.status = 'confirmed'
+              and bookings.lesson_state = 'completed'
+            for update of bookings
+          `,
+          [instructorId, from, to, schoolId],
+        );
+        const payableBookings = bookingsResult.rows.filter((booking) => {
+          const priceAmount = booking.price_amount ?? 0;
+          const paidAmount = booking.paid_amount ?? 0;
+
+          return priceAmount > paidAmount;
+        });
+        const actualCount = payableBookings.length;
+        const actualAmount = payableBookings.reduce(
+          (sum, booking) =>
+            sum +
+            Math.max(
+              (booking.price_amount ?? 0) - (booking.paid_amount ?? 0),
+              0,
+            ),
+          0,
+        );
+
+        if (actualCount === 0) {
+          return {
+            status: "error" as const,
+            message: "Нет проведённых занятий с остатком к выплате",
+            updatedCount: 0,
+          };
+        }
+
+        if (actualCount !== expectedCount || actualAmount !== expectedAmount) {
+          return {
+            status: "error" as const,
+            message:
+              "Данные изменились. Обновите отчёт и попробуйте ещё раз.",
+            updatedCount: 0,
+          };
+        }
+
+        const paidAt = new Date().toISOString();
+        const paymentNote = `Расчёт с ${school.name ?? sourceLabel} за период ${from} — ${to}`;
+
+        await client.query(
+          `
+            update public.bookings
+            set paid_amount = coalesce(price_amount, 0),
+                is_paid = true,
+                paid_at = $2,
+                payment_note = $3
+            where id = any($1::uuid[])
+              and status = 'confirmed'
+          `,
+          [
+            payableBookings.map((booking) => booking.id),
+            paidAt,
+            paymentNote,
+          ],
+        );
+
+        return {
+          status: "success" as const,
+          message: `Расчёт закрыт: ${actualCount} занятий на сумму ${actualAmount} ₽`,
+          updatedCount: actualCount,
+          schoolName: school.name,
+          actualAmount,
+        };
+      });
+
+      if (result.status === "error") {
+        return result;
+      }
+
+      await logAuditEvent({
+        membership,
+        action: "booking.source_settlement_completed",
+        entityType: "school",
+        entityId: schoolId,
+        metadata: {
+          instructor_id: instructorId,
+          school_id: schoolId,
+          source_label: result.schoolName ?? sourceLabel,
+          from,
+          to,
+          booking_count: result.updatedCount,
+          amount: result.actualAmount,
+        },
+      });
+
+      revalidateAdminCrmPaths();
+      revalidatePath("/admin/bookings");
+      revalidatePath("/student");
+      revalidatePath("/director");
+      revalidatePath("/director/reports");
+
+      return result;
+    }
+
     const supabase = createAdminClient();
     const { data: school, error: schoolError } = await supabase
       .from("schools")

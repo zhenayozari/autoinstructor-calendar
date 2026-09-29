@@ -19,6 +19,7 @@ import {
 } from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingPricingTableError } from "@/lib/pricing";
+import { purgeStudentAccessData } from "@/lib/destructive-data-cleanup";
 import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
 import {
   createInstructorPayoutEntryForPrepaidCredit,
@@ -866,16 +867,18 @@ async function canManagePrivateStudentPackagePrice({
   membership,
   instructorId,
   schoolId,
+  bookingCategory,
 }: {
   membership: ActiveOrganizationMembership;
   instructorId: string;
   schoolId: string;
+  bookingCategory: BookingCategory;
 }) {
   if (membership.role === "owner") {
     return true;
   }
 
-  if (!isPostgresBackend()) {
+  if (!isPostgresBackend() || bookingCategory !== "extra") {
     return false;
   }
 
@@ -939,10 +942,12 @@ async function canManagePrivateStudentPackageTerms({
   membership,
   instructorId,
   schoolId,
+  bookingCategory,
 }: {
   membership: ActiveOrganizationMembership;
   instructorId: string;
   schoolId: string;
+  bookingCategory: BookingCategory;
 }) {
   if (!isPostgresBackend()) {
     return false;
@@ -975,6 +980,7 @@ async function canManagePrivateStudentPackageTerms({
     membership,
     instructorId,
     schoolId,
+    bookingCategory,
   });
 }
 
@@ -994,6 +1000,14 @@ async function assertCanManageStudentLessonPackages({
     throw new Error(
       "Дополнительные доступы ученика может менять только руководитель или сотрудник с разрешением руководителя",
     );
+  }
+}
+
+function assertCanManageStudentPrepaidCredits(
+  membership: ActiveOrganizationMembership,
+) {
+  if (membership.role !== "owner") {
+    throw new Error("Предоплатами учеников может управлять только руководитель");
   }
 }
 
@@ -1074,20 +1088,12 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
   assertOwnerCanDelete(membership);
 
   if (isPostgresBackend()) {
-    await executeQuery(
-      `
-        delete from public.bookings
-        where student_access_id = $1
-      `,
-      [access.id],
-    );
-    await executeQuery(
-      `
-        delete from public.student_accesses
-        where id = $1
-          and organization_id = $2
-      `,
-      [access.id, membership.organizationId],
+    await withTransaction((client) =>
+      purgeStudentAccessData({
+        client,
+        organizationId: membership.organizationId,
+        studentAccessId: access.id,
+      }),
     );
 
     await logAuditEvent({
@@ -1339,6 +1345,7 @@ export async function createStudentAccessAction(
       membership,
       instructorId,
       schoolId,
+      bookingCategory: "regular",
     });
     const effectiveCustomPriceAmount = canManageStudentPrices(membership)
       ? customPriceAmount
@@ -1540,6 +1547,7 @@ export async function approveStudentRegistrationRequestAction(
       membership,
       instructorId: request.instructor_id,
       schoolId,
+      bookingCategory: "regular",
     });
     const effectiveCustomPriceAmount = canManageStudentPrices(membership)
       ? customPriceAmount
@@ -1922,6 +1930,7 @@ export async function updateStudentAccessAction(
           membership,
           instructorId: access.instructor_id,
           schoolId,
+          bookingCategory: "regular",
         })
       : false;
     const effectiveCustomPriceAmount = canManageStudentPrices(membership)
@@ -2581,20 +2590,32 @@ export async function addStudentLessonPackageAction(
       formData,
       "custom_price_amount",
     );
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
     const canManagePackagePrice = await canManagePrivateStudentPackagePrice({
       membership,
       instructorId: access.instructor_id,
       schoolId,
+      bookingCategory,
     });
     const canManagePackageTerms = await canManagePrivateStudentPackageTerms({
       membership,
       instructorId: access.instructor_id,
       schoolId,
+      bookingCategory,
     });
+    if (customPriceAmount !== null && !canManagePackagePrice) {
+      throw new Error(
+        "Сотрудник может указать индивидуальную цену только для частного дополнительного занятия",
+      );
+    }
+    if (paymentRuleOverride !== null && !canManagePackageTerms) {
+      throw new Error(
+        "Сотрудник может изменить правило оплаты только для частного дополнительного занятия",
+      );
+    }
     const effectiveCustomPriceAmount = canManagePackagePrice
       ? customPriceAmount
       : null;
-    const paymentRuleOverride = readPaymentRuleOverride(formData);
     const effectivePaymentRuleOverride = canManagePackageTerms
       ? paymentRuleOverride
       : null;
@@ -2820,22 +2841,34 @@ export async function updateStudentLessonPackageAction(
       formData,
       "custom_price_amount",
     );
+    const paymentRuleOverride = readPaymentRuleOverride(formData);
     const canManagePackagePrice = await canManagePrivateStudentPackagePrice({
       membership,
       instructorId: packageRow.instructor_id,
       schoolId,
+      bookingCategory,
     });
     const canManagePackageTerms = await canManagePrivateStudentPackageTerms({
       membership,
       instructorId: packageRow.instructor_id,
       schoolId,
+      bookingCategory,
     });
+    if (customPriceAmount !== null && !canManagePackagePrice) {
+      throw new Error(
+        "Сотрудник может указать индивидуальную цену только для частного дополнительного занятия",
+      );
+    }
+    if (paymentRuleOverride !== null && !canManagePackageTerms) {
+      throw new Error(
+        "Сотрудник может изменить правило оплаты только для частного дополнительного занятия",
+      );
+    }
     const effectiveCustomPriceAmount = canManagePackagePrice
       ? customPriceAmount
       : schoolId === packageRow.school_id
         ? packageRow.custom_price_amount
         : null;
-    const paymentRuleOverride = readPaymentRuleOverride(formData);
     const effectivePaymentRuleOverride = canManagePackageTerms
       ? paymentRuleOverride
       : schoolId === packageRow.school_id
@@ -3257,10 +3290,7 @@ export async function createStudentPrepaidCreditAction(
 
     const accessId = readRequiredString(formData, "student_access_id");
     const { membership, access } = await getManageableAccess(accessId);
-    await assertCanManageStudentLessonPackages({
-      membership,
-      instructorId: access.instructor_id,
-    });
+    assertCanManageStudentPrepaidCredits(membership);
 
     const schoolId = await validateRequiredSchoolId(
       formData,
@@ -3430,10 +3460,7 @@ export async function updateStudentPrepaidCreditAction(
     if (!credit) {
       throw new Error("Предоплата не найдена");
     }
-    await assertCanManageStudentLessonPackages({
-      membership,
-      instructorId: credit.instructor_id,
-    });
+    assertCanManageStudentPrepaidCredits(membership);
     if (credit.status !== "active") {
       throw new Error("Отменённую предоплату нельзя редактировать");
     }
@@ -3576,10 +3603,7 @@ export async function cancelStudentPrepaidCreditAction(
     if (!access) {
       throw new Error("Предоплата не найдена");
     }
-    await assertCanManageStudentLessonPackages({
-      membership,
-      instructorId: access.instructor_id,
-    });
+    assertCanManageStudentPrepaidCredits(membership);
 
     const result = await withTransaction(async (client) => {
       const creditResult = await client.query<{
@@ -3817,10 +3841,7 @@ export async function createStudentPrepaidRefundAction(
     if (!access) {
       throw new Error("Предоплата не найдена");
     }
-    await assertCanManageStudentLessonPackages({
-      membership,
-      instructorId: access.instructor_id,
-    });
+    assertCanManageStudentPrepaidCredits(membership);
 
     const result = await withTransaction(async (client) => {
       const creditResult = await client.query<{
@@ -3974,10 +3995,7 @@ export async function cancelStudentPrepaidRefundAction(
       throw new Error("Возврат не найден или уже отменён");
     }
 
-    await assertCanManageStudentLessonPackages({
-      membership,
-      instructorId: refund.instructor_id,
-    });
+    assertCanManageStudentPrepaidCredits(membership);
 
     const cancelledRefund = await queryOne<{
       id: string;

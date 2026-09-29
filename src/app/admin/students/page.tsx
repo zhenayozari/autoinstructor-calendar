@@ -353,7 +353,7 @@ export default async function AdminStudentsPage({
 
   const accessIds = accesses.map((access) => access.id);
 
-  if (postgresBackend && accessIds.length > 0) {
+  if (postgresBackend && accessIds.length > 0 && canManageStudentPrices) {
     [schoolLessonTypePrices, prepaidCredits] = await Promise.all([
       queryRows<SchoolLessonTypePrice>(
         `
@@ -744,9 +744,9 @@ export default async function AdminStudentsPage({
     return {
       ...access,
       school: access.school_id ? schoolsById.get(access.school_id) ?? null : null,
-      prepaidCredits: prepaidCredits.filter(
-        (credit) => credit.student_access_id === access.id,
-      ),
+      prepaidCredits: canManageStudentPrices
+        ? prepaidCredits.filter((credit) => credit.student_access_id === access.id)
+        : [],
       crm,
       lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
       packages: (packagesByAccessId.get(access.id) ?? []).map((item) => ({

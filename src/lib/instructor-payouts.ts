@@ -19,6 +19,7 @@ export type InstructorPayoutSettingsInput = {
   sourceVisibilityMode: InstructorSourceVisibilityMode;
   showClientPrices: boolean;
   canManageStudentPackages: boolean;
+  privateExtraFullPayoutEnabled: boolean;
 };
 
 export type InstructorPayoutRateRuleInput = {
@@ -85,12 +86,14 @@ export type InstructorPayoutEntryCreationResult =
         | "zero_rate"
         | "already_exists"
         | "booking_not_found"
-        | "owner_excluded";
+        | "owner_excluded"
+        | "private_extra_direct_income";
     };
 
 export type InstructorPayoutCorrectionResult =
   | { status: "cancelled"; entryId: string }
   | { status: "adjustment_created"; entryId: string; amount: number }
+  | { status: "direct_income_corrected"; bookingId: string }
   | { status: "skipped"; reason: "no_entry" | "already_adjusted" };
 
 function assertUuidLike(value: string, label: string) {
@@ -277,6 +280,7 @@ export async function getInstructorPayoutSettings({
     `
       select instructor_id, organization_id, accrual_policy, weekly_lesson_limit,
              source_visibility_mode, show_client_prices, can_manage_student_packages,
+             private_extra_full_payout_enabled,
              created_at::text as created_at, updated_at::text as updated_at
       from public.instructor_payout_settings
       where organization_id = $1
@@ -303,17 +307,20 @@ export async function updateInstructorPayoutSettings(
         weekly_lesson_limit,
         source_visibility_mode,
         show_client_prices,
-        can_manage_student_packages
+        can_manage_student_packages,
+        private_extra_full_payout_enabled
       )
-      values ($1, $2, $3, $4, $5, $6, $7)
+      values ($1, $2, $3, $4, $5, $6, $7, $8)
       on conflict (instructor_id) do update
       set accrual_policy = excluded.accrual_policy,
           weekly_lesson_limit = excluded.weekly_lesson_limit,
           source_visibility_mode = excluded.source_visibility_mode,
           show_client_prices = excluded.show_client_prices,
-          can_manage_student_packages = excluded.can_manage_student_packages
+          can_manage_student_packages = excluded.can_manage_student_packages,
+          private_extra_full_payout_enabled = excluded.private_extra_full_payout_enabled
       returning instructor_id, organization_id, accrual_policy, weekly_lesson_limit,
                 source_visibility_mode, show_client_prices, can_manage_student_packages,
+                private_extra_full_payout_enabled,
                 created_at::text as created_at, updated_at::text as updated_at
     `,
     [
@@ -324,6 +331,7 @@ export async function updateInstructorPayoutSettings(
       input.sourceVisibilityMode,
       input.showClientPrices,
       input.canManageStudentPackages,
+      input.privateExtraFullPayoutEnabled,
     ],
   );
 
@@ -923,6 +931,7 @@ export async function backfillInstructorPayoutEntries({
       bookingId: booking.id,
       requiredPolicy: settings.accrual_policy,
       createdByMemberId,
+      allowDirectIncomeCreation: false,
       plannedAt:
         settings.accrual_policy === "postpaid"
           ? (booking.completed_at ?? booking.slot_end_time)
@@ -956,7 +965,24 @@ type BookingPayoutContext = {
   student_access_id: string | null;
   lesson_date: string;
   slot_end_time: string;
+  price_amount: number | null;
+  school_name: string | null;
+  package_custom_price_amount: number | null;
+  direct_instructor_income_amount: number | null;
+  direct_instructor_income_policy: InstructorPayoutAccrualPolicy | null;
+  direct_instructor_income_recognized_at: string | null;
 };
+
+function normalizePrivateSourceName(value: string) {
+  return value.trim().toLowerCase().replaceAll("ё", "е").replace(/\s+/g, " ");
+}
+
+function isPrivateStudentSourceName(value: string | null) {
+  if (!value) return false;
+
+  const normalized = normalizePrivateSourceName(value);
+  return normalized === "частные ученики" || normalized === "частный ученик";
+}
 
 async function getBookingPayoutContext(bookingId: string) {
   assertUuidLike(bookingId, "bookingId");
@@ -975,12 +1001,23 @@ async function getBookingPayoutContext(bookingId: string) {
              s.lesson_type_id,
              b.student_access_id,
              d.date::text as lesson_date,
-             s.end_time::text as slot_end_time
+             s.end_time::text as slot_end_time,
+             b.price_amount,
+             schools.name as school_name,
+             packages.custom_price_amount as package_custom_price_amount,
+             b.direct_instructor_income_amount,
+             b.direct_instructor_income_policy,
+             b.direct_instructor_income_recognized_at::text
+               as direct_instructor_income_recognized_at
       from public.bookings b
       join public.slots s on s.id = b.slot_id
       join public.schedule_days d on d.id = s.schedule_day_id
       join public.instructors i on i.id = s.instructor_id
       left join public.student_accesses sa on sa.id = b.student_access_id
+      left join public.student_lesson_packages packages
+        on packages.id = b.student_lesson_package_id
+      left join public.schools schools
+        on schools.id = coalesce(b.school_id, sa.school_id, s.school_id)
       where b.id = $1
       limit 1
     `,
@@ -993,11 +1030,13 @@ export async function createInstructorPayoutEntryForBooking({
   requiredPolicy,
   createdByMemberId = null,
   plannedAt = new Date().toISOString(),
+  allowDirectIncomeCreation = true,
 }: {
   bookingId: string;
   requiredPolicy: InstructorPayoutAccrualPolicy;
   createdByMemberId?: string | null;
   plannedAt?: string;
+  allowDirectIncomeCreation?: boolean;
 }): Promise<InstructorPayoutEntryCreationResult> {
   const context = await getBookingPayoutContext(bookingId);
 
@@ -1034,12 +1073,8 @@ export async function createInstructorPayoutEntryForBooking({
     instructorId: context.instructor_id,
   });
 
-  if (!settings || settings.accrual_policy !== requiredPolicy) {
+  if (!settings) {
     return { status: "skipped", reason: "policy_mismatch" };
-  }
-
-  if (requiredPolicy === "postpaid" && context.lesson_state !== "completed") {
-    return { status: "skipped", reason: "not_completed" };
   }
 
   const existing = await queryOne<{ id: string }>(
@@ -1053,8 +1088,78 @@ export async function createInstructorPayoutEntryForBooking({
     [bookingId],
   );
 
-  if (existing) {
+  const existingDirectIncome =
+    context.direct_instructor_income_amount !== null &&
+    context.direct_instructor_income_policy !== null;
+  const qualifiesForDirectIncome =
+    allowDirectIncomeCreation &&
+    settings.private_extra_full_payout_enabled &&
+    context.booking_category === "extra" &&
+    isPrivateStudentSourceName(context.school_name) &&
+    context.package_custom_price_amount !== null &&
+    context.price_amount !== null;
+
+  if (!existingDirectIncome && existing) {
     return { status: "skipped", reason: "already_exists" };
+  }
+
+  if (existingDirectIncome || qualifiesForDirectIncome) {
+    const directIncomeAmount =
+      context.direct_instructor_income_amount ?? context.price_amount ?? 0;
+    const directIncomePolicy =
+      context.direct_instructor_income_policy ?? settings.accrual_policy;
+    const canRecognize =
+      directIncomePolicy === "prepaid" || context.lesson_state === "completed";
+
+    if (!existingDirectIncome) {
+      await executeQuery(
+        `
+          update public.bookings
+          set direct_instructor_income_amount = $2,
+              direct_instructor_income_policy = $3,
+              direct_instructor_income_recognized_at = case
+                when $4::boolean then coalesce(completed_at, $5::timestamptz)
+                else null
+              end
+          where id = $1
+            and direct_instructor_income_amount is null
+        `,
+        [
+          context.booking_id,
+          directIncomeAmount,
+          directIncomePolicy,
+          canRecognize,
+          plannedAt,
+        ],
+      );
+    } else if (
+      canRecognize &&
+      context.direct_instructor_income_recognized_at === null
+    ) {
+      await executeQuery(
+        `
+          update public.bookings
+          set direct_instructor_income_recognized_at = coalesce(completed_at, $2::timestamptz)
+          where id = $1
+            and direct_instructor_income_recognized_at is null
+        `,
+        [context.booking_id, plannedAt],
+      );
+    }
+
+    if (!canRecognize) {
+      return { status: "skipped", reason: "not_completed" };
+    }
+
+    return { status: "skipped", reason: "private_extra_direct_income" };
+  }
+
+  if (settings.accrual_policy !== requiredPolicy) {
+    return { status: "skipped", reason: "policy_mismatch" };
+  }
+
+  if (requiredPolicy === "postpaid" && context.lesson_state !== "completed") {
+    return { status: "skipped", reason: "not_completed" };
   }
 
   const rateRule = await findInstructorPayoutRateRule({
@@ -1332,6 +1437,18 @@ export async function correctInstructorPayoutForBooking({
 }): Promise<InstructorPayoutCorrectionResult> {
   assertUuidLike(bookingId, "bookingId");
 
+  const correctedDirectIncome = await queryOne<{ id: string }>(
+    `
+      update public.bookings
+      set direct_instructor_income_recognized_at = null
+      where id = $1
+        and direct_instructor_income_policy = 'postpaid'
+        and direct_instructor_income_recognized_at is not null
+      returning id
+    `,
+    [bookingId],
+  );
+
   const entry = await queryOne<{
     id: string;
     organization_id: string;
@@ -1358,6 +1475,10 @@ export async function correctInstructorPayoutForBooking({
   );
 
   if (!entry) {
+    if (correctedDirectIncome) {
+      return { status: "direct_income_corrected", bookingId };
+    }
+
     return { status: "skipped", reason: "no_entry" };
   }
 

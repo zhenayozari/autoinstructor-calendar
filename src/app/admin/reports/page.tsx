@@ -83,6 +83,8 @@ type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   booking_category: BookingCategory;
   lesson_state: LessonState;
   completed_at: string | null;
+  direct_instructor_income_amount: number | null;
+  direct_instructor_income_recognized_at: string | null;
 };
 
 type ReportLessonType = Pick<LessonType, "id" | "code" | "name" | "color" | "kind">;
@@ -1258,7 +1260,10 @@ export default async function AdminReportsPage({
             `
               select id, slot_id, student_label, student_access_id, school_id,
                      price_amount, paid_amount, is_paid, paid_at::text as paid_at,
-                     booking_category, lesson_state, completed_at::text as completed_at
+                     booking_category, lesson_state, completed_at::text as completed_at,
+                     direct_instructor_income_amount,
+                     direct_instructor_income_recognized_at::text
+                       as direct_instructor_income_recognized_at
               from public.bookings
               where slot_id = any($1::uuid[])
                 and status = 'confirmed'
@@ -1362,6 +1367,15 @@ export default async function AdminReportsPage({
   const reportItems = bookings
     .map(buildReportItem)
     .filter((item): item is ReportItem => Boolean(item));
+  const directIncomeItems = reportItems.filter(
+    (item) =>
+      item.direct_instructor_income_amount !== null &&
+      Boolean(item.direct_instructor_income_recognized_at),
+  );
+  const directIncomeAmount = directIncomeItems.reduce(
+    (sum, item) => sum + (item.direct_instructor_income_amount ?? 0),
+    0,
+  );
   const settlementItems = settlementBookings
     .map(buildReportItem)
     .filter((item): item is ReportItem => Boolean(item))
@@ -1868,7 +1882,7 @@ export default async function AdminReportsPage({
 
         {isInstructorPayoutReport ? (
           <section className="space-y-3">
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <SummaryCard
                 label="Начислено"
                 value={formatMoney(instructorPayoutPeriodSummary?.planned_amount ?? 0)}
@@ -1888,6 +1902,12 @@ export default async function AdminReportsPage({
                 hint="Только за проведённые занятия"
                 tone="amber"
               />
+              <SummaryCard
+                label="Доп. заработок"
+                value={formatMoney(directIncomeAmount)}
+                hint={`Частные дополнительные занятия: ${directIncomeItems.length}`}
+                tone="emerald"
+              />
             </div>
             <Card className="border-blue-200 bg-blue-50/60">
               <CardContent className="p-4 text-sm leading-6 text-blue-950">
@@ -1895,7 +1915,9 @@ export default async function AdminReportsPage({
                 и непроведённые. Выплачено — деньги, которые руководитель уже
                 отметил как выданные, то есть вы их уже получили. Осталось
                 получить — сколько ещё школа должна вам; считается только по
-                фактически проведённым занятиям.
+                фактически проведённым занятиям. Доп. заработок — ваши частные
+                дополнительные занятия; он считается автоматически и не входит
+                в долг школы перед вами.
               </CardContent>
             </Card>
             <InstructorPayoutDetails

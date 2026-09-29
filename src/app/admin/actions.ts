@@ -2561,14 +2561,60 @@ export async function deleteSlotAction(formData: FormData) {
       }
 
       const membership = await requireInstructorAccess(slot.instructor_id);
-      await executeQuery(
+      const bookings = await queryRows<{ id: string; status: string }>(
         `
-          delete from public.slots
-          where id = $1
-            and instructor_id = $2
+          select id, status
+          from public.bookings
+          where slot_id = $1
         `,
-        [slotId, slot.instructor_id],
+        [slotId],
       );
+
+      const confirmedBookings = bookings.filter(
+        (booking) => booking.status === "confirmed",
+      );
+
+      for (const booking of confirmedBookings) {
+        await executeQuery(
+          `
+            update public.bookings
+            set status = 'cancelled',
+                cancelled_at = now()
+            where id = $1
+              and status = 'confirmed'
+          `,
+          [booking.id],
+        );
+
+        await releasePrepaidCreditForBooking(booking.id);
+        await correctInstructorPayoutForBooking({
+          bookingId: booking.id,
+          correctionType: "cancellation_adjustment",
+          createdByMemberId: membership.id,
+          note: "Запись отменена при удалении слота",
+        });
+      }
+
+      if (bookings.length > 0) {
+        await executeQuery(
+          `
+            update public.slots
+            set status = 'cancelled'
+            where id = $1
+              and instructor_id = $2
+          `,
+          [slotId, slot.instructor_id],
+        );
+      } else {
+        await executeQuery(
+          `
+            delete from public.slots
+            where id = $1
+              and instructor_id = $2
+          `,
+          [slotId, slot.instructor_id],
+        );
+      }
 
       await logAuditEvent({
         membership,
@@ -2577,14 +2623,19 @@ export async function deleteSlotAction(formData: FormData) {
         entityId: slotId,
         metadata: {
           instructor_id: slot.instructor_id,
+          soft_cancelled: bookings.length > 0,
+          cancelled_bookings_count: confirmedBookings.length,
         },
       });
 
       revalidatePath("/admin");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
+      revalidatePath("/admin/reports");
+      revalidatePath("/admin/students");
       revalidatePath("/");
       revalidatePath("/schedule");
+      revalidatePath("/student");
       return;
     }
 
@@ -2685,13 +2736,70 @@ export async function deleteSelectedSlotsAction(
       }
 
       const manageableSlotIds = selectedSlots.map((slot) => slot.id);
-      await executeQuery(
+      const bookings = await queryRows<{
+        id: string;
+        slot_id: string;
+        status: string;
+      }>(
         `
-          delete from public.slots
-          where id = any($1::uuid[])
+          select id, slot_id, status
+          from public.bookings
+          where slot_id = any($1::uuid[])
         `,
         [manageableSlotIds],
       );
+      const confirmedBookings = bookings.filter(
+        (booking) => booking.status === "confirmed",
+      );
+
+      for (const booking of confirmedBookings) {
+        await executeQuery(
+          `
+            update public.bookings
+            set status = 'cancelled',
+                cancelled_at = now()
+            where id = $1
+              and status = 'confirmed'
+          `,
+          [booking.id],
+        );
+
+        await releasePrepaidCreditForBooking(booking.id);
+        await correctInstructorPayoutForBooking({
+          bookingId: booking.id,
+          correctionType: "cancellation_adjustment",
+          createdByMemberId: membership.id,
+          note: "Запись отменена при удалении слота",
+        });
+      }
+
+      const bookedSlotIds = [
+        ...new Set(bookings.map((booking) => booking.slot_id)),
+      ];
+      const unbookedSlotIds = manageableSlotIds.filter(
+        (slotId) => !bookedSlotIds.includes(slotId),
+      );
+
+      if (bookedSlotIds.length > 0) {
+        await executeQuery(
+          `
+            update public.slots
+            set status = 'cancelled'
+            where id = any($1::uuid[])
+          `,
+          [bookedSlotIds],
+        );
+      }
+
+      if (unbookedSlotIds.length > 0) {
+        await executeQuery(
+          `
+            delete from public.slots
+            where id = any($1::uuid[])
+          `,
+          [unbookedSlotIds],
+        );
+      }
 
       await logAuditEvent({
         membership,
@@ -2700,6 +2808,8 @@ export async function deleteSelectedSlotsAction(
         metadata: {
           count: manageableSlotIds.length,
           instructor_ids: instructorIds,
+          soft_cancelled_count: bookedSlotIds.length,
+          cancelled_bookings_count: confirmedBookings.length,
         },
       });
 
@@ -2710,6 +2820,7 @@ export async function deleteSelectedSlotsAction(
       revalidatePath("/admin/students");
       revalidatePath("/");
       revalidatePath("/schedule");
+      revalidatePath("/student");
 
       return {
         status: "success",

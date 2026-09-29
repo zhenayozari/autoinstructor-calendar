@@ -325,6 +325,7 @@ export type InstructorPayoutSettings = {
   source_visibility_mode: InstructorSourceVisibilityMode;
   show_client_prices: boolean;
   can_manage_student_packages: boolean;
+  private_extra_full_payout_enabled: boolean;
   created_at: string;
   updated_at: string;
 };

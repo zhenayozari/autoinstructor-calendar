@@ -26,6 +26,7 @@ import {
   formatHours,
   formatMoney,
   formatNumericDate,
+  formatTime,
   getLocalDate,
   selectClassName,
 } from "@/lib/formatters";
@@ -36,6 +37,10 @@ import {
   getOwnerInstructorIds,
   getOwnerPayoutPolicy,
 } from "@/lib/instructor-payouts";
+import {
+  getStudentPrepaymentCashGroups,
+  type StudentPrepaymentCashGroup,
+} from "@/lib/student-prepayment-report";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
@@ -74,6 +79,9 @@ type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
   is_paid: boolean;
   booking_category: BookingCategory;
   lesson_state: LessonState;
+  direct_instructor_income_amount: number | null;
+  direct_instructor_income_recognized_at: string | null;
+  prepaid_credit_id: string | null;
 };
 
 type ReportItem = ReportBooking & {
@@ -98,6 +106,9 @@ type MoneyGroup = {
   instructorPayoutAmount: number;
   instructorPaidAmount: number;
   instructorRemainingAmount: number;
+  directInstructorIncomeAmount: number;
+  directStudentPaidAmount: number;
+  directStudentPriceAmount: number;
   marginAmount: number;
 };
 
@@ -254,10 +265,33 @@ function getPaidAmount(item: Pick<ReportBooking, "paid_amount">) {
   return item.paid_amount ?? 0;
 }
 
+function getSchoolBookingPaidAmount(
+  item: Pick<ReportBooking, "paid_amount" | "prepaid_credit_id">,
+) {
+  return item.prepaid_credit_id ? 0 : getPaidAmount(item);
+}
+
 function getDebtAmount(
   item: Pick<ReportBooking, "price_amount" | "paid_amount">,
 ) {
   return Math.max((item.price_amount ?? 0) - (item.paid_amount ?? 0), 0);
+}
+
+function hasDirectInstructorIncome(
+  item: Pick<ReportBooking, "direct_instructor_income_amount">,
+) {
+  return item.direct_instructor_income_amount !== null;
+}
+
+function getRecognizedDirectIncomeAmount(
+  item: Pick<
+    ReportBooking,
+    "direct_instructor_income_amount" | "direct_instructor_income_recognized_at"
+  >,
+) {
+  return item.direct_instructor_income_recognized_at
+    ? (item.direct_instructor_income_amount ?? 0)
+    : 0;
 }
 
 function addToGroup(
@@ -284,13 +318,23 @@ function addToGroup(
       instructorPayoutAmount: 0,
       instructorPaidAmount: 0,
       instructorRemainingAmount: 0,
+      directInstructorIncomeAmount: 0,
+      directStudentPaidAmount: 0,
+      directStudentPriceAmount: 0,
       marginAmount: 0,
     } satisfies MoneyGroup);
 
   current.count += 1;
   current.totalStudentAmount += item.price_amount ?? 0;
-  current.paidAmount += getPaidAmount(item);
+  current.paidAmount += getSchoolBookingPaidAmount(item);
   current.debtAmount += getDebtAmount(item);
+
+  if (hasDirectInstructorIncome(item)) {
+    current.directInstructorIncomeAmount +=
+      getRecognizedDirectIncomeAmount(item);
+    current.directStudentPaidAmount += getSchoolBookingPaidAmount(item);
+    current.directStudentPriceAmount += item.price_amount ?? 0;
+  }
 
   if (item.lesson_state === "scheduled") {
     current.plannedAmount += item.price_amount ?? 0;
@@ -302,8 +346,49 @@ function addToGroup(
     current.earnedAmount += item.price_amount ?? 0;
   }
 
-  current.marginAmount = current.paidAmount - current.instructorPayoutAmount;
+  current.marginAmount =
+    current.paidAmount -
+    current.directStudentPaidAmount -
+    current.instructorPayoutAmount;
 
+  map.set(key, current);
+}
+
+function addPrepaymentCashToGroup(
+  map: Map<string, MoneyGroup>,
+  key: string,
+  label: string,
+  cash: Pick<StudentPrepaymentCashGroup, "net_amount">,
+  color?: string,
+) {
+  const current =
+    map.get(key) ??
+    ({
+      id: key,
+      label,
+      color,
+      count: 0,
+      completedCount: 0,
+      hours: 0,
+      totalStudentAmount: 0,
+      plannedAmount: 0,
+      earnedAmount: 0,
+      paidAmount: 0,
+      debtAmount: 0,
+      instructorPayoutAmount: 0,
+      instructorPaidAmount: 0,
+      instructorRemainingAmount: 0,
+      directInstructorIncomeAmount: 0,
+      directStudentPaidAmount: 0,
+      directStudentPriceAmount: 0,
+      marginAmount: 0,
+    } satisfies MoneyGroup);
+
+  current.paidAmount += cash.net_amount;
+  current.marginAmount =
+    current.paidAmount -
+    current.directStudentPaidAmount -
+    current.instructorPayoutAmount;
   map.set(key, current);
 }
 
@@ -321,7 +406,8 @@ function attachPayoutsToGroups(
     group.instructorPayoutAmount = payout.amount;
     group.instructorPaidAmount = payout.paid_amount;
     group.instructorRemainingAmount = payout.remaining_amount;
-    group.marginAmount = group.paidAmount - payout.amount;
+    group.marginAmount =
+      group.paidAmount - group.directStudentPaidAmount - payout.amount;
   }
 }
 
@@ -946,6 +1032,111 @@ function PrepaidCreditsReport({
   );
 }
 
+function PrivateExtraIncomeReport({ items }: { items: ReportItem[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  const groupedItems = new Map<
+    string,
+    { instructor: Instructor; amount: number; items: ReportItem[] }
+  >();
+
+  for (const item of items) {
+    const current = groupedItems.get(item.instructor.id) ?? {
+      instructor: item.instructor,
+      amount: 0,
+      items: [],
+    };
+    current.amount += item.direct_instructor_income_amount ?? 0;
+    current.items.push(item);
+    groupedItems.set(item.instructor.id, current);
+  }
+
+  const groups = [...groupedItems.values()].sort(
+    (first, second) => second.amount - first.amount,
+  );
+  const totalAmount = groups.reduce((sum, group) => sum + group.amount, 0);
+
+  return (
+    <Card className="border-emerald-200 bg-emerald-50/30">
+      <CardHeader className="pb-3">
+        <CardTitle>Частный доп. заработок сотрудников</CardTitle>
+        <CardDescription>
+          100% индивидуальной цены частных дополнительных занятий. Эти суммы
+          сотрудник получает самостоятельно, школа их не выдаёт.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-white px-3 py-3">
+          <span className="text-sm font-medium text-emerald-800">
+            Всего за выбранный период
+          </span>
+          <span className="text-lg font-semibold text-emerald-950">
+            {formatMoney(totalAmount)}
+          </span>
+        </div>
+
+        {groups.map((group) => {
+          const instructorName =
+            group.instructor.public_name ?? group.instructor.name;
+          const timezone = group.instructor.timezone ?? DEFAULT_TIMEZONE;
+
+          return (
+            <details
+              key={group.instructor.id}
+              className="rounded-xl border border-emerald-100 bg-white"
+            >
+              <summary className="grid cursor-pointer list-none gap-1 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold">
+                    {instructorName}
+                  </span>
+                  <span className="text-xs text-zinc-500">
+                    {group.items.length} частных дополнительных занятий
+                  </span>
+                </span>
+                <span className="font-semibold text-emerald-800">
+                  {formatMoney(group.amount)}
+                </span>
+              </summary>
+              <div className="divide-y border-t border-emerald-100">
+                {group.items.map((item) => (
+                  <div
+                    key={item.id}
+                    className="grid gap-2 px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  >
+                    <div className="min-w-0">
+                      {item.student_access_id ? (
+                        <Link
+                          href={`/director/students?view=list&student=${item.student_access_id}#student-${item.student_access_id}`}
+                          className="font-semibold text-blue-700 hover:underline"
+                        >
+                          {item.student_label}
+                        </Link>
+                      ) : (
+                        <span className="font-semibold">{item.student_label}</span>
+                      )}
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {formatNumericDate(item.scheduleDay.date)} ·{" "}
+                        {formatTime(item.slot.start_time, timezone)} ·{" "}
+                        {item.school?.name ?? "Частные ученики"}
+                      </p>
+                    </div>
+                    <span className="font-semibold text-emerald-800">
+                      {formatMoney(item.direct_instructor_income_amount ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
 function MoneyGroupTable({
   title,
   description,
@@ -1013,6 +1204,11 @@ function MoneyGroupTable({
                       label="К выдаче"
                       value={formatMoney(group.instructorRemainingAmount)}
                       tone="amber"
+                    />
+                    <MoneyGroupMetric
+                      label="Частный доход"
+                      value={formatMoney(group.directInstructorIncomeAmount)}
+                      tone="emerald"
                     />
                     <MoneyGroupMetric
                       label="Маржа"
@@ -1234,12 +1430,20 @@ export default async function DirectorReportsPage({
       slotIds.length > 0
         ? await queryRows<ReportBooking>(
             `
-              select id, slot_id, student_label, student_access_id, school_id,
-                     price_amount, paid_amount, is_paid, booking_category,
-                     lesson_state
-              from public.bookings
-              where slot_id = any($1::uuid[])
-                and status = 'confirmed'
+              select bookings.id, bookings.slot_id, bookings.student_label,
+                     bookings.student_access_id, bookings.school_id,
+                     bookings.price_amount, bookings.paid_amount,
+                     bookings.is_paid, bookings.booking_category,
+                     bookings.lesson_state, bookings.direct_instructor_income_amount,
+                     bookings.direct_instructor_income_recognized_at::text
+                       as direct_instructor_income_recognized_at,
+                     prepaid_usages.credit_id::text as prepaid_credit_id
+              from public.bookings bookings
+              left join public.student_prepaid_credit_usages prepaid_usages
+                on prepaid_usages.booking_id = bookings.id
+               and prepaid_usages.status = 'active'
+              where bookings.slot_id = any($1::uuid[])
+                and bookings.status = 'confirmed'
             `,
             [slotIds],
           )
@@ -1305,16 +1509,40 @@ export default async function DirectorReportsPage({
   const completedItems = reportItems.filter(
     (item) => item.lesson_state === "completed",
   );
-  const paidAmount = reportItems.reduce(
-    (sum, item) => sum + getPaidAmount(item),
+  const directIncomeItems = reportItems.filter(
+    (item) =>
+      hasDirectInstructorIncome(item) &&
+      Boolean(item.direct_instructor_income_recognized_at),
+  );
+  const directIncomeAmount = directIncomeItems.reduce(
+    (sum, item) => sum + (item.direct_instructor_income_amount ?? 0),
+    0,
+  );
+  const directStudentPaidAmount = reportItems.reduce(
+    (sum, item) =>
+      sum +
+      (hasDirectInstructorIncome(item)
+        ? getSchoolBookingPaidAmount(item)
+        : 0),
+    0,
+  );
+  const directStudentPriceAmount = reportItems.reduce(
+    (sum, item) =>
+      sum +
+      (hasDirectInstructorIncome(item) ? (item.price_amount ?? 0) : 0),
+    0,
+  );
+  const regularPaidAmount = reportItems.reduce(
+    (sum, item) => sum + getSchoolBookingPaidAmount(item),
     0,
   );
   const debtAmount = reportItems.reduce(
     (sum, item) => sum + getDebtAmount(item),
     0,
   );
-  const paidItemsCount = reportItems.filter((item) => getPaidAmount(item) > 0)
-    .length;
+  const paidItemsCount = reportItems.filter(
+    (item) => getSchoolBookingPaidAmount(item) > 0,
+  ).length;
   const debtItems = reportItems.filter((item) => getDebtAmount(item) > 0);
   const hours = completedItems.reduce(
     (sum, item) => sum + getDurationHours(item.slot),
@@ -1330,6 +1558,7 @@ export default async function DirectorReportsPage({
     payoutReturns,
     prepaidCreditReport,
     payoutStudentBalances,
+    studentPrepaymentCashGroups,
   ] =
     postgresBackend && payoutInstructorIds.length > 0
       ? await Promise.all([
@@ -1598,6 +1827,12 @@ export default async function DirectorReportsPage({
             `,
             [membership.organizationId, payoutInstructorIds],
           ),
+          getStudentPrepaymentCashGroups({
+            organizationId: membership.organizationId,
+            instructorIds: payoutInstructorIds,
+            from,
+            to,
+          }),
         ])
       : [
           { amount: 0, paid_amount: 0, remaining_amount: 0 },
@@ -1609,13 +1844,36 @@ export default async function DirectorReportsPage({
           [],
           [],
           [],
+          [],
         ];
+  const studentPrepaidAmount = studentPrepaymentCashGroups.reduce(
+    (sum, group) => sum + group.prepaid_amount,
+    0,
+  );
+  const studentRefundedAmount = studentPrepaymentCashGroups.reduce(
+    (sum, group) => sum + group.refunded_amount,
+    0,
+  );
+  const studentPrepaymentNetAmount = studentPrepaymentCashGroups.reduce(
+    (sum, group) => sum + group.net_amount,
+    0,
+  );
+  const studentPrepaymentCount = studentPrepaymentCashGroups.reduce(
+    (sum, group) => sum + group.credit_count,
+    0,
+  );
+  const paidAmount = regularPaidAmount + studentPrepaymentNetAmount;
   const totalStudentAmount = reportItems.reduce(
     (sum, item) => sum + (item.price_amount ?? 0),
     0,
   );
-  const marginAmount = paidAmount - payoutSummary.amount;
-  const potentialMarginAmount = totalStudentAmount - payoutSummary.amount;
+  const marginAmount =
+    paidAmount - directStudentPaidAmount - payoutSummary.amount;
+  const potentialMarginAmount =
+    Math.max(
+      totalStudentAmount - directStudentPriceAmount,
+      paidAmount - directStudentPaidAmount,
+    ) - payoutSummary.amount;
   const byInstructor = new Map<string, MoneyGroup>();
   const bySchool = new Map<string, MoneyGroup>();
   const byStudent = new Map<string, MoneyGroup>();
@@ -1642,6 +1900,31 @@ export default async function DirectorReportsPage({
       item,
     );
     addToGroup(byStudent, item.student_label, item.student_label, item);
+  }
+
+  for (const cashGroup of studentPrepaymentCashGroups) {
+    const instructor = instructorsById.get(cashGroup.instructor_id);
+    const school = schoolsById.get(cashGroup.school_id);
+
+    addPrepaymentCashToGroup(
+      byInstructor,
+      cashGroup.instructor_id,
+      instructor?.public_name ?? instructor?.name ?? "Инструктор",
+      cashGroup,
+    );
+    addPrepaymentCashToGroup(
+      bySchool,
+      cashGroup.school_id,
+      school?.name ?? "Без источника",
+      cashGroup,
+      school?.color,
+    );
+    addPrepaymentCashToGroup(
+      byBookingCategory,
+      "without-category",
+      "Предоплаты учеников",
+      cashGroup,
+    );
   }
 
   attachPayoutsToGroups(byInstructor, payoutByInstructor);
@@ -1803,7 +2086,7 @@ export default async function DirectorReportsPage({
           <SummaryCard
             label="Получено от учеников"
             value={formatMoney(paidAmount)}
-            hint={`${paidItemsCount} записей с оплатой`}
+            hint={`${paidItemsCount} обычных оплат · ${studentPrepaymentCount} предоплат на ${formatMoney(studentPrepaidAmount)} · возвраты ${formatMoney(studentRefundedAmount)}`}
             tone="emerald"
           />
           <SummaryCard
@@ -1830,15 +2113,21 @@ export default async function DirectorReportsPage({
             tone="amber"
           />
           <SummaryCard
+            label="Частный доп. заработок"
+            value={formatMoney(directIncomeAmount)}
+            hint={`${directIncomeItems.length} занятий · школа не выдаёт эти деньги`}
+            tone="emerald"
+          />
+          <SummaryCard
             label="Маржа"
             value={formatMoney(marginAmount)}
-            hint="Получено от учеников минус начислено инструкторам"
+            hint="Обычные оплаты и предоплаты минус возвраты и начисления инструкторам"
             tone={marginAmount < 0 ? "amber" : "default"}
           />
           <SummaryCard
             label="Потенциальная маржа"
             value={formatMoney(potentialMarginAmount)}
-            hint="Стоимость занятий минус начислено инструкторам"
+            hint="Не меньше фактически полученной школой суммы минус начисления"
           />
         </section>
 
@@ -1846,7 +2135,8 @@ export default async function DirectorReportsPage({
           <CardContent className="p-4 text-sm leading-6 text-blue-950">
             Начислено — сумма по ставкам инструкторов за выбранный период.
             Выдано — выплаты, которыми закрыли эти начисления. К выдаче —
-            остаток, который ещё нужно отдать.
+            остаток, который ещё нужно отдать. Частный доп. заработок считается
+            отдельно, не требует выдачи руководителем и не входит в маржу школы.
           </CardContent>
         </Card>
 
@@ -1858,6 +2148,8 @@ export default async function DirectorReportsPage({
           selectedInstructorId={selectedInstructorId}
           status={params.payout}
         />
+
+        <PrivateExtraIncomeReport items={directIncomeItems} />
 
         <PayoutPaymentHistory
           items={payoutPayments}

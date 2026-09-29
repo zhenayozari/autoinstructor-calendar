@@ -41,6 +41,7 @@ import {
   STUDENT_SECRET_MIN_LENGTH,
 } from "@/lib/student-secret-policy";
 import type {
+  BookingCategory,
   Instructor,
   LessonType,
   School,
@@ -880,13 +881,19 @@ function EditStudentLessonPackageForm({
   const [selectedSchoolId, setSelectedSchoolId] = useState(
     packageItem.school_id ?? "",
   );
+  const [selectedBookingCategory, setSelectedBookingCategory] = useState(
+    packageItem.booking_category,
+  );
   const selectedSchool = editableSchools.find(
     (school) => school.id === selectedSchoolId,
   );
   const canEditCustomPrice =
-    canManageStudentPrices || isPrivateStudentsSchool(selectedSchool);
+    canManageStudentPrices ||
+    (isPrivateStudentsSchool(selectedSchool) &&
+      selectedBookingCategory === "extra");
   const canEditPaymentRule =
-    canEditCustomPrice && isPrivateStudentsSchool(selectedSchool);
+    isPrivateStudentsSchool(selectedSchool) &&
+    (canManageStudentPrices || selectedBookingCategory === "extra");
 
   return (
     <details className="rounded-xl border bg-zinc-50">
@@ -933,7 +940,10 @@ function EditStudentLessonPackageForm({
               id={`edit-package-category-${packageItem.id}`}
               name="booking_category"
               className={selectClassName}
-              defaultValue={packageItem.booking_category}
+              value={selectedBookingCategory}
+              onChange={(event) =>
+                setSelectedBookingCategory(event.target.value as BookingCategory)
+              }
             >
               {bookingCategoryOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -1086,13 +1096,18 @@ function AddStudentLessonPackageForm({
   const activeSchools = getActiveSchools(schools);
   const defaultSchoolId = activeSchools[0]?.id ?? "";
   const [selectedSchoolId, setSelectedSchoolId] = useState(defaultSchoolId);
+  const [selectedBookingCategory, setSelectedBookingCategory] =
+    useState<BookingCategory>("extra");
   const selectedSchool = activeSchools.find(
     (school) => school.id === selectedSchoolId,
   );
   const canEditCustomPrice =
-    canManageStudentPrices || isPrivateStudentsSchool(selectedSchool);
+    canManageStudentPrices ||
+    (isPrivateStudentsSchool(selectedSchool) &&
+      selectedBookingCategory === "extra");
   const canEditPaymentRule =
-    canEditCustomPrice && isPrivateStudentsSchool(selectedSchool);
+    isPrivateStudentsSchool(selectedSchool) &&
+    (canManageStudentPrices || selectedBookingCategory === "extra");
 
   return (
     <details className="rounded-xl border bg-white">
@@ -1134,7 +1149,10 @@ function AddStudentLessonPackageForm({
               id={`package-category-${access.id}`}
               name="booking_category"
               className={selectClassName}
-              defaultValue="extra"
+              value={selectedBookingCategory}
+              onChange={(event) =>
+                setSelectedBookingCategory(event.target.value as BookingCategory)
+              }
             >
               {bookingCategoryOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -1837,16 +1855,18 @@ function StudentAccessCard({
           )}
         </section>
 
-        <StudentPrepaidCreditsPanel
-          accessId={access.id}
-          accessSchoolId={access.school_id}
-          accessLessonTypeIds={access.lesson_type_ids}
-          credits={access.prepaidCredits ?? []}
-          schools={access.school_id ? schools.filter((school) => school.id === access.school_id) : schools}
-          lessonTypes={lessonTypes}
-          prices={schoolLessonTypePrices}
-          canManage={canManageStudentLessonPackages}
-        />
+        {canManageStudentPrices && (
+          <StudentPrepaidCreditsPanel
+            accessId={access.id}
+            accessSchoolId={access.school_id}
+            accessLessonTypeIds={access.lesson_type_ids}
+            credits={access.prepaidCredits ?? []}
+            schools={access.school_id ? schools.filter((school) => school.id === access.school_id) : schools}
+            lessonTypes={lessonTypes}
+            prices={schoolLessonTypePrices}
+            canManage
+          />
+        )}
 
         <section className="space-y-3 rounded-2xl border border-emerald-100 bg-emerald-50/50 px-3 py-4">
           <div>

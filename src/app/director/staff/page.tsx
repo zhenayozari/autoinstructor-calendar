@@ -410,6 +410,26 @@ function StaffPayoutPanel({
               />
               Может добавлять и менять доп. доступы учеников
             </label>
+
+            <label className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/50 px-3 py-2 text-sm font-medium sm:col-span-2">
+              <input
+                type="checkbox"
+                name="private_extra_full_payout_enabled"
+                value="true"
+                defaultChecked={
+                  payoutSetup.settings.private_extra_full_payout_enabled
+                }
+                className="mt-0.5 size-4"
+              />
+              <span>
+                Начислять инструктору 100% индивидуальной цены частного
+                дополнительного занятия
+                <span className="mt-1 block text-xs font-normal leading-5 text-zinc-600">
+                  Действует только для источника «Частные ученики» и категории
+                  «Дополнительное». Маржа школы по такому занятию будет равна нулю.
+                </span>
+              </span>
+            </label>
           </div>
 
           {activeSchools.length > 0 && (

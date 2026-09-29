@@ -8,6 +8,7 @@ import { logAuditEvent } from "@/lib/audit-log";
 import { revokeAllAppUserSessions } from "@/lib/app-users/session";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne, withTransaction } from "@/lib/db/postgres";
+import { purgeInstructorFinancialData } from "@/lib/destructive-data-cleanup";
 import {
   backfillInstructorPayoutEntries,
   createInstructorPayoutPayment,
@@ -809,6 +810,11 @@ export async function deleteStaffInstructorAction(formData: FormData) {
       }
 
       await withTransaction(async (client) => {
+        await purgeInstructorFinancialData({
+          client,
+          organizationId: membership.organizationId,
+          instructorId,
+        });
         await client.query(
           `
             delete from public.staff_invitations
@@ -1040,6 +1046,8 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
     const showClientPrices = formData.get("show_client_prices") === "true";
     const canManageStudentPackages =
       formData.get("can_manage_student_packages") === "true";
+    const privateExtraFullPayoutEnabled =
+      formData.get("private_extra_full_payout_enabled") === "true";
     const visibleSchoolIds = readStringList(formData, "visible_school_id");
 
     await updateInstructorPayoutSettings({
@@ -1050,6 +1058,7 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
       sourceVisibilityMode,
       showClientPrices,
       canManageStudentPackages,
+      privateExtraFullPayoutEnabled,
     });
 
     await replaceInstructorSourceVisibility({
@@ -1069,6 +1078,7 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
         source_visibility_mode: sourceVisibilityMode,
         show_client_prices: showClientPrices,
         can_manage_student_packages: canManageStudentPackages,
+        private_extra_full_payout_enabled: privateExtraFullPayoutEnabled,
         visible_school_count: visibleSchoolIds.length,
       },
     });

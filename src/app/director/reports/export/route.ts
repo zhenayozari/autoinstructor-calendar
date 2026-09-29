@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import { requireDirectorAccess } from "@/lib/director-auth";
+import { getStudentPrepaymentCashGroups } from "@/lib/student-prepayment-report";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,9 @@ type LessonRow = {
   lesson_state: string;
   price_amount: number | null;
   paid_amount: number | null;
+  direct_instructor_income_amount: number | null;
+  direct_instructor_income_recognized_at: string | null;
+  prepaid_credit_id: string | null;
 };
 
 type PayoutRow = {
@@ -174,7 +178,7 @@ export async function GET(request: Request) {
   }
 
   const instructorIds = instructors.map((instructor) => instructor.id);
-  const [lessons, payouts, operations] = await Promise.all([
+  const [lessons, payouts, operations, studentPrepaymentCashGroups] = await Promise.all([
     queryRows<LessonRow>(
       `
         select slots.instructor_id::text,
@@ -186,13 +190,19 @@ export async function GET(request: Request) {
                coalesce(lesson_types.name, 'Тип не указан') as lesson_type_name,
                bookings.lesson_state,
                bookings.price_amount,
-               bookings.paid_amount
+               bookings.paid_amount,
+               bookings.direct_instructor_income_amount,
+               bookings.direct_instructor_income_recognized_at::text,
+               prepaid_usages.credit_id::text as prepaid_credit_id
         from public.schedule_days days
         join public.slots slots on slots.schedule_day_id = days.id
         join public.bookings bookings on bookings.slot_id = slots.id
         left join public.student_accesses accesses on accesses.id = bookings.student_access_id
         left join public.schools schools on schools.id = coalesce(bookings.school_id, accesses.school_id)
         left join public.lesson_types lesson_types on lesson_types.id = slots.lesson_type_id
+        left join public.student_prepaid_credit_usages prepaid_usages
+          on prepaid_usages.booking_id = bookings.id
+         and prepaid_usages.status = 'active'
         where slots.instructor_id = any($1::uuid[])
           and days.date between $2::date and $3::date
           and slots.status <> 'cancelled'
@@ -252,6 +262,12 @@ export async function GET(request: Request) {
       `,
       [membership.organizationId, instructorIds, from, to],
     ),
+    getStudentPrepaymentCashGroups({
+      organizationId: membership.organizationId,
+      instructorIds,
+      from,
+      to,
+    }),
   ]);
 
   const workbook = new ExcelJS.Workbook();
@@ -293,7 +309,59 @@ export async function GET(request: Request) {
     worksheet.addRow([]);
 
     const totalLessonPrice = instructorLessons.reduce((sum, row) => sum + (row.price_amount ?? 0), 0);
-    const totalLessonPaid = instructorLessons.reduce((sum, row) => sum + (row.paid_amount ?? 0), 0);
+    const totalLessonPaid = instructorLessons.reduce(
+      (sum, row) =>
+        sum + (row.prepaid_credit_id ? 0 : (row.paid_amount ?? 0)),
+      0,
+    );
+    const totalLessonDebt = instructorLessons.reduce(
+      (sum, row) =>
+        sum + Math.max((row.price_amount ?? 0) - (row.paid_amount ?? 0), 0),
+      0,
+    );
+    const instructorPrepaymentCash = studentPrepaymentCashGroups.filter(
+      (row) => row.instructor_id === instructor.id,
+    );
+    const studentPrepaidAmount = instructorPrepaymentCash.reduce(
+      (sum, row) => sum + row.prepaid_amount,
+      0,
+    );
+    const studentRefundedAmount = instructorPrepaymentCash.reduce(
+      (sum, row) => sum + row.refunded_amount,
+      0,
+    );
+    const studentPrepaymentNetAmount = instructorPrepaymentCash.reduce(
+      (sum, row) => sum + row.net_amount,
+      0,
+    );
+    const totalStudentReceived = totalLessonPaid + studentPrepaymentNetAmount;
+    const directIncomeLessons = instructorLessons.filter(
+      (row) =>
+        row.direct_instructor_income_amount !== null &&
+        Boolean(row.direct_instructor_income_recognized_at),
+    );
+    const directIncomeAmount = directIncomeLessons.reduce(
+      (sum, row) => sum + (row.direct_instructor_income_amount ?? 0),
+      0,
+    );
+    const directLessonPrice = instructorLessons.reduce(
+      (sum, row) =>
+        sum +
+        (row.direct_instructor_income_amount !== null
+          ? (row.price_amount ?? 0)
+          : 0),
+      0,
+    );
+    const directLessonPaid = instructorLessons.reduce(
+      (sum, row) =>
+        sum +
+        (row.direct_instructor_income_amount !== null
+          ? row.prepaid_credit_id
+            ? 0
+            : (row.paid_amount ?? 0)
+          : 0),
+      0,
+    );
     const totalAccrued = instructorPayouts.reduce((sum, row) => sum + row.amount, 0);
     const totalIssued = instructorPayouts.reduce((sum, row) => sum + row.paid_amount, 0);
     const totalReturned = instructorPayouts.reduce((sum, row) => sum + row.returned_amount, 0);
@@ -305,12 +373,25 @@ export async function GET(request: Request) {
       ["Все занятия", instructorLessons.length],
       ["Проведено", instructorLessons.filter((row) => row.lesson_state === "completed").length],
       ["Стоимость занятий для учеников", totalLessonPrice, true],
-      ["Получено от учеников", totalLessonPaid, true],
-      ["Долг учеников", Math.max(totalLessonPrice - totalLessonPaid, 0), true],
+      ["Получено за обычные занятия", totalLessonPaid, true],
+      ["Получено предоплатами", studentPrepaidAmount, true],
+      ["Возвращено ученикам", studentRefundedAmount, true],
+      ["Получено от учеников всего", totalStudentReceived, true],
+      ["Долг учеников", totalLessonDebt, true],
       ["Начислено инструктору", totalAccrued, true],
       ["Выдано инструктору по этим начислениям", totalIssued, true],
       ["Возвращено инструктором по этим начислениям", totalReturned, true],
       [totalRemaining >= 0 ? "Осталось выдать инструктору" : "Инструктор должен школе", Math.abs(totalRemaining), true],
+      ["Частный доп. заработок сотрудника", directIncomeAmount, true],
+      ["Маржа школы", totalStudentReceived - directLessonPaid - totalAccrued, true],
+      [
+        "Потенциальная маржа школы",
+        Math.max(
+          totalLessonPrice - directLessonPrice,
+          totalStudentReceived - directLessonPaid,
+        ) - totalAccrued,
+        true,
+      ],
     ];
     for (const [label, value, isMoney] of summaryRows) {
       const row = worksheet.addRow([label, value]);
@@ -353,6 +434,32 @@ export async function GET(request: Request) {
         from: { row: worksheet.rowCount - instructorLessons.length, column: 1 },
         to: { row: worksheet.rowCount, column: 9 },
       };
+    }
+    worksheet.addRow([]);
+
+    addSectionTitle(worksheet, "Частный дополнительный заработок сотрудника");
+    addTableHeader(worksheet, [
+      "Дата",
+      "Время",
+      "Ученик",
+      "Источник",
+      "Тип занятия",
+      "Доход сотрудника",
+    ]);
+    if (directIncomeLessons.length === 0) {
+      worksheet.addRow(["Нет частных дополнительных занятий за выбранный период"]);
+    } else {
+      for (const lesson of directIncomeLessons) {
+        const row = worksheet.addRow([
+          formatDate(lesson.date),
+          `${formatTime(lesson.start_time)} — ${formatTime(lesson.end_time)}`,
+          lesson.student_label,
+          lesson.school_name,
+          lesson.lesson_type_name,
+          lesson.direct_instructor_income_amount ?? 0,
+        ]);
+        styleMoneyCells(row, [6]);
+      }
     }
     worksheet.addRow([]);
 

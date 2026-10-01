@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { isPostgresBackend } from "@/lib/backend-mode";
-import { executeQuery, queryOne } from "@/lib/db/postgres";
+import { executeQuery, queryOne, withTransaction } from "@/lib/db/postgres";
 import { getPublishedLegalDocumentsForAudience } from "@/lib/legal-documents";
 import { getLegalDocumentDefinition } from "@/lib/legal-document-definitions";
 import {
@@ -511,27 +511,29 @@ export async function studentBookSlotAction(
         }));
 
       try {
-        const createdBookingId = await insertStudentBookingPostgres({
-          slotId: slot.id,
-          accessId: access.id,
-          studentLabel: access.displayLabel,
-          packageId: selectedPackage.id,
-          schoolId: selectedPackage.schoolId,
-          bookingCategory: selectedPackage.bookingCategory,
-          priceAmount,
-          paymentRule,
-        });
+        await withTransaction(async () => {
+          const createdBookingId = await insertStudentBookingPostgres({
+            slotId: slot.id,
+            accessId: access.id,
+            studentLabel: access.displayLabel,
+            packageId: selectedPackage.id,
+            schoolId: selectedPackage.schoolId,
+            bookingCategory: selectedPackage.bookingCategory,
+            priceAmount,
+            paymentRule,
+          });
 
-        await applyPrepaidCreditToBooking({
-          bookingId: createdBookingId,
-          studentAccessId: access.id,
-          schoolId: selectedPackage.schoolId,
-          lessonTypeId: slot.lesson_type_id,
-          amount: priceAmount ?? 0,
-        });
+          await applyPrepaidCreditToBooking({
+            bookingId: createdBookingId,
+            studentAccessId: access.id,
+            schoolId: selectedPackage.schoolId,
+            lessonTypeId: slot.lesson_type_id,
+            amount: priceAmount ?? 0,
+          });
 
-        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
-          bookingId: createdBookingId,
+          await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+            bookingId: createdBookingId,
+          });
         });
       } catch (error) {
         if (isPostgresUniqueViolation(error)) {

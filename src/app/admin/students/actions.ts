@@ -3330,53 +3330,57 @@ export async function createStudentPrepaidCreditAction(
       throw new Error("Комментарий не должен быть длиннее 1000 символов");
     }
 
-    const credit = await queryOne<{ id: string }>(
-      `
-        insert into public.student_prepaid_credits (
-          organization_id,
-          student_access_id,
-          instructor_id,
-          school_id,
-          lesson_type_id,
+    const credit = await withTransaction(async () => {
+      const createdCredit = await queryOne<{ id: string }>(
+        `
+          insert into public.student_prepaid_credits (
+            organization_id,
+            student_access_id,
+            instructor_id,
+            school_id,
+            lesson_type_id,
+            quantity,
+            calculated_unit_price,
+            calculated_total_amount,
+            final_unit_price,
+            final_total_amount,
+            paid_at,
+            payment_note,
+            created_by_member_id
+          )
+          values (
+            $1, $2, $3, $4, $5, $6::integer, $7::integer,
+            $7::bigint * $6::integer,
+            $8::bigint / $6::integer, $8::bigint,
+            coalesce($9::date, current_date), $10, $11
+          )
+          returning id
+        `,
+        [
+          membership.organizationId,
+          access.id,
+          access.instructor_id,
+          schoolId,
+          lessonTypeId,
           quantity,
-          calculated_unit_price,
-          calculated_total_amount,
-          final_unit_price,
-          final_total_amount,
-          paid_at,
-          payment_note,
-          created_by_member_id
-        )
-        values (
-          $1, $2, $3, $4, $5, $6::integer, $7::integer,
-          $7::bigint * $6::integer,
-          $8::bigint / $6::integer, $8::bigint,
-          coalesce($9::date, current_date), $10, $11
-        )
-        returning id
-      `,
-      [
-        membership.organizationId,
-        access.id,
-        access.instructor_id,
-        schoolId,
-        lessonTypeId,
-        quantity,
-        calculatedUnitPrice,
-        finalTotalAmount,
-        paidAt,
-        paymentNote,
-        membership.id,
-      ],
-    );
+          calculatedUnitPrice,
+          finalTotalAmount,
+          paidAt,
+          paymentNote,
+          membership.id,
+        ],
+      );
 
-    if (!credit) {
-      throw new Error("Не удалось сохранить предоплату");
-    }
+      if (!createdCredit) {
+        throw new Error("Не удалось сохранить предоплату");
+      }
 
-    await createInstructorPayoutEntryForPrepaidCredit({
-      creditId: credit.id,
-      createdByMemberId: membership.id,
+      await createInstructorPayoutEntryForPrepaidCredit({
+        creditId: createdCredit.id,
+        createdByMemberId: membership.id,
+      });
+
+      return createdCredit;
     });
 
     await logAuditEvent({
@@ -3519,34 +3523,38 @@ export async function updateStudentPrepaidCreditAction(
       throw new Error("Комментарий не должен быть длиннее 1000 символов");
     }
 
-    await executeQuery(
-      `
-        update public.student_prepaid_credits
-        set school_id = $1::uuid,
-            lesson_type_id = $2::uuid,
-            quantity = $3::integer,
-            calculated_unit_price = $4::integer,
-            calculated_total_amount = $4::bigint * $3::integer,
-            final_unit_price = $5::bigint / $3::integer,
-            final_total_amount = $5::bigint,
-            paid_at = coalesce($6::date, paid_at),
-            payment_note = $7,
-            updated_at = now()
-        where id = $8
-          and organization_id = $9
-      `,
-      [
-        schoolId,
-        lessonTypeId,
-        quantity,
-        calculatedUnitPrice,
-        finalTotalAmount,
-        paidAt,
-        paymentNote,
-        credit.id,
-        membership.organizationId,
-      ],
-    );
+    await withTransaction(async () => {
+      await executeQuery(
+        `
+          update public.student_prepaid_credits
+          set school_id = $1::uuid,
+              lesson_type_id = $2::uuid,
+              quantity = $3::integer,
+              calculated_unit_price = $4::integer,
+              calculated_total_amount = $4::bigint * $3::integer,
+              final_unit_price = $5::bigint / $3::integer,
+              final_total_amount = $5::bigint,
+              paid_at = coalesce($6::date, paid_at),
+              payment_note = $7,
+              updated_at = now()
+          where id = $8
+            and organization_id = $9
+        `,
+        [
+          schoolId,
+          lessonTypeId,
+          quantity,
+          calculatedUnitPrice,
+          finalTotalAmount,
+          paidAt,
+          paymentNote,
+          credit.id,
+          membership.organizationId,
+        ],
+      );
+
+      await syncInstructorPayoutEntryForPrepaidCredit(credit.id);
+    });
 
     await logAuditEvent({
       membership,
@@ -3562,12 +3570,149 @@ export async function updateStudentPrepaidCreditAction(
       },
     });
 
-    await syncInstructorPayoutEntryForPrepaidCredit(credit.id);
-
     revalidateStudentAccessPaths();
     return { status: "success", message: "Предоплата обновлена" };
   } catch (error) {
     console.error("updateStudentPrepaidCreditAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
+  }
+}
+
+export async function createStudentPrepaidCreditAdjustmentAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Корректировки доступны только в PostgreSQL-режиме");
+    }
+
+    const creditId = readRequiredString(formData, "student_prepaid_credit_id");
+    const quantity = readOptionalLimit(formData, "quantity", 5000);
+    const finalTotalAmount = readOptionalMoneyAmount(formData, "final_total_amount");
+    const reason = readRequiredString(formData, "adjustment_reason");
+    if (quantity === null || finalTotalAmount === null) {
+      throw new Error("Укажите количество занятий и итоговую сумму");
+    }
+    if (reason.length > 1000) {
+      throw new Error("Причина корректировки не должна быть длиннее 1000 символов");
+    }
+
+    const membership = await requireActiveOrganizationMember();
+    assertCanManageStudentPrepaidCredits(membership);
+
+    const result = await withTransaction(async (client) => {
+      const creditResult = await client.query<{
+        id: string;
+        organization_id: string;
+        quantity: number;
+        final_total_amount: number;
+        final_unit_price: number;
+        calculated_unit_price: number;
+        school_id: string;
+        lesson_type_id: string;
+        status: "active" | "cancelled";
+        used_quantity: number;
+        payout_paid_amount: number;
+      }>(
+        `
+          select credits.id,
+                 credits.organization_id,
+                 credits.quantity,
+                 credits.final_total_amount,
+                 credits.final_unit_price,
+                 credits.calculated_unit_price,
+                 credits.school_id,
+                 credits.lesson_type_id,
+                 credits.status,
+                 (
+                   select count(*)::integer
+                   from public.student_prepaid_credit_usages usages
+                   where usages.credit_id = credits.id
+                     and usages.status = 'active'
+                 ) as used_quantity,
+                 (
+                   select coalesce(sum(allocations.amount), 0)::integer
+                   from public.instructor_payout_entries entries
+                   join public.instructor_payout_payment_allocations allocations
+                     on allocations.payout_entry_id = entries.id
+                   where entries.student_prepaid_credit_id = credits.id
+                     and entries.entry_type = 'prepaid_credit_accrual'
+                 ) as payout_paid_amount
+          from public.student_prepaid_credits credits
+          where credits.id = $1
+            and credits.organization_id = $2
+          for update
+        `,
+        [creditId, membership.organizationId],
+      );
+      const credit = creditResult.rows[0];
+      if (!credit) throw new Error("Предоплата не найдена");
+      if (credit.status !== "active") throw new Error("Отменённую предоплату нельзя корректировать");
+      if (credit.used_quantity < 1) throw new Error("Корректировка нужна только после первого списания занятия");
+      if (quantity < credit.used_quantity) {
+        throw new Error("Количество не может быть меньше уже использованных занятий");
+      }
+      if (credit.payout_paid_amount > 0 && quantity !== credit.quantity) {
+        throw new Error("После выплаты инструктору количество занятий менять нельзя");
+      }
+      if (finalTotalAmount % quantity !== 0) {
+        throw new Error("Итоговая сумма должна делиться на количество занятий без остатка");
+      }
+
+      const adjustment = await client.query<{ id: string }>(
+        `
+          insert into public.student_prepaid_credit_adjustments (
+            organization_id, credit_id, previous_quantity,
+            previous_final_total_amount, new_quantity,
+            new_final_total_amount, reason, created_by_member_id
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8)
+          returning id
+        `,
+        [
+          credit.organization_id,
+          credit.id,
+          credit.quantity,
+          credit.final_total_amount,
+          quantity,
+          finalTotalAmount,
+          reason,
+          membership.id,
+        ],
+      );
+
+      await client.query(
+        `
+          update public.student_prepaid_credits
+          set quantity = $1::integer,
+              calculated_total_amount = calculated_unit_price::bigint * $1::integer,
+              final_unit_price = $2::bigint / $1::integer,
+              final_total_amount = $2::bigint,
+              updated_at = now()
+          where id = $3::uuid
+        `,
+        [quantity, finalTotalAmount, credit.id],
+      );
+
+      await syncInstructorPayoutEntryForPrepaidCredit(credit.id);
+      return { id: adjustment.rows[0]?.id, usedQuantity: credit.used_quantity };
+    });
+
+    if (!result.id) throw new Error("Не удалось сохранить корректировку");
+    await logAuditEvent({
+      membership,
+      action: "student_prepaid_credit.adjusted",
+      entityType: "student_prepaid_credit",
+      entityId: creditId,
+      metadata: { adjustment_id: result.id, reason },
+    });
+    revalidateStudentAccessPaths();
+    return { status: "success", message: "Корректировка предоплаты сохранена" };
+  } catch (error) {
+    console.error("createStudentPrepaidCreditAdjustmentAction:", error);
     return { status: "error", message: getErrorMessage(error) };
   }
 }

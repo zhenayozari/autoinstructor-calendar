@@ -179,9 +179,20 @@ export type StudentPrepaidCredit = {
   cancellation_note: string | null;
   refunded_amount: number;
   refunds: StudentPrepaidRefund[];
+  adjustments: StudentPrepaidCreditAdjustment[];
   created_at: string;
   updated_at: string;
   used_quantity: number;
+};
+
+export type StudentPrepaidCreditAdjustment = {
+  id: string;
+  previous_quantity: number;
+  previous_final_total_amount: number;
+  new_quantity: number;
+  new_final_total_amount: number;
+  reason: string;
+  created_at: string;
 };
 
 export type StudentPrepaidRefund = {

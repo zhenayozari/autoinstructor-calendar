@@ -6,6 +6,7 @@ import {
   cancelStudentPrepaidRefundAction,
   createStudentPrepaidRefundAction,
   createStudentPrepaidCreditAction,
+  createStudentPrepaidCreditAdjustmentAction,
   updateStudentPrepaidCreditAction,
   type StudentAccessActionState,
 } from "@/app/admin/students/actions";
@@ -523,6 +524,52 @@ function PrepaidCreditForm({
   );
 }
 
+function PrepaidCreditAdjustmentForm({
+  credit,
+  schools,
+  lessonTypes,
+}: {
+  credit: StudentPrepaidCredit;
+  schools: School[];
+  lessonTypes: LessonType[];
+}) {
+  const [state, formAction, isPending] = useActionState(
+    createStudentPrepaidCreditAdjustmentAction,
+    INITIAL_STATE,
+  );
+  const school = schools.find((item) => item.id === credit.school_id);
+  const lessonType = lessonTypes.find((item) => item.id === credit.lesson_type_id);
+  const [quantity, setQuantity] = useState(String(credit.quantity));
+  const [total, setTotal] = useState(String(credit.final_total_amount));
+  return (
+    <form action={formAction} className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+      <input type="hidden" name="student_prepaid_credit_id" value={credit.id} />
+      <p className="text-xs text-amber-900">
+        Источник и тип зафиксированы: {school?.name ?? "Источник"} · {lessonType?.name ?? "Тип занятия"}.
+        Изменение сохранится отдельной записью в истории.
+      </p>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-1">
+          <Label>Количество оплачиваемых занятий</Label>
+          <Input name="quantity" type="number" min={credit.used_quantity} max={5000} value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={isPending} required />
+        </div>
+        <div className="space-y-1">
+          <Label>Новая итоговая сумма</Label>
+          <Input name="final_total_amount" type="number" min={0} max={10000000} step={1} value={total} onChange={(event) => setTotal(event.target.value)} disabled={isPending} required />
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label>Причина корректировки</Label>
+        <Input name="adjustment_reason" maxLength={1000} placeholder="Например: скидка за полную оплату" disabled={isPending} required />
+      </div>
+      <StateMessage state={state} />
+      <Button type="submit" variant="outline" disabled={isPending}>
+        {isPending ? "Сохраняем…" : "Сохранить корректировку"}
+      </Button>
+    </form>
+  );
+}
+
 export function StudentPrepaidCreditsPanel({
   accessId,
   accessSchoolId,
@@ -592,6 +639,16 @@ export function StudentPrepaidCreditsPanel({
               </div>
               {canManage && credit.status === "active" && (
                 <>
+                  {credit.used_quantity > 0 ? (
+                    <details className="mt-3 border-t pt-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-amber-800">
+                        Внести корректировку
+                      </summary>
+                      <div className="mt-3">
+                        <PrepaidCreditAdjustmentForm credit={credit} schools={schools} lessonTypes={allowedLessonTypes} />
+                      </div>
+                    </details>
+                  ) : (
                   <details className="mt-3 border-t pt-3">
                   <summary className="cursor-pointer text-xs font-semibold text-zinc-700">
                     Редактировать оплату
@@ -612,6 +669,30 @@ export function StudentPrepaidCreditsPanel({
                     />
                   </div>
                   </details>
+                  )}
+                  {credit.adjustments.length > 0 && (
+                    <details className="mt-3 border-t pt-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-zinc-700">
+                        История корректировок: {credit.adjustments.length}
+                      </summary>
+                      <div className="mt-2 space-y-2 text-xs text-zinc-600">
+                        {credit.adjustments.map((adjustment) => (
+                          <div key={adjustment.id} className="rounded-lg border bg-zinc-50 p-2">
+                            <p className="font-semibold text-zinc-800">
+                              {new Intl.DateTimeFormat("ru-RU").format(new Date(adjustment.created_at))}
+                            </p>
+                            <p>
+                              Было: {adjustment.previous_quantity} занятий · {formatMoney(adjustment.previous_final_total_amount)}
+                            </p>
+                            <p>
+                              Стало: {adjustment.new_quantity} занятий · {formatMoney(adjustment.new_final_total_amount)}
+                            </p>
+                            <p className="mt-1">Причина: {adjustment.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                   <CancelPrepaidCreditForm credit={credit} />
                 </>
               )}

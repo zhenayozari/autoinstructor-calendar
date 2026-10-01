@@ -696,6 +696,22 @@ export default async function DirectorStudentsPage({
                          from public.student_prepaid_refunds refunds
                          where refunds.credit_id = credits.id
                        ), '[]'::jsonb) as refunds,
+                       coalesce((
+                         select jsonb_agg(
+                           jsonb_build_object(
+                             'id', adjustments.id,
+                             'previous_quantity', adjustments.previous_quantity,
+                             'previous_final_total_amount', adjustments.previous_final_total_amount,
+                             'new_quantity', adjustments.new_quantity,
+                             'new_final_total_amount', adjustments.new_final_total_amount,
+                             'reason', adjustments.reason,
+                             'created_at', adjustments.created_at
+                           )
+                           order by adjustments.created_at desc
+                         )
+                         from public.student_prepaid_credit_adjustments adjustments
+                         where adjustments.credit_id = credits.id
+                       ), '[]'::jsonb) as adjustments,
                        credits.created_at::text as created_at,
                        credits.updated_at::text as updated_at,
                        count(usages.id) filter (where usages.status = 'active')::integer

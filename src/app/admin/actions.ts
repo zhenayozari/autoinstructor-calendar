@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isPostgresBackend } from "@/lib/backend-mode";
-import { executeQuery, queryOne, queryRows } from "@/lib/db/postgres";
+import {
+  executeQuery,
+  queryOne,
+  queryRows,
+  withTransaction,
+} from "@/lib/db/postgres";
 import { hashBookingAccessCode } from "@/lib/booking-access-code";
 import {
   requireActiveOrganizationMember,
@@ -2573,48 +2578,49 @@ export async function deleteSlotAction(formData: FormData) {
       const confirmedBookings = bookings.filter(
         (booking) => booking.status === "confirmed",
       );
+      await withTransaction(async () => {
+        for (const booking of confirmedBookings) {
+          await executeQuery(
+            `
+              update public.bookings
+              set status = 'cancelled',
+                  cancelled_at = now()
+              where id = $1
+                and status = 'confirmed'
+            `,
+            [booking.id],
+          );
 
-      for (const booking of confirmedBookings) {
-        await executeQuery(
-          `
-            update public.bookings
-            set status = 'cancelled',
-                cancelled_at = now()
-            where id = $1
-              and status = 'confirmed'
-          `,
-          [booking.id],
-        );
+          await releasePrepaidCreditForBooking(booking.id);
+          await correctInstructorPayoutForBooking({
+            bookingId: booking.id,
+            correctionType: "cancellation_adjustment",
+            createdByMemberId: membership.id,
+            note: "Запись отменена при удалении слота",
+          });
+        }
 
-        await releasePrepaidCreditForBooking(booking.id);
-        await correctInstructorPayoutForBooking({
-          bookingId: booking.id,
-          correctionType: "cancellation_adjustment",
-          createdByMemberId: membership.id,
-          note: "Запись отменена при удалении слота",
-        });
-      }
-
-      if (bookings.length > 0) {
-        await executeQuery(
-          `
-            update public.slots
-            set status = 'cancelled'
-            where id = $1
-              and instructor_id = $2
-          `,
-          [slotId, slot.instructor_id],
-        );
-      } else {
-        await executeQuery(
-          `
-            delete from public.slots
-            where id = $1
-              and instructor_id = $2
-          `,
-          [slotId, slot.instructor_id],
-        );
-      }
+        if (bookings.length > 0) {
+          await executeQuery(
+            `
+              update public.slots
+              set status = 'cancelled'
+              where id = $1
+                and instructor_id = $2
+            `,
+            [slotId, slot.instructor_id],
+          );
+        } else {
+          await executeQuery(
+            `
+              delete from public.slots
+              where id = $1
+                and instructor_id = $2
+            `,
+            [slotId, slot.instructor_id],
+          );
+        }
+      });
 
       await logAuditEvent({
         membership,
@@ -2751,28 +2757,6 @@ export async function deleteSelectedSlotsAction(
       const confirmedBookings = bookings.filter(
         (booking) => booking.status === "confirmed",
       );
-
-      for (const booking of confirmedBookings) {
-        await executeQuery(
-          `
-            update public.bookings
-            set status = 'cancelled',
-                cancelled_at = now()
-            where id = $1
-              and status = 'confirmed'
-          `,
-          [booking.id],
-        );
-
-        await releasePrepaidCreditForBooking(booking.id);
-        await correctInstructorPayoutForBooking({
-          bookingId: booking.id,
-          correctionType: "cancellation_adjustment",
-          createdByMemberId: membership.id,
-          note: "Запись отменена при удалении слота",
-        });
-      }
-
       const bookedSlotIds = [
         ...new Set(bookings.map((booking) => booking.slot_id)),
       ];
@@ -2780,26 +2764,49 @@ export async function deleteSelectedSlotsAction(
         (slotId) => !bookedSlotIds.includes(slotId),
       );
 
-      if (bookedSlotIds.length > 0) {
-        await executeQuery(
-          `
-            update public.slots
-            set status = 'cancelled'
-            where id = any($1::uuid[])
-          `,
-          [bookedSlotIds],
-        );
-      }
+      await withTransaction(async () => {
+        for (const booking of confirmedBookings) {
+          await executeQuery(
+            `
+              update public.bookings
+              set status = 'cancelled',
+                  cancelled_at = now()
+              where id = $1
+                and status = 'confirmed'
+            `,
+            [booking.id],
+          );
 
-      if (unbookedSlotIds.length > 0) {
-        await executeQuery(
-          `
-            delete from public.slots
-            where id = any($1::uuid[])
-          `,
-          [unbookedSlotIds],
-        );
-      }
+          await releasePrepaidCreditForBooking(booking.id);
+          await correctInstructorPayoutForBooking({
+            bookingId: booking.id,
+            correctionType: "cancellation_adjustment",
+            createdByMemberId: membership.id,
+            note: "Запись отменена при удалении слота",
+          });
+        }
+
+        if (bookedSlotIds.length > 0) {
+          await executeQuery(
+            `
+              update public.slots
+              set status = 'cancelled'
+              where id = any($1::uuid[])
+            `,
+            [bookedSlotIds],
+          );
+        }
+
+        if (unbookedSlotIds.length > 0) {
+          await executeQuery(
+            `
+              delete from public.slots
+              where id = any($1::uuid[])
+            `,
+            [unbookedSlotIds],
+          );
+        }
+      });
 
       await logAuditEvent({
         membership,
@@ -2924,24 +2931,26 @@ export async function cancelBookingAction(formData: FormData) {
       }
 
       const membership = await requireInstructorAccess(booking.instructor_id);
-      await executeQuery(
-        `
-          update public.bookings
-          set status = 'cancelled',
-              cancelled_at = $1
-          where id = $2
-            and status = 'confirmed'
-        `,
-        [new Date().toISOString(), bookingId],
-      );
+      await withTransaction(async () => {
+        await executeQuery(
+          `
+            update public.bookings
+            set status = 'cancelled',
+                cancelled_at = $1
+            where id = $2
+              and status = 'confirmed'
+          `,
+          [new Date().toISOString(), bookingId],
+        );
 
-      await releasePrepaidCreditForBooking(bookingId);
+        await releasePrepaidCreditForBooking(bookingId);
 
-      await correctInstructorPayoutForBooking({
-        bookingId,
-        correctionType: "cancellation_adjustment",
-        createdByMemberId: membership.id,
-        note: "Запись была отменена",
+        await correctInstructorPayoutForBooking({
+          bookingId,
+          correctionType: "cancellation_adjustment",
+          createdByMemberId: membership.id,
+          note: "Запись была отменена",
+        });
       });
 
       await logAuditEvent({
@@ -3246,52 +3255,56 @@ export async function assignStudentToSlotAction(
       let createdBookingId: string | null = null;
 
       try {
-        const createdBooking = await queryOne<{ id: string }>(
-          `
-            insert into public.bookings (
-              slot_id, student_access_id, student_label,
-              student_lesson_package_id, school_id, price_amount,
-              paid_amount, is_paid, paid_at, booking_category, status
-            )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed')
-            returning id
-          `,
-          [
-            slot.id,
-            access.id,
-            access.display_label,
-            selectedPackage.id,
-            selectedPackage.schoolId,
-            priceAmount,
-            paymentFields.paid_amount,
-            paymentFields.is_paid,
-            paymentFields.paid_at,
-            selectedPackage.bookingCategory,
-          ],
-        );
+        await withTransaction(async () => {
+          const createdBooking = await queryOne<{ id: string }>(
+            `
+              insert into public.bookings (
+                slot_id, student_access_id, student_label,
+                student_lesson_package_id, school_id, price_amount,
+                paid_amount, is_paid, paid_at, booking_category, status
+              )
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed')
+              returning id
+            `,
+            [
+              slot.id,
+              access.id,
+              access.display_label,
+              selectedPackage.id,
+              selectedPackage.schoolId,
+              priceAmount,
+              paymentFields.paid_amount,
+              paymentFields.is_paid,
+              paymentFields.paid_at,
+              selectedPackage.bookingCategory,
+            ],
+          );
 
-        createdBookingId = createdBooking?.id ?? null;
+          createdBookingId = createdBooking?.id ?? null;
+
+          if (!createdBookingId) {
+            throw new Error("Не удалось создать запись");
+          }
+
+          await applyPrepaidCreditToBooking({
+            bookingId: createdBookingId,
+            studentAccessId: access.id,
+            schoolId: selectedPackage.schoolId,
+            lessonTypeId: slot.lesson_type_id,
+            amount: priceAmount ?? 0,
+          });
+
+          await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+            bookingId: createdBookingId,
+            createdByMemberId: membership.id,
+          });
+        });
       } catch (error) {
         if (isPostgresErrorCode(error, "23505")) {
           throw new Error("Этот слот уже занят");
         }
 
         throw error;
-      }
-
-      if (createdBookingId) {
-        await applyPrepaidCreditToBooking({
-          bookingId: createdBookingId,
-          studentAccessId: access.id,
-          schoolId: selectedPackage.schoolId,
-          lessonTypeId: slot.lesson_type_id,
-          amount: priceAmount ?? 0,
-        });
-
-        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
-          bookingId: createdBookingId,
-          createdByMemberId: membership.id,
-        });
       }
 
       await logAuditEvent({
@@ -4709,40 +4722,42 @@ export async function updateBookingLessonStateAction(formData: FormData) {
       const { booking, slot, membership } =
         await requireManageableBookingPostgres(bookingId);
 
-      await executeQuery(
-        `
-          update public.bookings
-          set lesson_state = $1,
-              completed_at = $2
-          where id = $3
-            and status = 'confirmed'
-        `,
-        [
-          lessonState,
-          lessonState === "completed" ? new Date().toISOString() : null,
-          bookingId,
-        ],
-      );
+      await withTransaction(async () => {
+        await executeQuery(
+          `
+            update public.bookings
+            set lesson_state = $1,
+                completed_at = $2
+            where id = $3
+              and status = 'confirmed'
+          `,
+          [
+            lessonState,
+            lessonState === "completed" ? new Date().toISOString() : null,
+            bookingId,
+          ],
+        );
 
-      if (lessonState === "completed") {
-        await createInstructorPayoutEntryForBookingWithCurrentPolicy({
-          bookingId,
-          createdByMemberId: membership.id,
-        });
-      } else {
-        await correctInstructorPayoutForBooking({
-          bookingId,
-          correctionType:
-            lessonState === "no_show"
-              ? "no_show_adjustment"
-              : "manual_adjustment",
-          createdByMemberId: membership.id,
-          note:
-            lessonState === "no_show"
-              ? "Booking was marked as no-show"
-              : "Booking was returned to scheduled",
-        });
-      }
+        if (lessonState === "completed") {
+          await createInstructorPayoutEntryForBookingWithCurrentPolicy({
+            bookingId,
+            createdByMemberId: membership.id,
+          });
+        } else {
+          await correctInstructorPayoutForBooking({
+            bookingId,
+            correctionType:
+              lessonState === "no_show"
+                ? "no_show_adjustment"
+                : "manual_adjustment",
+            createdByMemberId: membership.id,
+            note:
+              lessonState === "no_show"
+                ? "Booking was marked as no-show"
+                : "Booking was returned to scheduled",
+          });
+        }
+      });
 
       await logAuditEvent({
         membership,

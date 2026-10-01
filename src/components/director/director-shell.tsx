@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3,
   CalendarDays,
+  CircleDollarSign,
   FileClock,
   Globe2,
   LayoutDashboard,
@@ -43,6 +44,7 @@ const drawerLinks = [
   { href: "/director/schedule", label: "Расписание", icon: CalendarDays },
   { href: "/director/staff", label: "Сотрудники", icon: UsersRound },
   { href: "/director/students", label: "Ученики", icon: UserRoundCheck },
+  { href: "/director/finances", label: "Финансы", icon: CircleDollarSign },
   { href: "/director/reports", label: "Итоги", icon: BarChart3 },
   { href: "/director/rating", label: "Рейтинг", icon: Star },
   { href: "/director/site", label: "Сайт", icon: Globe2 },

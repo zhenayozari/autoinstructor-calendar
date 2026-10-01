@@ -137,33 +137,44 @@ function StudentPrepaidRefundForm({
   const currentDate = new Intl.DateTimeFormat("en-CA").format(new Date());
 
   return (
-    <div className="mt-3 border-t pt-3">
-      <p className="text-xs text-zinc-600">
+    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+      <div className="flex flex-col gap-1 border-b border-amber-200 pb-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="font-semibold text-amber-950">Возврат денег ученику</p>
+          <p className="mt-1 text-xs text-amber-900">
+            Здесь отмечается только фактически переданная ученику сумма.
+          </p>
+        </div>
+        <span className="text-xs font-semibold text-amber-800">После отмены остатка</span>
+      </div>
+      <p className="mt-3 text-xs text-zinc-700">
         Возвращено ученику: {formatMoney(credit.refunded_amount)} · осталось
         вернуть: {formatMoney(remainingAmount)}
       </p>
       {credit.refunds.length > 0 && (
-        <div className="mt-2 divide-y rounded-lg border bg-white">
-          <p className="px-2 pt-2 text-xs font-semibold text-zinc-700">
+        <div className="mt-3 rounded-lg border border-amber-200 bg-white">
+          <p className="border-b border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700">
             История возвратов ученику
           </p>
-          {credit.refunds.map((refund) => (
-            <StudentPrepaidRefundRow key={refund.id} refund={refund} />
-          ))}
+          <div className="divide-y">
+            {credit.refunds.map((refund) => (
+              <StudentPrepaidRefundRow key={refund.id} refund={refund} />
+            ))}
+          </div>
         </div>
       )}
       {remainingAmount > 0 && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-semibold text-blue-700">
+        <details className="mt-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-blue-900">
             Отметить возврат денег ученику
           </summary>
-          <p className="mt-2 text-xs text-zinc-600">
+          <p className="mt-2 text-xs leading-5 text-blue-950/80">
             Используйте после того, как деньги действительно переданы ученику.
             Эта кнопка только фиксирует возврат в системе и сама деньги не переводит.
           </p>
           <form
             action={formAction}
-            className="mt-3 space-y-3 rounded-lg border border-blue-100 bg-blue-50/60 p-3"
+            className="mt-3 space-y-3 border-t border-blue-200 pt-3"
             onSubmit={(event) => {
               if (!window.confirm("Отмечайте возврат только после фактической передачи денег ученику. Деньги уже действительно переданы?")) {
                 event.preventDefault();
@@ -234,7 +245,7 @@ function StudentPrepaidRefundRow({
   const isCancelled = Boolean(refund.cancelled_at);
 
   return (
-    <div className={`p-2 text-xs ${isCancelled ? "text-zinc-400" : "text-zinc-700"}`}>
+    <div className={`p-3 text-xs ${isCancelled ? "bg-zinc-50 text-zinc-400" : "bg-white text-zinc-700"}`}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="font-semibold">

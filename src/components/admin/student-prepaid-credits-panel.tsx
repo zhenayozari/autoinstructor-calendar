@@ -144,6 +144,9 @@ function StudentPrepaidRefundForm({
       </p>
       {credit.refunds.length > 0 && (
         <div className="mt-2 divide-y rounded-lg border bg-white">
+          <p className="px-2 pt-2 text-xs font-semibold text-zinc-700">
+            История возвратов ученику
+          </p>
           {credit.refunds.map((refund) => (
             <StudentPrepaidRefundRow key={refund.id} refund={refund} />
           ))}
@@ -154,6 +157,10 @@ function StudentPrepaidRefundForm({
           <summary className="cursor-pointer text-xs font-semibold text-blue-700">
             Отметить возврат денег ученику
           </summary>
+          <p className="mt-2 text-xs text-zinc-600">
+            Используйте после того, как деньги действительно переданы ученику.
+            Эта кнопка только фиксирует возврат в системе и сама деньги не переводит.
+          </p>
           <form
             action={formAction}
             className="mt-3 space-y-3 rounded-lg border border-blue-100 bg-blue-50/60 p-3"
@@ -238,6 +245,11 @@ function StudentPrepaidRefundRow({
               ? `Отметка отменена${refund.cancellation_note ? `: ${refund.cancellation_note}` : ""}`
               : refund.refund_note?.trim() || "Без комментария"}
           </p>
+          {!isCancelled && (
+            <p className="mt-1 font-semibold text-emerald-700">
+              Возврат ученику отмечен
+            </p>
+          )}
         </div>
         {!isCancelled && (
           <form
@@ -263,6 +275,8 @@ function StudentPrepaidRefundRow({
               variant="outline"
               size="sm"
               disabled={isPending}
+              aria-label="Отменить отметку возврата ученику"
+              title="Отменить отметку возврата ученику"
               className="border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
             >
               {isPending ? "Отменяем…" : "Отменить"}

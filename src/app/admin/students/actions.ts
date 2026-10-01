@@ -1078,6 +1078,7 @@ function revalidateStudentAccessPaths() {
   revalidatePath("/director");
   revalidatePath("/director/students");
   revalidatePath("/director/reports");
+  revalidatePath("/director/finances");
   revalidatePath("/student");
 }
 

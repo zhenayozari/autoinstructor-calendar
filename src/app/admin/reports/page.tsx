@@ -177,6 +177,16 @@ type InstructorPayoutPaymentDetail = {
   payment_note: string | null;
 };
 
+type ExamRouteReportItem = {
+  booking_id: string;
+  student_label: string;
+  school_name: string;
+  lesson_type_name: string;
+  lesson_date: string;
+  start_time: string;
+  amount: number;
+};
+
 function getMonthBounds(dateValue: string) {
   const [year, month] = dateValue.split("-").map(Number);
   const start = new Date(Date.UTC(year, month - 1, 1));
@@ -474,6 +484,43 @@ function InstructorPayoutDetails({
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+function ExamRouteDetails({ items }: { items: ExamRouteReportItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <Card className="border-amber-200 bg-amber-50/30">
+      <CardHeader className="pb-3">
+        <CardTitle>Экзаменационные маршруты</CardTitle>
+        <CardDescription>
+          Здесь видно, за какие записи начислено как за 2 занятия. В расписании
+          запись при этом остаётся одной.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {items.map((item) => (
+          <div
+            key={item.booking_id}
+            className="grid gap-2 rounded-xl border border-amber-200 bg-white px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+          >
+            <div className="min-w-0">
+              <p className="font-semibold">{item.student_label}</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                {formatReportDate(item.lesson_date)} · {item.start_time.slice(0, 5)}
+              </p>
+              <p className="text-xs text-zinc-500">
+                {item.school_name} · {item.lesson_type_name} · Экзаменационный маршрут: 2 занятия
+              </p>
+            </div>
+            <span className="font-semibold text-amber-900">
+              {formatMoney(item.amount)}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1376,6 +1423,34 @@ export default async function AdminReportsPage({
     (sum, item) => sum + (item.direct_instructor_income_amount ?? 0),
     0,
   );
+  const examRouteItems =
+    isOwnerInstructorReport && selectedInstructor
+      ? await queryRows<ExamRouteReportItem>(
+          `
+            select entries.booking_id::text,
+                   coalesce(accesses.display_label, bookings.student_label, 'Без ученика') as student_label,
+                   coalesce(schools.name, 'Без автошколы') as school_name,
+                   coalesce(lesson_types.name, 'Тип занятия не указан') as lesson_type_name,
+                   days.date::text as lesson_date,
+                   slots.start_time::text as start_time,
+                   entries.amount
+            from public.instructor_payout_entry_balances entries
+            join public.bookings bookings on bookings.id = entries.booking_id
+            join public.slots slots on slots.id = bookings.slot_id
+            join public.schedule_days days on days.id = slots.schedule_day_id
+            left join public.student_accesses accesses on accesses.id = entries.student_access_id
+            left join public.schools schools on schools.id = entries.school_id
+            left join public.lesson_types lesson_types on lesson_types.id = entries.lesson_type_id
+            where entries.organization_id = $1
+              and entries.instructor_id = $2
+              and entries.status = 'planned'
+              and entries.note = 'Экзаменационный маршрут: начисление за 2 занятия'
+              and days.date between $3::date and $4::date
+            order by days.date, slots.start_time, student_label
+          `,
+          [membership.organizationId, selectedInstructor.id, from, to],
+        )
+      : [];
   const settlementItems = settlementBookings
     .map(buildReportItem)
     .filter((item): item is ReportItem => Boolean(item))
@@ -1963,6 +2038,8 @@ export default async function AdminReportsPage({
                 tone="amber"
               />
             </div>
+
+            <ExamRouteDetails items={examRouteItems} />
 
             <div className="grid gap-3 md:grid-cols-2">
               <Card className="border-emerald-200 bg-emerald-50/50">

@@ -26,6 +26,8 @@ import {
   rejectStudentRegistrationRequestAction,
   restoreStudentAccessAction,
   toggleStudentAccessAction,
+  updateStudentProfileAction,
+  updateStudentExamStatusAction,
   updateStudentAccessDetailsAction,
   updateStudentLessonPackageAction,
   updateStudentAccessAction,
@@ -1691,6 +1693,14 @@ function StudentAccessCard({
     },
     INITIAL_STATE,
   );
+  const [profileState, profileAction, isProfilePending] = useActionState(
+    updateStudentProfileAction,
+    INITIAL_STATE,
+  );
+  const [, examAction, isExamPending] = useActionState(
+    updateStudentExamStatusAction,
+    INITIAL_STATE,
+  );
   const [, toggleAction, isTogglePending] = useActionState(
     toggleStudentAccessAction,
     INITIAL_STATE,
@@ -1753,6 +1763,29 @@ function StudentAccessCard({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <form
+              action={examAction}
+              onClick={(event) => event.stopPropagation()}
+              className={`flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                access.passed_exam
+                  ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+                  : "border-zinc-200 bg-zinc-50 text-zinc-600"
+              }`}
+            >
+              <input type="hidden" name="student_access_id" value={access.id} />
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  name="passed_exam"
+                  value="true"
+                  defaultChecked={access.passed_exam}
+                  onChange={(event) => event.currentTarget.form?.requestSubmit()}
+                  disabled={isExamPending}
+                  className="size-3.5"
+                />
+                {access.passed_exam ? "Сдал в ГАИ" : "Ещё учится"}
+              </label>
+            </form>
             <Badge
               className={
                 access.is_active
@@ -1899,38 +1932,69 @@ function StudentAccessCard({
           )}
         </section>
 
+        <form action={profileAction} className="space-y-4">
+          <input type="hidden" name="student_access_id" value={access.id} />
+          <section className="space-y-4 rounded-2xl border border-sky-100 bg-sky-50/50 p-4">
+            <div>
+              <p className="text-sm font-semibold">Данные ученика</p>
+              <p className="text-muted-foreground mt-1 text-xs leading-5">
+                Здесь можно исправить фамилию, имя и способ связи. Это не меняет
+                логин, пароль, занятия или оплату.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor={`student-last-name-${access.id}`}>
+                  Фамилия
+                </Label>
+                <Input
+                  id={`student-last-name-${access.id}`}
+                  name="last_name"
+                  defaultValue={access.last_name ?? ""}
+                  placeholder="Иванова"
+                  maxLength={80}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={`student-first-name-${access.id}`}>Имя</Label>
+                <Input
+                  id={`student-first-name-${access.id}`}
+                  name="first_name"
+                  defaultValue={access.first_name ?? ""}
+                  placeholder="Анна"
+                  maxLength={80}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`student-phone-${access.id}`}>
+                Способ связи
+              </Label>
+              <Input
+                id={`student-phone-${access.id}`}
+                name="student_phone"
+                defaultValue={access.student_phone ?? ""}
+                placeholder="Телефон или мессенджер"
+                maxLength={200}
+              />
+            </div>
+            <StateMessage state={profileState} />
+            <Button type="submit" variant="outline" disabled={isProfilePending}>
+              <Pencil />
+              {isProfilePending ? "Сохраняем…" : "Сохранить данные ученика"}
+            </Button>
+          </section>
+        </form>
+
         <form action={updateAction} className="space-y-4">
           <input type="hidden" name="student_access_id" value={access.id} />
           <section className="space-y-4 rounded-2xl border border-sky-100 bg-sky-50/50 p-4">
             <div>
-              <p className="text-sm font-semibold">Доступ и данные ученика</p>
+              <p className="text-sm font-semibold">Доступ ученика</p>
               <p className="text-muted-foreground mt-1 text-xs leading-5">
-                Имя, фамилию и контакт ученик заполняет сам после входа и
-                согласия на обработку персональных данных.
+                Здесь находятся логин и пароль для входа в кабинет ученика.
               </p>
             </div>
-            {!isStudentProfileCompleted(access) ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-6 text-amber-950">
-                Кабинет ученика пока закрыт. Он откроется после того, как
-                ученик войдёт по логину и ПИН-коду, заполнит профиль и поставит
-                галочку согласия.
-              </div>
-            ) : (
-              <div className="grid gap-3 rounded-xl border bg-white px-3 py-3 text-sm md:grid-cols-3">
-                <div>
-                  <p className="text-xs text-zinc-500">Фамилия</p>
-                  <p className="font-semibold">{access.last_name ?? "—"}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-zinc-500">Имя</p>
-                  <p className="font-semibold">{access.first_name ?? "—"}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-zinc-500">Контакт</p>
-                  <p className="font-semibold">{access.student_phone ?? "—"}</p>
-                </div>
-              </div>
-            )}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor={`new-secret-${access.id}`}>

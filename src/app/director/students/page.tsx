@@ -44,6 +44,8 @@ import type {
   StudentPrepaidCredit,
 } from "@/lib/types";
 import { StudentPrepaidCreditsPanel } from "@/components/admin/student-prepaid-credits-panel";
+import { StudentProfileEditor } from "@/components/director/student-profile-editor";
+import { StudentExamStatusEditor } from "@/components/director/student-exam-status-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -297,6 +299,9 @@ function StudentCard({
         </span>
       </div>
 
+      <StudentProfileEditor student={student} />
+      <StudentExamStatusEditor student={student} />
+
       <div className="mt-4 grid grid-cols-3 gap-2">
         <div className="rounded-xl bg-zinc-50 px-3 py-2">
           <p className="text-xs text-zinc-500">План</p>
@@ -513,6 +518,9 @@ function StudentListItem({
           </span>
         </div>
 
+        <StudentProfileEditor student={student} />
+        <StudentExamStatusEditor student={student} />
+
         <div className="mt-3">
           <StudentPrepaidCreditsPanel
             accessId={student.id}
@@ -592,10 +600,11 @@ export default async function DirectorStudentsPage({
       instructorIds.length > 0
         ? queryRows<StudentAccessRow>(
             `
-              select id, instructor_id, display_label, student_phone,
+              select id, instructor_id, display_label, first_name, last_name,
+                     student_phone,
                      student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
-                     is_active, is_archived, archived_at::text as archived_at,
+                     is_active, passed_exam, is_archived, archived_at::text as archived_at,
                      created_at::text as created_at, updated_at::text as updated_at
               from public.student_accesses
               where organization_id = $1
@@ -621,7 +630,7 @@ export default async function DirectorStudentsPage({
         ? supabase
             .from("student_accesses")
             .select(
-              "id, instructor_id, display_label, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
+              "id, instructor_id, display_label, first_name, last_name, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, passed_exam, is_archived, archived_at, created_at, updated_at",
             )
             .eq("organization_id", membership.organizationId)
             .in("instructor_id", instructorIds)

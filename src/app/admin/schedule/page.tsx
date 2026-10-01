@@ -97,6 +97,10 @@ export default async function AdminSchedulePage({
     instructors,
     membership.instructorId,
   );
+  const canUseExamRoute =
+    membership.role === "owner" &&
+    Boolean(membership.instructorId) &&
+    membership.instructorId === initialInstructorId;
   const instructorIds = instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds });
 
@@ -327,6 +331,7 @@ export default async function AdminSchedulePage({
                      student_lesson_package_id, school_id, created_at::text as created_at,
                      price_amount, paid_amount, is_paid, paid_at::text as paid_at,
                      payment_note, booking_category, lesson_state,
+                     lesson_units,
                      completed_at::text as completed_at, instructor_note
               from public.bookings
               where slot_id = any($1::uuid[])
@@ -341,7 +346,7 @@ export default async function AdminSchedulePage({
       adminEnabled && slotIds.length > 0
         ? await supabase
             .from("bookings")
-            .select("id, slot_id, student_label, student_access_id, student_lesson_package_id, school_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, completed_at, instructor_note")
+            .select("id, slot_id, student_label, student_access_id, student_lesson_package_id, school_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, lesson_units, completed_at, instructor_note")
             .in("slot_id", slotIds)
             .eq("status", "confirmed")
         : { data: [], error: null };
@@ -421,6 +426,7 @@ export default async function AdminSchedulePage({
           initialInstructorId={initialInstructorId}
           canSelectInstructor={false}
           adminEnabled={adminEnabled}
+          canUseExamRoute={canUseExamRoute}
           showClientPrices={showClientPrices}
           initialOpenSlotForm={createParam === "slot"}
           initialSlotDate={dateParam}

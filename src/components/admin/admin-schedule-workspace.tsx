@@ -35,6 +35,7 @@ export function AdminScheduleWorkspace({
   initialInstructorId,
   canSelectInstructor,
   adminEnabled,
+  canUseExamRoute,
   showClientPrices = true,
   initialSlotDate,
   initialOpenSlotForm = false,
@@ -50,6 +51,7 @@ export function AdminScheduleWorkspace({
   initialInstructorId: string;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  canUseExamRoute: boolean;
   showClientPrices?: boolean;
   initialSlotDate?: string;
   initialOpenSlotForm?: boolean;
@@ -116,6 +118,7 @@ export function AdminScheduleWorkspace({
             onInstructorChange={setInstructorId}
             canSelectInstructor={canSelectInstructor}
             adminEnabled={adminEnabled}
+            canUseExamRoute={canUseExamRoute}
             showClientPrices={showClientPrices}
             onCreateSlotForDate={handleCreateSlotForDate}
           />

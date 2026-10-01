@@ -101,6 +101,7 @@ export type Booking = {
   paid_at: string | null;
   payment_note?: string | null;
   booking_category?: BookingCategory;
+  lesson_units?: number;
   lesson_state: LessonState;
   completed_at: string | null;
   instructor_note: string | null;
@@ -131,6 +132,7 @@ export type StudentAccess = {
   total_lesson_limit: number | null;
   weekly_lesson_limit: number | null;
   is_active: boolean;
+  passed_exam: boolean;
   school_id: string | null;
   is_archived: boolean;
   archived_at: string | null;

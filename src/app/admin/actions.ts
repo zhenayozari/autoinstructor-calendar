@@ -29,6 +29,7 @@ import {
   selectStudentLessonPackageForBookingPostgres,
 } from "@/lib/student-lesson-packages";
 import {
+  applyOwnerExamRouteToBooking,
   correctInstructorPayoutForBooking,
   createInstructorPayoutEntryForBookingWithCurrentPolicy,
 } from "@/lib/instructor-payouts";
@@ -3026,6 +3027,73 @@ export async function cancelBookingAction(formData: FormData) {
     revalidatePath("/schedule");
   } catch (error) {
     console.error("cancelBookingAction:", error);
+    throw error;
+  }
+}
+
+export async function applyOwnerExamRouteAction(formData: FormData) {
+  const bookingId = readRequiredString(formData, "booking_id");
+  const membership = await requireActiveOrganizationMember();
+
+  try {
+    if (!isPostgresBackend()) {
+      throw new Error("Экзаменационный маршрут доступен только в PostgreSQL-версии");
+    }
+
+    const booking = await queryOne<{
+      instructor_id: string;
+      organization_id: string;
+    }>(
+      `
+        select s.instructor_id, i.organization_id
+        from public.bookings b
+        join public.slots s on s.id = b.slot_id
+        join public.instructors i on i.id = s.instructor_id
+        where b.id = $1
+          and b.status = 'confirmed'
+        limit 1
+      `,
+      [bookingId],
+    );
+
+    if (!booking) {
+      throw new Error("Запись не найдена или уже отменена");
+    }
+
+    if (
+      membership.role !== "owner" ||
+      membership.instructorId !== booking.instructor_id ||
+      membership.organizationId !== booking.organization_id
+    ) {
+      throw new Error("Экзаменационный маршрут доступен только инструктору-владельцу");
+    }
+
+    const result = await withTransaction(() =>
+      applyOwnerExamRouteToBooking({
+        bookingId,
+        createdByMemberId: membership.id,
+      }),
+    );
+
+    await logAuditEvent({
+      membership,
+      action: "booking.exam_route_applied",
+      entityType: "booking",
+      entityId: bookingId,
+      metadata: {
+        lesson_units: 2,
+        base_amount: result.baseAmount,
+        total_amount: result.totalAmount,
+      },
+    });
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/admin/reports");
+    revalidatePath("/director/reports");
+    revalidatePath("/student");
+  } catch (error) {
+    console.error("applyOwnerExamRouteAction:", error);
     throw error;
   }
 }

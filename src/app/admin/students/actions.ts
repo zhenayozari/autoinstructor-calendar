@@ -163,6 +163,14 @@ function validateStudentPhone(phone: string | null) {
   return phone;
 }
 
+function validateStudentName(name: string | null, fieldLabel: string) {
+  if (name && name.length > 80) {
+    throw new Error(`${fieldLabel} должно быть не длиннее 80 символов`);
+  }
+
+  return name;
+}
+
 async function validateLessonTypes(lessonTypeIds: string[]) {
   if (lessonTypeIds.length === 0) {
     throw new Error("Выберите хотя бы один разрешённый тип занятия");
@@ -2310,6 +2318,168 @@ export async function updateStudentAccessDetailsAction(
       status: "error",
       message: getErrorMessage(error),
     };
+  }
+}
+
+export async function updateStudentProfileAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    const { membership, access } = await getManageableAccess(accessId);
+    const firstName = validateStudentName(
+      readOptionalString(formData, "first_name"),
+      "Имя",
+    );
+    const lastName = validateStudentName(
+      readOptionalString(formData, "last_name"),
+      "Фамилия",
+    );
+    const studentPhone = validateStudentPhone(
+      readOptionalString(formData, "student_phone"),
+    );
+
+    if ((firstName === null) !== (lastName === null)) {
+      throw new Error("Укажите и имя, и фамилию или оставьте оба поля пустыми");
+    }
+
+    const displayLabel =
+      firstName && lastName ? `${lastName} ${firstName}` : access.display_label;
+
+    if (displayLabel.length > 80) {
+      throw new Error("ФИО должно быть не длиннее 80 символов");
+    }
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_accesses
+          set first_name = $1,
+              last_name = $2,
+              student_phone = $3,
+              display_label = $4,
+              updated_at = now()
+          where id = $5
+            and organization_id = $6
+            and instructor_id = $7
+        `,
+        [
+          firstName,
+          lastName,
+          studentPhone,
+          displayLabel,
+          access.id,
+          membership.organizationId,
+          access.instructor_id,
+        ],
+      );
+    } else {
+      const supabase = createAdminClient();
+      const { error } = await supabase
+        .from("student_accesses")
+        .update({
+          first_name: firstName,
+          last_name: lastName,
+          student_phone: studentPhone,
+          display_label: displayLabel,
+        })
+        .eq("id", access.id)
+        .eq("organization_id", membership.organizationId)
+        .eq("instructor_id", access.instructor_id);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.profile_updated",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        changed_fields: ["first_name", "last_name", "student_phone"],
+      },
+    });
+
+    revalidatePath("/admin/students");
+    revalidatePath("/director/students");
+    revalidatePath("/student");
+
+    return {
+      status: "success",
+      message: "Данные ученика обновлены",
+    };
+  } catch (error) {
+    console.error("updateStudentProfileAction:", error);
+
+    return {
+      status: "error",
+      message: getErrorMessage(error),
+    };
+  }
+}
+
+export async function updateStudentExamStatusAction(
+  previousState: StudentAccessActionState,
+  formData: FormData,
+): Promise<StudentAccessActionState> {
+  void previousState;
+
+  try {
+    const accessId = readRequiredString(formData, "student_access_id");
+    const { membership, access } = await getManageableAccess(accessId);
+    const passedExam = formData.get("passed_exam") === "true";
+
+    if (isPostgresBackend()) {
+      await executeQuery(
+        `
+          update public.student_accesses
+          set passed_exam = $1,
+              updated_at = now()
+          where id = $2
+            and organization_id = $3
+            and instructor_id = $4
+        `,
+        [passedExam, access.id, membership.organizationId, access.instructor_id],
+      );
+    } else {
+      const supabase = createAdminClient();
+      const { error } = await supabase
+        .from("student_accesses")
+        .update({ passed_exam: passedExam })
+        .eq("id", access.id)
+        .eq("organization_id", membership.organizationId)
+        .eq("instructor_id", access.instructor_id);
+
+      if (error) throw new Error(error.message);
+    }
+
+    await logAuditEvent({
+      membership,
+      action: "student_access.exam_status_updated",
+      entityType: "student_access",
+      entityId: access.id,
+      metadata: {
+        instructor_id: access.instructor_id,
+        passed_exam: passedExam,
+      },
+    });
+
+    revalidatePath("/admin/students");
+    revalidatePath("/director/students");
+
+    return {
+      status: "success",
+      message: passedExam ? "Отметка «Сдал в ГАИ» сохранена" : "Отметка снята",
+    };
+  } catch (error) {
+    console.error("updateStudentExamStatusAction:", error);
+    return { status: "error", message: getErrorMessage(error) };
   }
 }
 

@@ -1025,6 +1025,145 @@ async function getBookingPayoutContext(bookingId: string) {
   );
 }
 
+export async function applyOwnerExamRouteToBooking({
+  bookingId,
+  createdByMemberId,
+}: {
+  bookingId: string;
+  createdByMemberId: string | null;
+}) {
+  const context = await getBookingPayoutContext(bookingId);
+
+  if (!context || context.booking_status !== "confirmed") {
+    throw new Error("Запись не найдена или уже отменена");
+  }
+
+  const currentUnits = await queryOne<{ lesson_units: number }>(
+    `select lesson_units from public.bookings where id = $1 for update`,
+    [bookingId],
+  );
+
+  if (!currentUnits) {
+    throw new Error("Запись не найдена");
+  }
+
+  if (currentUnits.lesson_units > 1) {
+    throw new Error("Экзаменационный маршрут уже применён к этой записи");
+  }
+
+  const configuredPrice = context.school_id && context.lesson_type_id
+    ? await queryOne<{ price_amount: number | null }>(
+        `
+          select price_amount
+          from public.school_lesson_type_prices
+          where organization_id = $1
+            and school_id = $2
+            and lesson_type_id = $3
+          limit 1
+        `,
+        [context.organization_id, context.school_id, context.lesson_type_id],
+      )
+    : null;
+  const baseAmount = context.price_amount ?? configuredPrice?.price_amount ?? null;
+
+  if (baseAmount === null || baseAmount <= 0) {
+    throw new Error("Для этой записи не удалось определить цену занятия");
+  }
+
+  const totalAmount = baseAmount * 2;
+  if (totalAmount > 10_000_000) {
+    throw new Error("Сумма начисления слишком большая");
+  }
+
+  const existingEntry = await queryOne<{
+    id: string;
+    paid_amount: number;
+  }>(
+    `
+      select entries.id,
+             coalesce(payments.paid_amount, 0)::integer as paid_amount
+      from public.instructor_payout_entries entries
+      left join lateral (
+        select sum(allocations.amount)::integer as paid_amount
+        from public.instructor_payout_payment_allocations allocations
+        where allocations.payout_entry_id = entries.id
+      ) payments on true
+      where entries.booking_id = $1
+        and entries.entry_type = 'booking_accrual'
+        and entries.status = 'planned'
+      limit 1
+      for update of entries
+    `,
+    [bookingId],
+  );
+
+  if (existingEntry && existingEntry.paid_amount > 0) {
+    throw new Error("Эту выплату уже отметили как выданную. Сначала отмените выплату");
+  }
+
+  await executeQuery(
+    `
+      update public.bookings
+      set lesson_units = 2
+      where id = $1
+    `,
+    [bookingId],
+  );
+
+  if (existingEntry) {
+    await executeQuery(
+      `
+        update public.instructor_payout_entries
+        set amount = $2,
+            note = 'Экзаменационный маршрут: начисление за 2 занятия',
+            updated_at = now(),
+            created_by_member_id = coalesce($3, created_by_member_id)
+        where id = $1
+      `,
+      [existingEntry.id, totalAmount, createdByMemberId],
+    );
+  } else {
+    await executeQuery(
+      `
+        insert into public.instructor_payout_entries (
+          organization_id,
+          instructor_id,
+          booking_id,
+          slot_id,
+          school_id,
+          lesson_type_id,
+          student_access_id,
+          entry_type,
+          accrual_policy,
+          status,
+          amount,
+          planned_at,
+          event_at,
+          note,
+          created_by_member_id
+        )
+        values ($1, $2, $3, $4, $5, $6, $7,
+                'booking_accrual', 'postpaid', 'planned', $8,
+                now(), now(), $9, $10)
+      `,
+      [
+        context.organization_id,
+        context.instructor_id,
+        context.booking_id,
+        context.slot_id,
+        context.school_id,
+        context.lesson_type_id,
+        context.student_access_id,
+        totalAmount,
+        "Экзаменационный маршрут: начисление за 2 занятия",
+        createdByMemberId,
+      ],
+    );
+  }
+
+  return { baseAmount, totalAmount };
+}
+
 export async function createInstructorPayoutEntryForBooking({
   bookingId,
   requiredPolicy,

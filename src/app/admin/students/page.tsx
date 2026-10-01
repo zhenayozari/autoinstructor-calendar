@@ -60,6 +60,7 @@ type StudentAccessRow = {
   weekly_lesson_limit: number | null;
   school_id: string | null;
   is_active: boolean;
+  passed_exam: boolean;
   is_archived: boolean;
   archived_at: string | null;
   profile_completed_at?: string | null;
@@ -236,7 +237,7 @@ export default async function AdminStudentsPage({
               select id, instructor_id, display_label, first_name, last_name,
                      student_phone, student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
-                     is_active, is_archived, archived_at::text as archived_at,
+                     is_active, passed_exam, is_archived, archived_at::text as archived_at,
                      profile_completed_at::text as profile_completed_at,
                      personal_data_consent_at::text as personal_data_consent_at,
                      personal_data_consent_source,
@@ -310,7 +311,7 @@ export default async function AdminStudentsPage({
         ? supabase
             .from("student_accesses")
             .select(
-              "id, instructor_id, display_label, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, is_archived, archived_at, created_at, updated_at",
+              "id, instructor_id, display_label, first_name, last_name, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, passed_exam, is_archived, archived_at, created_at, updated_at",
             )
             .eq("organization_id", membership.organizationId)
             .in("instructor_id", selectedInstructorIds)

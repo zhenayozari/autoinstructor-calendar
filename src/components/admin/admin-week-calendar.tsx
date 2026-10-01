@@ -12,6 +12,7 @@ import {
   EyeOff,
   Pencil,
   Phone,
+  Route,
   StickyNote,
   Trash2,
   UserRound,
@@ -22,6 +23,7 @@ import {
   cancelBookingAction,
   deleteSelectedSlotsAction,
   deleteSlotAction,
+  applyOwnerExamRouteAction,
   updateBookingCategoryAction,
   updateDayPublicationAction,
   updateSlotAction,
@@ -565,14 +567,52 @@ function AssignStudentToSlotForm({
 function SlotActions({
   slotId,
   bookingId,
+  bookingLessonUnits,
   adminEnabled,
+  canUseExamRoute,
 }: {
   slotId: string;
   bookingId: string | null;
+  bookingLessonUnits?: number;
   adminEnabled: boolean;
+  canUseExamRoute: boolean;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
+    <div className="space-y-2">
+      {bookingId && canUseExamRoute && bookingLessonUnits === 2 && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+          Экзаменационный маршрут уже применён: начислено за 2 занятия.
+        </p>
+      )}
+      {bookingId && canUseExamRoute && bookingLessonUnits !== 2 && (
+        <details className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-amber-900">
+            <Route className="size-4" />
+            Экзаменационный маршрут
+          </summary>
+          <div className="mt-3 space-y-3 text-xs leading-5 text-amber-950">
+            <p>
+              Вам начислится сумма за 2 занятия. Цена берётся из этой записи:
+              индивидуальная цена важнее тарифа школы.
+            </p>
+            <p>
+              В отчёте запись останется одной, но будет помечена как
+              «Экзаменационный маршрут: 2 занятия».
+            </p>
+            <form action={applyOwnerExamRouteAction}>
+              <input type="hidden" name="booking_id" value={bookingId} />
+              <Button
+                type="submit"
+                className="h-9 w-full text-xs"
+                disabled={!adminEnabled}
+              >
+                Подтвердить и начислить за 2 занятия
+              </Button>
+            </form>
+          </div>
+        </details>
+      )}
+      <div className="grid gap-2 sm:grid-cols-2">
       {bookingId && (
         <form action={cancelBookingAction}>
           <input type="hidden" name="booking_id" value={bookingId} />
@@ -599,6 +639,7 @@ function SlotActions({
           Удалить слот
         </Button>
       </form>
+      </div>
     </div>
   );
 }
@@ -815,6 +856,7 @@ function DesktopSlotPanel({
   schools,
   studentAccesses,
   adminEnabled,
+  canUseExamRoute,
   showClientPrices = true,
   onClose,
 }: {
@@ -828,6 +870,7 @@ function DesktopSlotPanel({
   schools: School[];
   studentAccesses: StudentAccess[];
   adminEnabled: boolean;
+  canUseExamRoute: boolean;
   showClientPrices?: boolean;
   onClose: () => void;
 }) {
@@ -1024,7 +1067,9 @@ function DesktopSlotPanel({
           <SlotActions
             slotId={slot.id}
             bookingId={booking?.id ?? null}
+            bookingLessonUnits={booking?.lesson_units}
             adminEnabled={adminEnabled}
+            canUseExamRoute={canUseExamRoute}
           />
         </div>
       </aside>
@@ -1043,6 +1088,7 @@ function MobileSlotRow({
   studentAccesses,
   timezone,
   adminEnabled,
+  canUseExamRoute,
   showClientPrices = true,
   selectionMode = false,
   selected = false,
@@ -1058,6 +1104,7 @@ function MobileSlotRow({
   studentAccesses: StudentAccess[];
   timezone: string;
   adminEnabled: boolean;
+  canUseExamRoute: boolean;
   showClientPrices?: boolean;
   selectionMode?: boolean;
   selected?: boolean;
@@ -1249,7 +1296,9 @@ function MobileSlotRow({
         <SlotActions
           slotId={slot.id}
           bookingId={booking?.id ?? null}
+          bookingLessonUnits={booking?.lesson_units}
           adminEnabled={adminEnabled}
+          canUseExamRoute={canUseExamRoute}
         />
       </div>
     </details>
@@ -1271,6 +1320,7 @@ export function AdminWeekCalendar({
   onInstructorChange,
   canSelectInstructor,
   adminEnabled,
+  canUseExamRoute,
   showClientPrices = true,
   onCreateSlotForDate,
 }: {
@@ -1288,6 +1338,7 @@ export function AdminWeekCalendar({
   onInstructorChange: (value: string) => void;
   canSelectInstructor: boolean;
   adminEnabled: boolean;
+  canUseExamRoute: boolean;
   showClientPrices?: boolean;
   onCreateSlotForDate?: (date: string) => void;
 }) {
@@ -1808,6 +1859,7 @@ export function AdminWeekCalendar({
                     studentAccesses={studentAccesses}
                     timezone={selectedInstructor.timezone}
                     adminEnabled={adminEnabled}
+                    canUseExamRoute={canUseExamRoute}
                     showClientPrices={showClientPrices}
                     selectionMode={selectionMode}
                     selected={selectedSlotIds.includes(slot.id)}
@@ -1901,6 +1953,7 @@ export function AdminWeekCalendar({
             schools={schools}
             studentAccesses={studentAccesses}
             adminEnabled={adminEnabled}
+            canUseExamRoute={canUseExamRoute}
             showClientPrices={showClientPrices}
             onClose={() => setSelectedSlotId(null)}
           />

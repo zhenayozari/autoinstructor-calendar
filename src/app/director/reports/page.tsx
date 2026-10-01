@@ -161,6 +161,18 @@ type PayoutReturnPeriodItem = {
   return_note: string | null;
 };
 
+type ExamRouteReportItem = {
+  booking_id: string;
+  student_access_id: string | null;
+  student_label: string;
+  instructor_name: string;
+  school_name: string;
+  lesson_type_name: string;
+  lesson_date: string;
+  start_time: string;
+  amount: number;
+};
+
 type PrepaidCreditReportItem = {
   id: string;
   student_access_id: string;
@@ -1148,6 +1160,52 @@ function PrivateExtraIncomeReport({ items }: { items: ReportItem[] }) {
   );
 }
 
+function ExamRouteReport({ items }: { items: ExamRouteReportItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <Card className="border-amber-200 bg-amber-50/30">
+      <CardHeader className="pb-3">
+        <CardTitle>Экзаменационные маршруты</CardTitle>
+        <CardDescription>
+          Эти записи остаются одним занятием в расписании, но начисление по ним
+          рассчитано как за 2 занятия.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {items.map((item) => (
+          <div
+            key={item.booking_id}
+            className="grid gap-2 rounded-xl border border-amber-200 bg-white px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+          >
+            <div className="min-w-0">
+              {item.student_access_id ? (
+                <Link
+                  href={`/director/students?view=list&student=${item.student_access_id}#student-${item.student_access_id}`}
+                  className="font-semibold text-blue-700 hover:underline"
+                >
+                  {item.student_label}
+                </Link>
+              ) : (
+                <span className="font-semibold">{item.student_label}</span>
+              )}
+              <p className="mt-1 text-xs text-zinc-500">
+                {formatNumericDate(item.lesson_date)} · {formatTime(item.start_time, DEFAULT_TIMEZONE)} · {item.instructor_name}
+              </p>
+              <p className="text-xs text-zinc-500">
+                {item.school_name} · {item.lesson_type_name} · Экзаменационный маршрут: 2 занятия
+              </p>
+            </div>
+            <span className="font-semibold text-amber-900">
+              {formatMoney(item.amount)}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 function MoneyGroupTable({
   title,
   description,
@@ -1857,6 +1915,37 @@ export default async function DirectorReportsPage({
           [],
           [],
         ];
+  const examRouteItems =
+    postgresBackend && reportInstructorIds.length > 0
+      ? await queryRows<ExamRouteReportItem>(
+          `
+            select entries.booking_id::text,
+                   entries.student_access_id::text,
+                   coalesce(accesses.display_label, bookings.student_label, 'Без ученика') as student_label,
+                   coalesce(instructors.public_name, instructors.name) as instructor_name,
+                   coalesce(schools.name, 'Без автошколы') as school_name,
+                   coalesce(lesson_types.name, 'Тип занятия не указан') as lesson_type_name,
+                   days.date::text as lesson_date,
+                   slots.start_time::text as start_time,
+                   entries.amount
+            from public.instructor_payout_entry_balances entries
+            join public.bookings bookings on bookings.id = entries.booking_id
+            join public.slots slots on slots.id = bookings.slot_id
+            join public.schedule_days days on days.id = slots.schedule_day_id
+            join public.instructors instructors on instructors.id = entries.instructor_id
+            left join public.student_accesses accesses on accesses.id = entries.student_access_id
+            left join public.schools schools on schools.id = entries.school_id
+            left join public.lesson_types lesson_types on lesson_types.id = entries.lesson_type_id
+            where entries.organization_id = $1
+              and entries.instructor_id = any($2::uuid[])
+              and entries.status = 'planned'
+              and entries.note = 'Экзаменационный маршрут: начисление за 2 занятия'
+              and days.date between $3::date and $4::date
+            order by days.date, slots.start_time, student_label
+          `,
+          [membership.organizationId, reportInstructorIds, from, to],
+        )
+      : [];
   const studentPrepaidAmount = studentPrepaymentCashGroups.reduce(
     (sum, group) => sum + group.prepaid_amount,
     0,
@@ -2170,6 +2259,8 @@ export default async function DirectorReportsPage({
         />
 
         <PrivateExtraIncomeReport items={directIncomeItems} />
+
+        <ExamRouteReport items={examRouteItems} />
 
         <PayoutPaymentHistory
           items={payoutPayments}

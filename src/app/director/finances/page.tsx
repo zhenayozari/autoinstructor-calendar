@@ -11,6 +11,7 @@ import { requireDirectorAccess } from "@/lib/director-auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import { formatDateTime, formatMoney } from "@/lib/formatters";
+import { FinanceStudentPaymentActions } from "@/components/director/finance-student-payment-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,16 @@ type StudentPaymentRow = {
   quantity: number;
   used_quantity: number;
   final_total_amount: number;
+  final_unit_price: number;
   refunded_amount: number;
+  refunds: Array<{
+    id: string;
+    amount: number;
+    refunded_at: string;
+    refund_note: string | null;
+    cancelled_at: string | null;
+    cancellation_note: string | null;
+  }>;
   status: "active" | "cancelled";
   paid_at: string;
 };
@@ -142,7 +152,9 @@ export default async function DirectorFinancesPage({
                schools.name as school_name, lesson_types.name as lesson_type_name,
                credits.quantity, coalesce(usages.used_quantity, 0)::integer as used_quantity,
                credits.final_total_amount::integer,
+               credits.final_unit_price::integer,
                coalesce(refunds.refunded_amount, 0)::integer as refunded_amount,
+               coalesce(refund_rows.refunds, '[]'::jsonb) as refunds,
                credits.status, credits.paid_at::text
         from public.student_prepaid_credits credits
         join public.student_accesses accesses on accesses.id = credits.student_access_id
@@ -157,6 +169,18 @@ export default async function DirectorFinancesPage({
           select coalesce(sum(amount), 0)::integer as refunded_amount from public.student_prepaid_refunds
           where credit_id = credits.id and cancelled_at is null
         ) refunds on true
+        left join lateral (
+          select jsonb_agg(jsonb_build_object(
+            'id', student_refunds.id,
+            'amount', student_refunds.amount,
+            'refunded_at', student_refunds.refunded_at,
+            'refund_note', student_refunds.refund_note,
+            'cancelled_at', student_refunds.cancelled_at,
+            'cancellation_note', student_refunds.cancellation_note
+          ) order by student_refunds.refunded_at desc) as refunds
+          from public.student_prepaid_refunds student_refunds
+          where student_refunds.credit_id = credits.id
+        ) refund_rows on true
         where credits.organization_id = $1
         order by credits.paid_at desc, credits.created_at desc limit 100
       `,
@@ -232,7 +256,7 @@ export default async function DirectorFinancesPage({
 
         {view === "student-payments" && (
           <Card><CardHeader><CardTitle>Оплаты учеников</CardTitle><CardDescription>Предоплаты, их использование и фактически отмеченные возвраты.</CardDescription></CardHeader><CardContent className="space-y-2">
-            {studentPayments.length === 0 ? <p className="rounded-xl border border-dashed p-6 text-center text-sm text-zinc-500">Оплат пока нет.</p> : studentPayments.map((item) => <div key={item.id} className="rounded-xl border bg-white p-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><p className="font-semibold">{item.student_label}</p><p className="mt-1 text-sm text-zinc-500">{item.instructor_name} · {item.school_name} · {item.lesson_type_name}</p></div><span className="font-semibold">{formatMoney(item.final_total_amount)}</span></div><div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-4"><span>Занятий: {item.quantity}</span><span>Использовано: {item.used_quantity}</span><span>Осталось: {Math.max(item.quantity - item.used_quantity, 0)}</span><span>Возвращено: {formatMoney(item.refunded_amount)}</span></div><p className="mt-2 text-xs text-zinc-500">{item.status === "cancelled" ? "Остаток предоплаты отменён" : "Предоплата активна"} · {new Intl.DateTimeFormat("ru-RU").format(new Date(item.paid_at))}</p></div>)}
+            {studentPayments.length === 0 ? <p className="rounded-xl border border-dashed p-6 text-center text-sm text-zinc-500">Оплат пока нет.</p> : studentPayments.map((item) => <div key={item.id} className="rounded-xl border bg-white p-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><p className="font-semibold">{item.student_label}</p><p className="mt-1 text-sm text-zinc-500">{item.instructor_name} · {item.school_name} · {item.lesson_type_name}</p></div><span className="font-semibold">{formatMoney(item.final_total_amount)}</span></div><div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-4"><span>Занятий: {item.quantity}</span><span>Использовано: {item.used_quantity}</span><span>Осталось: {Math.max(item.quantity - item.used_quantity, 0)}</span><span>Возвращено: {formatMoney(item.refunded_amount)}</span></div><p className="mt-2 text-xs text-zinc-500">{item.status === "cancelled" ? "Остаток предоплаты отменён" : "Предоплата активна"} · {new Intl.DateTimeFormat("ru-RU").format(new Date(item.paid_at))}</p><FinanceStudentPaymentActions creditId={item.id} quantity={item.quantity} usedQuantity={item.used_quantity} finalTotalAmount={item.final_total_amount} finalUnitPrice={item.final_unit_price} status={item.status} refundedAmount={item.refunded_amount} refunds={item.refunds} /></div>)}
           </CardContent></Card>
         )}
 

@@ -165,7 +165,7 @@ function StudentPrepaidRefundForm({
             action={formAction}
             className="mt-3 space-y-3 rounded-lg border border-blue-100 bg-blue-50/60 p-3"
             onSubmit={(event) => {
-              if (!window.confirm("Отметить фактический возврат денег ученику?")) {
+              if (!window.confirm("Отмечайте возврат только после фактической передачи денег ученику. Деньги уже действительно переданы?")) {
                 event.preventDefault();
               }
             }}
@@ -247,7 +247,7 @@ function StudentPrepaidRefundRow({
           </p>
           {!isCancelled && (
             <p className="mt-1 font-semibold text-emerald-700">
-              Возврат ученику отмечен
+              Фактический возврат денег ученику отмечен
             </p>
           )}
         </div>

@@ -41,8 +41,21 @@ const financeSections = [
   },
 ] as const;
 
-export default async function DirectorFinancesPage() {
+type DirectorFinancesPageProps = {
+  searchParams?: Promise<{ section?: string }>;
+};
+
+export default async function DirectorFinancesPage({
+  searchParams,
+}: DirectorFinancesPageProps) {
   await requireDirectorAccess();
+  const params = (await searchParams) ?? {};
+  const selectedSection =
+    params.section === "student-payments" ||
+    params.section === "instructor-settlements" ||
+    params.section === "overview"
+      ? params.section
+      : null;
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -66,26 +79,42 @@ export default async function DirectorFinancesPage() {
         </header>
 
         <section className="grid gap-4 lg:grid-cols-3">
-          {financeSections.map(({ href, icon: Icon, title, description, linkLabel, tone }) => (
-            <Card key={href} className={tone}>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Icon className="size-5 text-zinc-700" />
-                  <CardTitle>{title}</CardTitle>
-                </div>
-                <CardDescription className="leading-6">{description}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Link
-                  href={href}
-                  className="inline-flex items-center gap-2 text-sm font-semibold text-zinc-900 underline decoration-zinc-400 underline-offset-4 hover:decoration-zinc-900"
+          {financeSections.map(
+            ({ href, icon: Icon, title, description, linkLabel, tone }) => {
+              const sectionKey =
+                href === "/director/students"
+                  ? "student-payments"
+                  : href === "/director/reports"
+                    ? "instructor-settlements"
+                    : "overview";
+
+              return (
+                <Card
+                  key={href}
+                  className={`${tone} ${selectedSection === sectionKey ? "ring-2 ring-zinc-900/20" : ""}`}
                 >
-                  {linkLabel}
-                  <ArrowRight className="size-4" />
-                </Link>
-              </CardContent>
-            </Card>
-          ))}
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center gap-2">
+                      <Icon className="size-5 text-zinc-700" />
+                      <CardTitle>{title}</CardTitle>
+                    </div>
+                    <CardDescription className="leading-6">
+                      {description}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Link
+                      href={href}
+                      className="inline-flex items-center gap-2 text-sm font-semibold text-zinc-900 underline decoration-zinc-400 underline-offset-4 hover:decoration-zinc-900"
+                    >
+                      {linkLabel}
+                      <ArrowRight className="size-4" />
+                    </Link>
+                  </CardContent>
+                </Card>
+              );
+            },
+          )}
         </section>
 
         <Card className="border-blue-200 bg-blue-50/60">

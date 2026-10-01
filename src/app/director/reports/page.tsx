@@ -415,11 +415,13 @@ function SummaryCard({
   label,
   value,
   hint,
+  href,
   tone = "default",
 }: {
   label: string;
   value: string;
   hint: string;
+  href?: string;
   tone?: "default" | "emerald" | "amber";
 }) {
   const className =
@@ -439,9 +441,18 @@ function SummaryCard({
     <Card className={className}>
       <CardContent className="p-4 sm:p-5">
         <p className={`text-sm ${labelClassName}`}>{label}</p>
-        <p className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
-          {value}
-        </p>
+        {href ? (
+          <Link
+            href={href}
+            className="mt-2 inline-block text-2xl font-semibold tracking-tight text-zinc-950 underline decoration-zinc-400 underline-offset-4 transition-colors hover:decoration-zinc-950"
+          >
+            {value}
+          </Link>
+        ) : (
+          <p className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
+            {value}
+          </p>
+        )}
         <p className={`mt-1 text-xs ${labelClassName}`}>{hint}</p>
       </CardContent>
     </Card>
@@ -2081,52 +2092,61 @@ export default async function DirectorReportsPage({
           <SummaryCard
             label="Стоимость занятий"
             value={formatMoney(totalStudentAmount)}
+            href="/director/finances?section=student-payments"
             hint={`${reportItems.length} записей за период`}
           />
           <SummaryCard
             label="Получено от учеников"
             value={formatMoney(paidAmount)}
+            href="/director/finances?section=student-payments"
             hint={`${paidItemsCount} обычных оплат · ${studentPrepaymentCount} предоплат на ${formatMoney(studentPrepaidAmount)} · возвраты ${formatMoney(studentRefundedAmount)}`}
             tone="emerald"
           />
           <SummaryCard
             label="Долг учеников"
             value={formatMoney(debtAmount)}
+            href="/director/finances?section=student-payments"
             hint={`${debtItems.length} записей с долгом`}
             tone="amber"
           />
           <SummaryCard
             label="Начислено инструкторам"
             value={formatMoney(payoutSummary.amount)}
+            href="/director/finances?section=instructor-settlements"
             hint={`${completedItems.length} проведено · ${formatHours(hours)} ч`}
           />
           <SummaryCard
             label="Выдано инструкторам"
             value={formatMoney(payoutSummary.paid_amount)}
+            href="/director/finances?section=instructor-settlements"
             hint="Отмечено руководителем как выдано"
             tone="emerald"
           />
           <SummaryCard
             label="К выдаче инструкторам"
             value={formatMoney(payoutSummary.remaining_amount)}
+            href="/director/finances?section=instructor-settlements"
             hint="Начислено минус выдано"
             tone="amber"
           />
           <SummaryCard
             label="Частный доп. заработок"
             value={formatMoney(directIncomeAmount)}
+            href="/director/finances?section=instructor-settlements"
             hint={`${directIncomeItems.length} занятий · школа не выдаёт эти деньги`}
             tone="emerald"
           />
           <SummaryCard
             label="Маржа"
             value={formatMoney(marginAmount)}
+            href="/director/finances?section=overview"
             hint="Обычные оплаты и предоплаты минус возвраты и начисления инструкторам"
             tone={marginAmount < 0 ? "amber" : "default"}
           />
           <SummaryCard
             label="Потенциальная маржа"
             value={formatMoney(potentialMarginAmount)}
+            href="/director/finances?section=overview"
             hint="Не меньше фактически полученной школой суммы минус начисления"
           />
         </section>

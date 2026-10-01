@@ -11,7 +11,7 @@ import { requireDirectorAccess } from "@/lib/director-auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import { formatDateTime, formatMoney } from "@/lib/formatters";
-import { FinanceStudentPaymentActions } from "@/components/director/finance-student-payment-actions";
+import { FinanceStudentPaymentsTable } from "@/components/director/finance-student-payments-table";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +19,13 @@ type FinanceView = "overview" | "student-payments" | "instructor-settlements" | 
 
 type StudentPaymentRow = {
   id: string;
+  student_access_id: string;
   student_label: string;
   instructor_name: string;
   school_name: string;
   lesson_type_name: string;
+  school_id: string;
+  lesson_type_id: string;
   quantity: number;
   used_quantity: number;
   final_total_amount: number;
@@ -36,9 +39,30 @@ type StudentPaymentRow = {
     cancelled_at: string | null;
     cancellation_note: string | null;
   }>;
+  adjustments: Array<{
+    id: string;
+    previous_quantity: number;
+    previous_final_total_amount: number;
+    new_quantity: number;
+    new_final_total_amount: number;
+    reason: string;
+    created_at: string;
+  }>;
   status: "active" | "cancelled";
   paid_at: string;
+  payment_note: string | null;
 };
+
+type StudentPaymentOption = {
+  id: string;
+  label: string;
+  school_id: string | null;
+  lesson_type_ids: string[];
+};
+
+type PaymentSchool = { id: string; name: string };
+type PaymentLessonType = { id: string; name: string };
+type PaymentPrice = { school_id: string; lesson_type_id: string; price_amount: number };
 
 type InstructorSettlementRow = {
   id: string;
@@ -127,7 +151,7 @@ export default async function DirectorFinancesPage({
     );
   }
 
-  const [summary, studentPayments, instructorSettlements, operations] = await Promise.all([
+  const [summary, studentPayments, instructorSettlements, operations, paymentOptions, paymentSchools, paymentLessonTypes, paymentPrices] = await Promise.all([
     queryRows<{
       student_paid: number;
       student_refunded: number;
@@ -137,7 +161,7 @@ export default async function DirectorFinancesPage({
     }>(
       `
         select
-          (select coalesce(sum(final_total_amount), 0)::integer from public.student_prepaid_credits where organization_id = $1 and status = 'active') as student_paid,
+          (select coalesce(sum(final_total_amount), 0)::integer from public.student_prepaid_credits where organization_id = $1) as student_paid,
           (select coalesce(sum(refunds.amount), 0)::integer from public.student_prepaid_refunds refunds join public.student_prepaid_credits credits on credits.id = refunds.credit_id where refunds.organization_id = $1 and refunds.cancelled_at is null) as student_refunded,
           (select coalesce(sum(amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned') as instructor_accrued,
           (select coalesce(sum(paid_amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned') as instructor_paid,
@@ -147,15 +171,17 @@ export default async function DirectorFinancesPage({
     ),
     queryRows<StudentPaymentRow>(
       `
-        select credits.id::text, accesses.display_label as student_label,
+        select credits.id::text, accesses.id::text as student_access_id, accesses.display_label as student_label,
                coalesce(instructors.public_name, instructors.name) as instructor_name,
                schools.name as school_name, lesson_types.name as lesson_type_name,
+               credits.school_id::text, credits.lesson_type_id::text,
                credits.quantity, coalesce(usages.used_quantity, 0)::integer as used_quantity,
                credits.final_total_amount::integer,
                credits.final_unit_price::integer,
                coalesce(refunds.refunded_amount, 0)::integer as refunded_amount,
                coalesce(refund_rows.refunds, '[]'::jsonb) as refunds,
-               credits.status, credits.paid_at::text
+               coalesce(adjustment_rows.adjustments, '[]'::jsonb) as adjustments,
+               credits.status, credits.paid_at::text, credits.payment_note
         from public.student_prepaid_credits credits
         join public.student_accesses accesses on accesses.id = credits.student_access_id
         join public.instructors instructors on instructors.id = credits.instructor_id
@@ -181,8 +207,21 @@ export default async function DirectorFinancesPage({
           from public.student_prepaid_refunds student_refunds
           where student_refunds.credit_id = credits.id
         ) refund_rows on true
+        left join lateral (
+          select jsonb_agg(jsonb_build_object(
+            'id', adjustments.id,
+            'previous_quantity', adjustments.previous_quantity,
+            'previous_final_total_amount', adjustments.previous_final_total_amount,
+            'new_quantity', adjustments.new_quantity,
+            'new_final_total_amount', adjustments.new_final_total_amount,
+            'reason', adjustments.reason,
+            'created_at', adjustments.created_at
+          ) order by adjustments.created_at desc) as adjustments
+          from public.student_prepaid_credit_adjustments adjustments
+          where adjustments.credit_id = credits.id
+        ) adjustment_rows on true
         where credits.organization_id = $1
-        order by credits.paid_at desc, credits.created_at desc limit 100
+        order by credits.paid_at desc, credits.created_at desc
       `,
       [membership.organizationId],
     ),
@@ -210,6 +249,31 @@ export default async function DirectorFinancesPage({
           and (action like 'student_prepaid_%' or action like 'director_report_payout_%' or action like 'instructor_payout_%' or action = 'booking.source_settlement_completed')
         order by created_at desc limit 100
       `,
+      [membership.organizationId],
+    ),
+    queryRows<StudentPaymentOption>(
+      `
+        select accesses.id::text, accesses.display_label as label, accesses.school_id::text,
+               coalesce(array_agg(access_lesson_types.lesson_type_id::text order by access_lesson_types.lesson_type_id)
+                 filter (where access_lesson_types.lesson_type_id is not null), '{}') as lesson_type_ids
+        from public.student_accesses accesses
+        left join public.student_access_lesson_types access_lesson_types
+          on access_lesson_types.student_access_id = accesses.id
+        where accesses.organization_id = $1 and accesses.is_active = true and accesses.is_archived = false
+        group by accesses.id, accesses.display_label, accesses.school_id
+        order by accesses.display_label
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<PaymentSchool>(
+      `select id::text, name from public.schools where organization_id = $1 and is_active = true order by name`,
+      [membership.organizationId],
+    ),
+    queryRows<PaymentLessonType>(
+      `select id::text, name from public.lesson_types where is_active = true order by sort_order, name`,
+    ),
+    queryRows<PaymentPrice>(
+      `select school_id::text, lesson_type_id::text, price_amount::integer from public.school_lesson_type_prices where organization_id = $1`,
       [membership.organizationId],
     ),
   ]);
@@ -243,7 +307,7 @@ export default async function DirectorFinancesPage({
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <SummaryLink href={financeHref("student-payments")} label="Оплачено учениками" value={formatMoney(totals.student_paid)} tone="emerald" />
           <SummaryLink href={financeHref("student-payments")} label="Возвращено ученикам" value={formatMoney(totals.student_refunded)} tone="amber" />
-          <SummaryLink href={financeHref("student-payments")} label="Остаток оплат" value={formatMoney(studentRemaining)} />
+          <SummaryLink href={financeHref("student-payments")} label="Осталось после возвратов" value={formatMoney(studentRemaining)} />
           <SummaryLink href={financeHref("instructor-settlements")} label="Начислено инструкторам" value={formatMoney(totals.instructor_accrued)} />
           <SummaryLink href={financeHref("instructor-settlements")} label="К выдаче инструкторам" value={formatMoney(totals.instructor_remaining)} tone="amber" />
         </section>
@@ -255,9 +319,7 @@ export default async function DirectorFinancesPage({
         )}
 
         {view === "student-payments" && (
-          <Card><CardHeader><CardTitle>Оплаты учеников</CardTitle><CardDescription>Предоплаты, их использование и фактически отмеченные возвраты.</CardDescription></CardHeader><CardContent className="space-y-2">
-            {studentPayments.length === 0 ? <p className="rounded-xl border border-dashed p-6 text-center text-sm text-zinc-500">Оплат пока нет.</p> : studentPayments.map((item) => <div key={item.id} className="rounded-xl border bg-white p-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><p className="font-semibold">{item.student_label}</p><p className="mt-1 text-sm text-zinc-500">{item.instructor_name} · {item.school_name} · {item.lesson_type_name}</p></div><span className="font-semibold">{formatMoney(item.final_total_amount)}</span></div><div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-4"><span>Занятий: {item.quantity}</span><span>Использовано: {item.used_quantity}</span><span>Осталось: {Math.max(item.quantity - item.used_quantity, 0)}</span><span>Возвращено: {formatMoney(item.refunded_amount)}</span></div><p className="mt-2 text-xs text-zinc-500">{item.status === "cancelled" ? "Остаток предоплаты отменён" : "Предоплата активна"} · {new Intl.DateTimeFormat("ru-RU").format(new Date(item.paid_at))}</p><FinanceStudentPaymentActions creditId={item.id} quantity={item.quantity} usedQuantity={item.used_quantity} finalTotalAmount={item.final_total_amount} finalUnitPrice={item.final_unit_price} status={item.status} refundedAmount={item.refunded_amount} refunds={item.refunds} /></div>)}
-          </CardContent></Card>
+          <Card><CardHeader><CardTitle>Оплаты учеников</CardTitle><CardDescription>Предоплаты, их использование и фактически отмеченные возвраты.</CardDescription></CardHeader><CardContent><FinanceStudentPaymentsTable payments={studentPayments} students={paymentOptions} schools={paymentSchools} lessonTypes={paymentLessonTypes} prices={paymentPrices} /></CardContent></Card>
         )}
 
         {view === "instructor-settlements" && (

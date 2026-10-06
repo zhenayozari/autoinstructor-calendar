@@ -11,6 +11,7 @@ type ReturnFields = {
   from: string;
   to: string;
   selectedInstructorId: string;
+  returnPath?: string;
 };
 
 function HiddenReturnFields({
@@ -18,6 +19,7 @@ function HiddenReturnFields({
   from,
   to,
   selectedInstructorId,
+  returnPath,
 }: ReturnFields) {
   return (
     <>
@@ -25,6 +27,7 @@ function HiddenReturnFields({
       <input type="hidden" name="return_from" value={from} />
       <input type="hidden" name="return_to" value={to} />
       <input type="hidden" name="return_instructor" value={selectedInstructorId} />
+      {returnPath && <input type="hidden" name="return_path" value={returnPath} />}
     </>
   );
 }
@@ -50,6 +53,7 @@ export function InstructorDebtActions({
   from,
   to,
   selectedInstructorId,
+  returnPath,
 }: {
   returnAction: (formData: FormData) => void | Promise<void>;
   withholdAction: (formData: FormData) => void | Promise<void>;
@@ -84,6 +88,7 @@ export function InstructorDebtActions({
             from={from}
             to={to}
             selectedInstructorId={selectedInstructorId}
+            returnPath={returnPath}
           />
           <input type="hidden" name="instructor_id" value={instructorId} />
           <label className="space-y-1">
@@ -135,6 +140,7 @@ export function InstructorDebtActions({
             from={from}
             to={to}
             selectedInstructorId={selectedInstructorId}
+            returnPath={returnPath}
           />
           <input type="hidden" name="instructor_id" value={instructorId} />
           <label className="min-w-0 flex-1 space-y-1">

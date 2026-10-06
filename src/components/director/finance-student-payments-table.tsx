@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   FinanceStudentPaymentActions,
   FinanceStudentPaymentCreateForm,
@@ -48,6 +48,17 @@ type StudentPaymentOption = { id: string; label: string; school_id: string | nul
 type PaymentSchool = { id: string; name: string };
 type PaymentLessonType = { id: string; name: string };
 type PaymentPrice = { school_id: string; lesson_type_id: string; price_amount: number };
+type StudentPaymentGroup = {
+  studentAccessId: string;
+  studentLabel: string;
+  payments: StudentPaymentRow[];
+  totalPaid: number;
+  totalQuantity: number;
+  totalUsed: number;
+  totalAvailable: number;
+  totalRefunded: number;
+  instructors: string[];
+};
 
 const pageSize = 25;
 
@@ -69,6 +80,7 @@ export function FinanceStudentPaymentsTable({
   const [instructor, setInstructor] = useState("all");
   const [school, setSchool] = useState("all");
   const [page, setPage] = useState(1);
+  const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const instructors = useMemo(() => Array.from(new Set(payments.map((item) => item.instructor_name))).sort(), [payments]);
@@ -83,9 +95,30 @@ export function FinanceStudentPaymentsTable({
     });
   }, [payments, search, status, instructor, school]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const groups = useMemo<StudentPaymentGroup[]>(() => {
+    const grouped = new Map<string, StudentPaymentRow[]>();
+    filtered.forEach((payment) => {
+      const current = grouped.get(payment.student_access_id) ?? [];
+      current.push(payment);
+      grouped.set(payment.student_access_id, current);
+    });
+
+    return Array.from(grouped.values()).map((studentPayments) => ({
+      studentAccessId: studentPayments[0].student_access_id,
+      studentLabel: studentPayments[0].student_label,
+      payments: studentPayments,
+      totalPaid: studentPayments.reduce((sum, payment) => sum + payment.final_total_amount, 0),
+      totalQuantity: studentPayments.reduce((sum, payment) => sum + payment.quantity, 0),
+      totalUsed: studentPayments.reduce((sum, payment) => sum + payment.used_quantity, 0),
+      totalAvailable: studentPayments.reduce((sum, payment) => sum + (payment.status === "active" ? Math.max(payment.quantity - payment.used_quantity, 0) : 0), 0),
+      totalRefunded: studentPayments.reduce((sum, payment) => sum + payment.refunded_amount, 0),
+      instructors: Array.from(new Set(studentPayments.map((payment) => payment.instructor_name))).sort(),
+    }));
+  }, [filtered]);
+
+  const pageCount = Math.max(1, Math.ceil(groups.length / pageSize));
   const currentPage = Math.min(page, pageCount);
-  const visible = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const visibleGroups = groups.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const changeFilter = (setter: (value: string) => void, value: string) => {
     setter(value);
     setPage(1);
@@ -118,7 +151,7 @@ export function FinanceStudentPaymentsTable({
           </select>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-          <span>Показано {filtered.length} из {payments.length} оплат</span>
+          <span>Показано {groups.length} учеников и {filtered.length} оплат из {payments.length}</span>
           {(search || status !== "all" || instructor !== "all" || school !== "all") && (
             <button type="button" className="font-semibold text-zinc-800 underline underline-offset-2" onClick={() => { setSearch(""); setStatus("all"); setInstructor("all"); setSchool("all"); setPage(1); }}>
               Сбросить фильтры
@@ -129,45 +162,68 @@ export function FinanceStudentPaymentsTable({
 
       {payments.length === 0 ? <p className="rounded-xl border border-dashed p-6 text-center text-sm text-zinc-500">Оплат пока нет.</p> : filtered.length === 0 ? <p className="rounded-xl border border-dashed p-6 text-center text-sm text-zinc-500">По выбранным фильтрам оплаты не найдены.</p> : (
         <div className="space-y-2">
-          <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">Каждая строка ниже — отдельная оплата. Один ученик может отображаться несколько раз, если он вносил деньги несколькими платежами.</p>
+          <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">Оплаты одного ученика собраны в одну группу. Внутри группы каждая строка — отдельная оплата со своей датой, суммой и историей.</p>
           <div className="overflow-hidden rounded-xl border border-zinc-200">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] border-collapse text-sm">
-              <thead className="bg-zinc-50 text-left text-xs text-zinc-500">
-                <tr>
-                  <th className="px-3 py-3 font-semibold">Оплата ученика</th>
-                  <th className="px-3 py-3 font-semibold">Источник · тип</th>
-                  <th className="px-3 py-3 text-right font-semibold">Внесено</th>
-                  <th className="px-3 py-3 text-right font-semibold">Использовано</th>
-                  <th className="px-3 py-3 text-right font-semibold">Доступно для записи</th>
-                  <th className="px-3 py-3 font-semibold">Статус оплаты</th>
-                  <th className="px-3 py-3 font-semibold">Дата оплаты</th>
-                  <th className="px-3 py-3" />
-                </tr>
-              </thead>
+            <table className="w-full min-w-[920px] border border-zinc-400 border-collapse text-sm [&_th]:border-b [&_th]:border-r [&_th]:border-zinc-400 [&_td]:border-r [&_td]:border-zinc-300 [&_tbody_tr]:border-b [&_tbody_tr]:border-zinc-300">
               <tbody>
-                {visible.map((item) => {
-                  const remaining = Math.max(item.quantity - item.used_quantity, 0);
-                  const available = item.status === "active" ? remaining : 0;
-                  const closed = item.status === "cancelled" ? remaining : 0;
-                  const studentPayments = payments.filter((payment) => payment.student_access_id === item.student_access_id);
-                  const expanded = expandedId === item.id;
-                  return (
-                    <FragmentRow
-                      key={item.id}
-                      item={item}
-                      paymentNumber={studentPayments.findIndex((payment) => payment.id === item.id) + 1}
-                      paymentCount={studentPayments.length}
-                      available={available}
-                      closed={closed}
-                      expanded={expanded}
-                      onToggle={() => setExpandedId(expanded ? null : item.id)}
-                      schools={schools}
-                      lessonTypes={lessonTypes}
-                      prices={prices}
-                    />
-                  );
-                })}
+                {visibleGroups.map((group) => (
+                  <Fragment key={group.studentAccessId}>
+                    <tr className="border-t-4 border-zinc-100 bg-zinc-50">
+                      <td colSpan={8} className="p-3 sm:p-4">
+                        <div className="rounded-xl border border-sky-200 bg-sky-50/40 p-3 sm:p-4">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <button type="button" aria-expanded={expandedStudentId === group.studentAccessId} onClick={() => setExpandedStudentId(expandedStudentId === group.studentAccessId ? null : group.studentAccessId)} className="flex min-w-0 items-start gap-2 text-left">
+                              <span className="mt-0.5 text-zinc-500">{expandedStudentId === group.studentAccessId ? "▼" : "▶"}</span>
+                              <span><span className="block font-semibold text-zinc-950">{group.studentLabel}</span><span className="mt-1 block text-xs text-zinc-500">{group.payments.length} {group.payments.length === 1 ? "отдельная оплата" : "отдельные оплаты"}{group.instructors.length > 0 ? ` · ${group.instructors.join(", ")}` : ""}</span></span>
+                            </button>
+                            <Link href={`/director/students?view=list&status=all&student=${group.studentAccessId}#student-${group.studentAccessId}`} className="text-sm font-semibold text-zinc-700 underline decoration-zinc-300 underline-offset-4">Открыть карточку</Link>
+                          </div>
+                          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><p className="text-xs text-emerald-800">Внесено за все оплаты</p><p className="mt-1 font-semibold text-emerald-950">{formatMoney(group.totalPaid)}</p></div>
+                            <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2"><p className="text-xs text-sky-800">Использовано занятий</p><p className="mt-1 font-semibold text-sky-950">{group.totalUsed} из {group.totalQuantity}</p></div>
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2"><p className="text-xs text-amber-800">Доступно для записи</p><p className="mt-1 font-semibold text-amber-950">{group.totalAvailable}</p></div>
+                            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2"><p className="text-xs text-rose-800">Возвращено ученику</p><p className="mt-1 font-semibold text-rose-950">{formatMoney(group.totalRefunded)}</p></div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    {expandedStudentId === group.studentAccessId && <>
+                      <tr className="bg-white"><td colSpan={8} className="px-3 py-2 sm:px-4"><div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2"><p className="text-xs font-semibold uppercase tracking-wide text-sky-900">Отдельные оплаты ученика</p><p className="mt-1 text-xs text-sky-800">Каждая строка ниже — самостоятельная оплата со своей датой, суммой, статусом и историей.</p></div></td></tr>
+                      <tr className="bg-zinc-50 text-left text-xs text-zinc-500">
+                        <th className="border-b border-zinc-400 px-3 py-3 font-semibold">Оплата ученика</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 font-semibold">Источник · тип</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 text-right font-semibold">Внесено</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 text-right font-semibold">Использовано</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 text-right font-semibold">Доступно для записи</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 font-semibold">Статус оплаты</th>
+                        <th className="border-b border-zinc-400 px-3 py-3 font-semibold">Дата оплаты</th>
+                        <th className="border-b border-zinc-400 px-3 py-3" />
+                      </tr>
+                    </>}
+                    {expandedStudentId === group.studentAccessId && group.payments.map((item, index) => {
+                      const remaining = Math.max(item.quantity - item.used_quantity, 0);
+                      const available = item.status === "active" ? remaining : 0;
+                      const closed = item.status === "cancelled" ? remaining : 0;
+                      const expanded = expandedId === item.id;
+                      return (
+                        <FragmentRow
+                          key={item.id}
+                          item={item}
+                          paymentNumber={index + 1}
+                          paymentCount={group.payments.length}
+                          available={available}
+                          closed={closed}
+                          expanded={expanded}
+                          onToggle={() => setExpandedId(expanded ? null : item.id)}
+                          schools={schools}
+                          lessonTypes={lessonTypes}
+                          prices={prices}
+                        />
+                      );
+                    })}
+                  </Fragment>
+                ))}
               </tbody>
             </table>
           </div>
@@ -223,10 +279,15 @@ function FragmentRow({
     : available === 0
       ? "bg-zinc-100 text-zinc-700"
       : "bg-emerald-50 text-emerald-700";
+  const paymentAccent = item.status === "cancelled"
+    ? "border-l-4 border-l-rose-300"
+    : available === 0
+      ? "border-l-4 border-l-zinc-300"
+      : "border-l-4 border-l-emerald-300";
 
   return <>
-    <tr className="border-t border-zinc-200 align-middle hover:bg-zinc-50">
-      <td className="px-3 py-3"><Link href={`/director/students?view=list&status=all&student=${item.student_access_id}#student-${item.student_access_id}`} className="font-semibold text-zinc-900 underline decoration-zinc-300 underline-offset-4">{item.student_label}</Link><span className="mt-1 block text-xs font-medium text-zinc-600">Оплата {paymentNumber} из {paymentCount}</span><span className="mt-1 block text-xs text-zinc-500">Логин: {item.student_access_id}</span></td>
+    <tr className="border-t border-zinc-200 bg-white align-middle hover:bg-zinc-50">
+      <td className={`px-3 py-3 pl-6 ${paymentAccent}`}><span className="font-semibold text-zinc-900">Оплата {paymentNumber} из {paymentCount}</span><span className="mt-1 block text-xs text-zinc-500">Отдельная запись об оплате</span></td>
       <td className="px-3 py-3">{item.school_name}<span className="mt-1 block text-xs text-zinc-500">{item.lesson_type_name} · {item.instructor_name}</span></td>
       <td className="px-3 py-3 text-right"><span className="font-semibold">{formatMoney(item.final_total_amount)}</span><span className="mt-1 block text-xs text-zinc-500">за {item.quantity} {item.quantity === 1 ? "занятие" : item.quantity < 5 ? "занятия" : "занятий"}</span></td>
       <td className="px-3 py-3 text-right">{item.used_quantity} из {item.quantity}<span className="mt-1 block text-xs text-zinc-500">использовано</span></td>

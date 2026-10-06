@@ -26,6 +26,7 @@ export function CancelPayoutButton({
   returnFrom,
   returnTo,
   returnInstructor,
+  returnPath,
 }: {
   action: (formData: FormData) => void | Promise<void>;
   paymentId: string;
@@ -33,6 +34,7 @@ export function CancelPayoutButton({
   returnFrom: string;
   returnTo: string;
   returnInstructor: string;
+  returnPath?: string;
 }) {
   return (
     <form
@@ -48,6 +50,7 @@ export function CancelPayoutButton({
       <input type="hidden" name="return_from" value={returnFrom} />
       <input type="hidden" name="return_to" value={returnTo} />
       <input type="hidden" name="return_instructor" value={returnInstructor} />
+      {returnPath && <input type="hidden" name="return_path" value={returnPath} />}
       <CancelPayoutSubmitButton />
     </form>
   );

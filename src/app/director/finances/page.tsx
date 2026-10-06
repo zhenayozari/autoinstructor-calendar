@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  ArrowRight,
   CircleDollarSign,
   FileClock,
   GraduationCap,
@@ -10,8 +9,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
-import { formatDateTime, formatMoney } from "@/lib/formatters";
+import { formatMoney } from "@/lib/formatters";
 import { FinanceStudentPaymentsTable } from "@/components/director/finance-student-payments-table";
+import {
+  FinanceInstructorSettlements,
+  type FinanceInstructorItem,
+} from "@/components/director/finance-instructor-settlements";
+import {
+  FinanceOperationsTable,
+  type FinanceOperation,
+} from "@/components/director/finance-operations-table";
 
 export const dynamic = "force-dynamic";
 
@@ -72,13 +79,23 @@ type InstructorSettlementRow = {
   remaining_amount: number;
 };
 
-type OperationRow = {
+type InstructorStudentSettlementRow = {
+  instructor_id: string;
+  student_access_id: string | null;
+  student_name: string;
+  remaining_amount: number;
+  booking_count: number;
+  booking_units: number;
+  prepaid_units: number;
+  adjustment_count: number;
+};
+
+type InstructorPaymentRow = {
   id: string;
-  action: string;
-  entity_type: string;
-  actor_role: string;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
+  instructor_id: string;
+  amount: number;
+  paid_at: string;
+  payment_note: string | null;
 };
 
 const views: Array<{
@@ -127,11 +144,6 @@ function SummaryLink({
   );
 }
 
-function MetadataAmount({ metadata }: { metadata: Record<string, unknown> | null }) {
-  const amount = metadata?.amount;
-  return typeof amount === "number" ? <span className="font-semibold">{formatMoney(amount)}</span> : null;
-}
-
 export default async function DirectorFinancesPage({
   searchParams,
 }: {
@@ -151,7 +163,7 @@ export default async function DirectorFinancesPage({
     );
   }
 
-  const [summary, studentPayments, instructorSettlements, operations, paymentOptions, paymentSchools, paymentLessonTypes, paymentPrices] = await Promise.all([
+  const [summary, studentPayments, instructorSettlements, instructorStudentSettlements, instructorPayments, instructorDirectIncome, operations, paymentOptions, paymentSchools, paymentLessonTypes, paymentPrices] = await Promise.all([
     queryRows<{
       student_paid: number;
       student_refunded: number;
@@ -241,13 +253,73 @@ export default async function DirectorFinancesPage({
       `,
       [membership.organizationId],
     ),
-    queryRows<OperationRow>(
+    queryRows<InstructorStudentSettlementRow>(
       `
-        select id::text, action, entity_type, actor_role, metadata, created_at::text
-        from public.audit_logs
+        select entries.instructor_id::text,
+               entries.student_access_id::text,
+               coalesce(accesses.display_label, 'Без ученика') as student_name,
+               coalesce(sum(balances.remaining_amount), 0)::integer as remaining_amount,
+               count(*) filter (where entries.entry_type = 'booking_accrual')::integer as booking_count,
+               coalesce(sum(case when entries.entry_type = 'booking_accrual' then coalesce(bookings.lesson_units, 1) else 0 end), 0)::integer as booking_units,
+               coalesce(sum(case when entries.entry_type = 'prepaid_credit_accrual' then coalesce(credits.quantity, 0) else 0 end), 0)::integer as prepaid_units,
+               count(*) filter (where entries.entry_type = 'adjustment')::integer as adjustment_count
+        from public.instructor_payout_entry_balances balances
+        join public.instructor_payout_entries entries on entries.id = balances.id
+        left join public.student_accesses accesses on accesses.id = entries.student_access_id
+        left join public.bookings bookings on bookings.id = entries.booking_id
+        left join public.student_prepaid_credits credits on credits.id = entries.student_prepaid_credit_id
+        where entries.organization_id = $1
+          and entries.status = 'planned'
+        group by entries.instructor_id, entries.student_access_id, accesses.display_label
+        having coalesce(sum(balances.remaining_amount), 0) <> 0
+        order by entries.instructor_id, remaining_amount desc, student_name
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<InstructorPaymentRow>(
+      `
+        select id::text, instructor_id::text, amount::integer,
+               paid_at::text, payment_note
+        from public.instructor_payout_payments
         where organization_id = $1
-          and (action like 'student_prepaid_%' or action like 'director_report_payout_%' or action like 'instructor_payout_%' or action = 'booking.source_settlement_completed')
-        order by created_at desc limit 100
+        order by paid_at desc
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<{ instructor_id: string; amount: number }>(
+      `
+        select s.instructor_id::text,
+               coalesce(sum(b.direct_instructor_income_amount), 0)::integer as amount
+        from public.bookings b
+        join public.slots s on s.id = b.slot_id
+        join public.instructors i on i.id = s.instructor_id
+        where i.organization_id = $1
+          and b.direct_instructor_income_amount is not null
+          and b.direct_instructor_income_recognized_at is not null
+        group by s.instructor_id
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<FinanceOperation>(
+      `
+        select audit_logs.id::text, audit_logs.action, audit_logs.entity_type, audit_logs.actor_role, audit_logs.metadata, audit_logs.created_at::text
+             , coalesce(student_direct.id, student_credit_access.id)::text as student_id
+             , coalesce(student_direct.display_label, student_credit_access.display_label) as student_name
+             , instructor_subject.id::text as instructor_id
+             , coalesce(instructor_subject.public_name, instructor_subject.name) as instructor_name
+        from public.audit_logs
+        left join public.student_prepaid_credits credit_subject
+          on credit_subject.id::text = audit_logs.entity_id
+         and audit_logs.entity_type = 'student_prepaid_credit'
+        left join public.student_accesses student_direct
+          on student_direct.id::text = audit_logs.metadata->>'student_access_id'
+        left join public.student_accesses student_credit_access
+          on student_credit_access.id = credit_subject.student_access_id
+        left join public.instructors instructor_subject
+          on instructor_subject.id::text = audit_logs.metadata->>'instructor_id'
+        where audit_logs.organization_id = $1
+          and (audit_logs.action like 'student_prepaid_%' or audit_logs.action like 'director_report_payout_%' or audit_logs.action like 'instructor_payout_%' or audit_logs.action = 'booking.source_settlement_completed')
+        order by audit_logs.created_at desc limit 100
       `,
       [membership.organizationId],
     ),
@@ -280,6 +352,41 @@ export default async function DirectorFinancesPage({
 
   const totals = summary[0] ?? { student_paid: 0, student_refunded: 0, instructor_accrued: 0, instructor_paid: 0, instructor_remaining: 0 };
   const studentRemaining = Math.max(totals.student_paid - totals.student_refunded, 0);
+  const studentsWithPayments = new Set(studentPayments.map((payment) => payment.student_access_id)).size;
+  const activePaymentCount = studentPayments.filter((payment) => payment.status === "active").length;
+  const closedPaymentCount = studentPayments.filter((payment) => payment.status === "cancelled").length;
+  const availableStudentUnits = studentPayments.reduce((sum, payment) => (
+    sum + (payment.status === "active" ? Math.max(payment.quantity - payment.used_quantity, 0) : 0)
+  ), 0);
+  const financeInstructorItems: FinanceInstructorItem[] = instructorSettlements.map((item) => ({
+    id: item.id,
+    name: item.instructor_name,
+    plannedAmount: item.planned_amount,
+    paidAmount: item.paid_amount,
+    remainingAmount: item.remaining_amount,
+    directIncomeAmount:
+      instructorDirectIncome.find((income) => income.instructor_id === item.id)?.amount ?? 0,
+    students: instructorStudentSettlements
+      .filter((student) => student.instructor_id === item.id)
+      .map((student) => ({
+        id: student.student_access_id,
+        name: student.student_name,
+        remainingAmount: student.remaining_amount,
+        bookingCount: student.booking_count,
+        bookingUnits: student.booking_units,
+        prepaidUnits: student.prepaid_units,
+        adjustmentCount: student.adjustment_count,
+      })),
+    payments: instructorPayments
+      .filter((payment) => payment.instructor_id === item.id)
+      .map((payment) => ({
+        id: payment.id,
+        amount: payment.amount,
+        paidAt: payment.paid_at,
+        note: payment.payment_note,
+      })),
+  }));
+  const instructorsWithOpenBalance = financeInstructorItems.filter((item) => item.remainingAmount > 0).length;
 
   return (
     <main className="px-3 py-4 sm:px-6 sm:py-8">
@@ -304,18 +411,55 @@ export default async function DirectorFinancesPage({
           ))}
         </nav>
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {view === "overview" && <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <SummaryLink href={financeHref("student-payments")} label="Оплачено учениками" value={formatMoney(totals.student_paid)} tone="emerald" />
           <SummaryLink href={financeHref("student-payments")} label="Возвращено ученикам" value={formatMoney(totals.student_refunded)} tone="amber" />
           <SummaryLink href={financeHref("student-payments")} label="Осталось после возвратов" value={formatMoney(studentRemaining)} />
           <SummaryLink href={financeHref("instructor-settlements")} label="Начислено инструкторам" value={formatMoney(totals.instructor_accrued)} />
           <SummaryLink href={financeHref("instructor-settlements")} label="К выдаче инструкторам" value={formatMoney(totals.instructor_remaining)} tone="amber" />
-        </section>
+        </section>}
 
         {view === "overview" && (
-          <Card><CardHeader><CardTitle>Что здесь можно посмотреть</CardTitle><CardDescription>Выберите один из финансовых блоков выше.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-3">
-            {views.slice(1).map(({ key, label, description, icon: Icon }) => <Link key={key} href={financeHref(key)} className="rounded-xl border bg-white p-4 hover:bg-zinc-50"><Icon className="size-5 text-zinc-700" /><p className="mt-3 font-semibold">{label}</p><p className="mt-1 text-sm leading-5 text-zinc-500">{description}</p><span className="mt-3 inline-flex items-center gap-1 text-sm font-semibold underline underline-offset-4">Открыть <ArrowRight className="size-4" /></span></Link>)}
-          </CardContent></Card>
+          <div className="space-y-4">
+            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4"><p className="text-xs font-medium text-emerald-800">Ученики с оплатами</p><p className="mt-2 text-2xl font-semibold text-emerald-950">{studentsWithPayments}</p><p className="mt-1 text-xs text-emerald-800">учеников внесли деньги</p></div>
+              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4"><p className="text-xs font-medium text-sky-800">Активные оплаты</p><p className="mt-2 text-2xl font-semibold text-sky-950">{activePaymentCount}</p><p className="mt-1 text-xs text-sky-800">платежей можно использовать</p></div>
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4"><p className="text-xs font-medium text-amber-800">Доступно занятий</p><p className="mt-2 text-2xl font-semibold text-amber-950">{availableStudentUnits}</p><p className="mt-1 text-xs text-amber-800">можно записать учеников</p></div>
+              <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4"><p className="text-xs font-medium text-rose-800">Закрытые оплаты</p><p className="mt-2 text-2xl font-semibold text-rose-950">{closedPaymentCount}</p><p className="mt-1 text-xs text-rose-800">остаток по ним закрыт</p></div>
+            </section>
+
+            <section className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <CardHeader><CardTitle>Что сейчас происходит с деньгами</CardTitle><CardDescription>Коротко о главных суммах за всё время.</CardDescription></CardHeader>
+                <CardContent>
+                  <dl className="divide-y divide-zinc-200 rounded-xl border border-zinc-200 bg-white text-sm">
+                    <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">Ученики внесли</dt><dd className="font-semibold text-emerald-800">{formatMoney(totals.student_paid)}</dd></div>
+                    <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">Ученикам фактически возвращено</dt><dd className="font-semibold text-amber-800">{formatMoney(totals.student_refunded)}</dd></div>
+                    <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">После возвратов осталось</dt><dd className="font-semibold">{formatMoney(studentRemaining)}</dd></div>
+                  </dl>
+                  <Link href={financeHref("student-payments")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть оплаты учеников</Link>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader><CardTitle>Что требует внимания</CardTitle><CardDescription>Сюда попадают суммы, по которым может понадобиться действие.</CardDescription></CardHeader>
+                <CardContent>
+                  <div className="space-y-2 text-sm">
+                    <div className={`rounded-lg border px-3 py-2 ${totals.instructor_remaining > 0 ? "border-amber-200 bg-amber-50 text-amber-950" : "border-emerald-200 bg-emerald-50 text-emerald-950"}`}>
+                      {totals.instructor_remaining > 0 ? <><strong>К выдаче инструкторам: {formatMoney(totals.instructor_remaining)}</strong><p className="mt-1 text-xs">Открытых расчётов: {instructorsWithOpenBalance}. Перед выдачей откройте раздел выплат.</p></> : <strong>Открытых выплат инструкторам нет.</strong>}
+                    </div>
+                    <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-950"><strong>Занятий доступно для записи: {availableStudentUnits}</strong><p className="mt-1 text-xs">Это оплаченные, но ещё не использованные занятия учеников.</p></div>
+                  </div>
+                  <Link href={financeHref("instructor-settlements")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть расчёты с инструкторами</Link>
+                </CardContent>
+              </Card>
+            </section>
+
+            <Card>
+              <CardHeader><CardTitle>Последние финансовые действия</CardTitle><CardDescription>Последние изменения по оплатам, возвратам и выплатам. Нажмите на строку, чтобы открыть подробности.</CardDescription></CardHeader>
+              <CardContent><FinanceOperationsTable operations={operations.slice(0, 5)} /><Link href={financeHref("operations")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть всю историю операций</Link></CardContent>
+            </Card>
+          </div>
         )}
 
         {view === "student-payments" && (
@@ -323,15 +467,21 @@ export default async function DirectorFinancesPage({
         )}
 
         {view === "instructor-settlements" && (
-          <Card><CardHeader><CardTitle>Расчёты с инструкторами</CardTitle><CardDescription>Суммы рассчитаны по всем текущим начислениям.</CardDescription></CardHeader><CardContent className="space-y-2">
-            {instructorSettlements.map((item) => <Link key={item.id} href="/director/reports" className="block rounded-xl border bg-white p-4 hover:bg-zinc-50"><div className="flex items-center justify-between gap-3"><p className="font-semibold">{item.instructor_name}</p><span className="font-semibold underline underline-offset-4">{formatMoney(item.remaining_amount)}</span></div><div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-3"><span>Начислено: {formatMoney(item.planned_amount)}</span><span>Выдано: {formatMoney(item.paid_amount)}</span><span>Осталось: {formatMoney(item.remaining_amount)}</span></div></Link>)}
-          </CardContent></Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Инструкторы и выплаты</CardTitle>
+              <CardDescription>
+                Здесь видно, сколько начислено, сколько уже выдано, из чего сложился расчёт и какое действие нужно выполнить.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FinanceInstructorSettlements items={financeInstructorItems} />
+            </CardContent>
+          </Card>
         )}
 
         {view === "operations" && (
-          <Card><CardHeader><CardTitle>История денежных операций</CardTitle><CardDescription>Последние изменения по оплатам, возвратам и расчётам.</CardDescription></CardHeader><CardContent className="space-y-2">
-            {operations.map((item) => <div key={item.id} className="flex flex-col gap-2 rounded-xl border bg-white p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold">{item.action}</p><p className="mt-1 text-sm text-zinc-500">{item.entity_type} · {item.actor_role}</p></div><div className="flex items-center gap-3 text-sm text-zinc-500"><MetadataAmount metadata={item.metadata} /><span>{formatDateTime(item.created_at, "Asia/Irkutsk")}</span></div></div>)}
-          </CardContent></Card>
+          <Card><CardHeader><CardTitle>История денежных операций</CardTitle><CardDescription>Последние изменения по оплатам, возвратам и расчётам. Нажмите на строку, чтобы увидеть пояснение.</CardDescription></CardHeader><CardContent><FinanceOperationsTable operations={operations} /></CardContent></Card>
         )}
       </div>
     </main>

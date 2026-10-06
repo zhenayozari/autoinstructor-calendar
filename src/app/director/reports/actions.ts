@@ -56,8 +56,9 @@ function validateLength(value: string | null, max: number, label: string) {
   return value;
 }
 
-function readReturnSearchParams(formData: FormData, status: string) {
+function readReturnUrl(formData: FormData, status: string, extra?: Record<string, string>) {
   const params = new URLSearchParams({ payout: status });
+  const returnPath = readOptionalString(formData, "return_path");
   const period = readOptionalString(formData, "return_period");
   const from = readOptionalString(formData, "return_from");
   const to = readOptionalString(formData, "return_to");
@@ -68,7 +69,21 @@ function readReturnSearchParams(formData: FormData, status: string) {
   if (to) params.set("to", to);
   if (instructor) params.set("instructor", instructor);
 
-  return params;
+  if (returnPath === "/director/finances?view=instructor-settlements") {
+    params.delete("period");
+    params.delete("from");
+    params.delete("to");
+    params.delete("instructor");
+    params.set("view", "instructor-settlements");
+  }
+
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    params.set(key, value);
+  }
+
+  return returnPath === "/director/finances?view=instructor-settlements"
+    ? `/director/finances?${params.toString()}`
+    : `/director/reports?${params.toString()}`;
 }
 
 function isNextRedirectError(error: unknown) {
@@ -124,6 +139,7 @@ export async function createDirectorReportPayoutPaymentAction(formData: FormData
     });
 
     revalidatePath("/director/reports");
+    revalidatePath("/director/finances");
     revalidatePath("/director/staff");
     revalidatePath("/director");
   } catch (error) {
@@ -135,10 +151,7 @@ export async function createDirectorReportPayoutPaymentAction(formData: FormData
     status = "error";
   }
 
-  const params = readReturnSearchParams(formData, status);
-  if (paymentId) params.set("paymentId", paymentId);
-
-  redirect(`/director/reports?${params.toString()}`);
+  redirect(readReturnUrl(formData, status, paymentId ? { paymentId } : undefined));
 }
 
 export async function cancelDirectorReportPayoutPaymentAction(formData: FormData) {
@@ -172,6 +185,7 @@ export async function cancelDirectorReportPayoutPaymentAction(formData: FormData
     });
 
     revalidatePath("/director/reports");
+    revalidatePath("/director/finances");
     revalidatePath("/director/staff");
     revalidatePath("/director");
   } catch (error) {
@@ -183,8 +197,7 @@ export async function cancelDirectorReportPayoutPaymentAction(formData: FormData
     status = "error";
   }
 
-  const params = readReturnSearchParams(formData, status);
-  redirect(`/director/reports?${params.toString()}`);
+  redirect(readReturnUrl(formData, status));
 }
 
 export async function createDirectorInstructorReturnAction(formData: FormData) {
@@ -224,6 +237,7 @@ export async function createDirectorInstructorReturnAction(formData: FormData) {
     });
 
     revalidatePath("/director/reports");
+    revalidatePath("/director/finances");
     revalidatePath("/director/staff");
     revalidatePath("/director");
   } catch (error) {
@@ -232,7 +246,7 @@ export async function createDirectorInstructorReturnAction(formData: FormData) {
     status = "error";
   }
 
-  redirect(`/director/reports?${readReturnSearchParams(formData, status).toString()}`);
+  redirect(readReturnUrl(formData, status));
 }
 
 export async function markDirectorInstructorDebtWithholdingAction(
@@ -266,6 +280,7 @@ export async function markDirectorInstructorDebtWithholdingAction(
     });
 
     revalidatePath("/director/reports");
+    revalidatePath("/director/finances");
     revalidatePath("/director/staff");
     revalidatePath("/director");
   } catch (error) {
@@ -274,5 +289,5 @@ export async function markDirectorInstructorDebtWithholdingAction(
     status = "error";
   }
 
-  redirect(`/director/reports?${readReturnSearchParams(formData, status).toString()}`);
+  redirect(readReturnUrl(formData, status));
 }

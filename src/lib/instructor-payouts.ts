@@ -22,6 +22,11 @@ export type InstructorPayoutSettingsInput = {
   privateExtraFullPayoutEnabled: boolean;
 };
 
+export type InstructorPayoutSettingsAndVisibilityInput =
+  InstructorPayoutSettingsInput & {
+    visibleSchoolIds: string[];
+  };
+
 export type InstructorPayoutRateRuleInput = {
   organizationId: string;
   instructorId: string;
@@ -340,6 +345,90 @@ export async function updateInstructorPayoutSettings(
   }
 
   return settings;
+}
+
+export async function updateInstructorPayoutSettingsAndVisibility(
+  input: InstructorPayoutSettingsAndVisibilityInput,
+) {
+  assertUuidLike(input.organizationId, "organizationId");
+  assertUuidLike(input.instructorId, "instructorId");
+  assertWeeklyLimit(input.weeklyLessonLimit);
+
+  const uniqueSchoolIds = [...new Set(input.visibleSchoolIds)];
+
+  for (const schoolId of uniqueSchoolIds) {
+    assertUuidLike(schoolId, "schoolId");
+  }
+
+  return withTransaction(async (client) => {
+    const settingsResult = await client.query<InstructorPayoutSettings>(
+      `
+        insert into public.instructor_payout_settings (
+          instructor_id,
+          organization_id,
+          accrual_policy,
+          weekly_lesson_limit,
+          source_visibility_mode,
+          show_client_prices,
+          can_manage_student_packages,
+          private_extra_full_payout_enabled
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        on conflict (instructor_id) do update
+        set accrual_policy = excluded.accrual_policy,
+            weekly_lesson_limit = excluded.weekly_lesson_limit,
+            source_visibility_mode = excluded.source_visibility_mode,
+            show_client_prices = excluded.show_client_prices,
+            can_manage_student_packages = excluded.can_manage_student_packages,
+            private_extra_full_payout_enabled = excluded.private_extra_full_payout_enabled
+        returning instructor_id, organization_id, accrual_policy, weekly_lesson_limit,
+                  source_visibility_mode, show_client_prices, can_manage_student_packages,
+                  private_extra_full_payout_enabled,
+                  created_at::text as created_at, updated_at::text as updated_at
+      `,
+      [
+        input.instructorId,
+        input.organizationId,
+        input.accrualPolicy,
+        input.weeklyLessonLimit,
+        input.sourceVisibilityMode,
+        input.showClientPrices,
+        input.canManageStudentPackages,
+        input.privateExtraFullPayoutEnabled,
+      ],
+    );
+
+    const settings = settingsResult.rows[0];
+    if (!settings) {
+      throw new Error("Instructor payout settings were not saved");
+    }
+
+    await client.query(
+      `
+        delete from public.instructor_source_visibility
+        where organization_id = $1
+          and instructor_id = $2
+      `,
+      [input.organizationId, input.instructorId],
+    );
+
+    for (const schoolId of uniqueSchoolIds) {
+      await client.query(
+        `
+          insert into public.instructor_source_visibility (
+            instructor_id,
+            organization_id,
+            school_id,
+            is_visible
+          )
+          values ($1, $2, $3, true)
+        `,
+        [input.instructorId, input.organizationId, schoolId],
+      );
+    }
+
+    return settings;
+  });
 }
 
 export async function getInstructorSourceVisibility({

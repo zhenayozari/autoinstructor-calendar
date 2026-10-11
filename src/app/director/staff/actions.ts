@@ -13,8 +13,7 @@ import {
   backfillInstructorPayoutEntries,
   createInstructorPayoutPayment,
   createInstructorPayoutRateRule,
-  replaceInstructorSourceVisibility,
-  updateInstructorPayoutSettings,
+  updateInstructorPayoutSettingsAndVisibility,
   updateOwnerPayoutPolicy,
 } from "@/lib/instructor-payouts";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -1050,7 +1049,7 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
       formData.get("private_extra_full_payout_enabled") === "true";
     const visibleSchoolIds = readStringList(formData, "visible_school_id");
 
-    await updateInstructorPayoutSettings({
+    await updateInstructorPayoutSettingsAndVisibility({
       organizationId: membership.organizationId,
       instructorId,
       accrualPolicy,
@@ -1059,11 +1058,6 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
       showClientPrices,
       canManageStudentPackages,
       privateExtraFullPayoutEnabled,
-    });
-
-    await replaceInstructorSourceVisibility({
-      organizationId: membership.organizationId,
-      instructorId,
       visibleSchoolIds,
     });
 

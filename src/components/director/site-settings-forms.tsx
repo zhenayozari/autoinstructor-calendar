@@ -324,7 +324,7 @@ export function OrganizationSiteSettingsForm({
   const content = normalizeLandingContent(settings.landing_content);
 
   return (
-    <form action={formAction} className="space-y-5" encType="multipart/form-data">
+    <form action={formAction} className="space-y-5">
       <input type="hidden" name="show_lesson_types" value="on" />
       <input
         type="hidden"
@@ -734,7 +734,6 @@ export function LegalDocumentsSettings({
       <form
         action={formAction}
         className="space-y-4 rounded-2xl border bg-zinc-50 p-4"
-        encType="multipart/form-data"
       >
         <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
           <div className="space-y-2">

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 
 type ExportRow = {
@@ -59,7 +58,7 @@ function categoryLabel(value: string) {
 export async function GET(request: Request) {
   const membership = await requireActiveOrganizationMember();
 
-  if (!isPostgresBackend() || membership.role !== "owner" || !membership.instructorId) {
+  if (membership.role !== "owner" || !membership.instructorId) {
     return new NextResponse("Экспорт доступен только владельцу-инструктору", {
       status: 403,
     });

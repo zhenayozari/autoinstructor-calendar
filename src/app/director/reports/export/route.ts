@@ -1,6 +1,5 @@
 import ExcelJS from "exceljs";
 import { NextResponse } from "next/server";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { getStudentPrepaymentCashGroups } from "@/lib/student-prepayment-report";
@@ -135,12 +134,6 @@ function styleMoneyCells(row: ExcelJS.Row, columns: number[]) {
 
 export async function GET(request: Request) {
   const membership = await requireDirectorAccess();
-
-  if (!isPostgresBackend()) {
-    return new NextResponse("Экспорт доступен только в PostgreSQL-режиме", {
-      status: 400,
-    });
-  }
 
   const url = new URL(request.url);
   const from = url.searchParams.get("from");

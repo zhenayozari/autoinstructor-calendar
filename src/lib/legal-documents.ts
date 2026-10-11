@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
 import {
   getLegalDocumentDefinitionBySlug,
@@ -20,10 +19,6 @@ function isMissingTableError(error: unknown) {
 }
 
 export async function getLegalDocumentsForOrganization(organizationId: string) {
-  if (!isPostgresBackend()) {
-    return [];
-  }
-
   try {
     return await queryRows<LegalDocument>(
       `
@@ -49,10 +44,6 @@ export async function getLegalDocumentsForOrganization(organizationId: string) {
 }
 
 export async function getPublishedLegalDocuments(organizationId: string) {
-  if (!isPostgresBackend()) {
-    return [];
-  }
-
   const documents = await getLegalDocumentsForOrganization(organizationId);
   const orderByType = new Map(
     LEGAL_DOCUMENT_DEFINITIONS.map((definition, index) => [
@@ -90,10 +81,6 @@ export async function getPublishedLegalDocumentsForSite(organizationId: string) 
 }
 
 export async function getPublishedLegalDocumentBySlug(slug: string) {
-  if (!isPostgresBackend()) {
-    return null;
-  }
-
   const definition = getLegalDocumentDefinitionBySlug(slug);
 
   if (!definition) {

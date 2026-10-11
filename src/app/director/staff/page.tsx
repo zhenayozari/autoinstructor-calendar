@@ -13,7 +13,6 @@ import {
 import {
   approveStaffInvitationAction,
   backfillStaffPayoutEntriesAction,
-  createStaffPayoutPaymentAction,
   createStaffPayoutRateRuleAction,
   createStaffInvitationAction,
   deleteStaffInvitationAction,
@@ -309,44 +308,6 @@ function StaffPayoutPanel({
             </p>
           </div>
         </div>
-
-        {payoutSetup.summary.remaining_amount > 0 && (
-          <form
-            action={createStaffPayoutPaymentAction}
-            className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3"
-          >
-            <input type="hidden" name="instructor_id" value={instructor.id} />
-            <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-end">
-              <label className="space-y-2 text-sm font-medium">
-                <span>Выдано, ₽</span>
-                <input
-                  type="number"
-                  name="amount"
-                  min={1}
-                  max={payoutSetup.summary.remaining_amount}
-                  defaultValue={payoutSetup.summary.remaining_amount}
-                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-medium">
-                <span>Комментарий</span>
-                <input
-                  name="payment_note"
-                  maxLength={500}
-                  placeholder="Например: переводом за неделю"
-                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
-                />
-              </label>
-              <Button type="submit" className="h-10 shadow-md shadow-emerald-950/15">
-                Отметить выдачу
-              </Button>
-            </div>
-            <p className="text-xs leading-5 text-emerald-900">
-              После сохранения сумма перейдёт из “к выдаче” в “выдано”. Если
-              указать часть суммы, остаток останется к выдаче.
-            </p>
-          </form>
-        )}
 
         <form action={updateStaffPayoutSettingsAction} className="space-y-3 rounded-xl border bg-white p-3">
           <input type="hidden" name="instructor_id" value={instructor.id} />

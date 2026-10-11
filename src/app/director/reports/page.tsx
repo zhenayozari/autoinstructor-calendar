@@ -52,6 +52,7 @@ import type {
   ScheduleDay,
   School,
   Slot,
+  StudentExamStatus,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -139,6 +140,8 @@ type PayoutSummary = {
   paid_amount: number;
   remaining_amount: number;
 };
+
+type ExamStatusCounts = Record<StudentExamStatus, number>;
 
 type InstructorPayoutQuickItem = PayoutGroup & {
   instructor: Instructor;
@@ -501,10 +504,12 @@ function PeriodButton({
 function MoneyGroupMetric({
   label,
   value,
+  hint,
   tone = "default",
 }: {
   label: string;
   value: string;
+  hint?: string;
   tone?: "default" | "emerald" | "amber" | "blue" | "red";
 }) {
   const toneClassName =
@@ -526,7 +531,48 @@ function MoneyGroupMetric({
       <p className="mt-1 whitespace-nowrap text-sm font-semibold tabular-nums">
         {value}
       </p>
+      {hint && <p className="mt-1 text-[11px] leading-4 opacity-70">{hint}</p>}
     </div>
+  );
+}
+
+function ExamStatusSummary({ counts }: { counts: ExamStatusCounts }) {
+  const total = counts.training + counts.passed + counts.failed;
+
+  return (
+    <Card className="border-sky-200 bg-sky-50/40">
+      <CardHeader className="pb-3">
+        <CardTitle>Статус экзамена в ГАИ</CardTitle>
+        <CardDescription>
+          Текущая отметка по ученикам выбранных инструкторов. Выбранный период
+          на эту статистику не влияет.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-2 sm:grid-cols-4">
+        <MoneyGroupMetric
+          label="Всего учеников"
+          value={`${total}`}
+          hint="По карточкам учеников"
+        />
+        <MoneyGroupMetric
+          label="Сдали"
+          value={`${counts.passed}`}
+          hint="Отмечена галочка «Сдал в ГАИ»"
+          tone="emerald"
+        />
+        <MoneyGroupMetric
+          label="Не сдали"
+          value={`${counts.failed}`}
+          hint="Отмечена галочка «Не сдал в ГАИ»"
+          tone="amber"
+        />
+        <MoneyGroupMetric
+          label="Обучаются"
+          value={`${counts.training}`}
+          hint="Обе галочки не установлены"
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1369,6 +1415,7 @@ export default async function DirectorReportsPage({
     id: string;
     instructor_id: string;
     school_id: string | null;
+    exam_status?: StudentExamStatus | null;
   }[] = [];
   let schoolError: { message: string } | null = null;
   let scheduleDayError: { message: string } | null = null;
@@ -1403,9 +1450,10 @@ export default async function DirectorReportsPage({
             id: string;
             instructor_id: string;
             school_id: string | null;
+            exam_status: StudentExamStatus | null;
           }>(
             `
-              select id, school_id, instructor_id
+              select id, school_id, instructor_id, exam_status
               from public.student_accesses
               where organization_id = $1
                 and instructor_id = any($2::uuid[])
@@ -1457,6 +1505,18 @@ export default async function DirectorReportsPage({
     scheduleDayError = scheduleDayLoadError;
     studentAccessError = studentAccessLoadError;
   }
+
+  const examStatusCounts = studentAccesses.reduce<ExamStatusCounts>(
+    (counts, student) => {
+      const status: StudentExamStatus =
+        student.exam_status === "passed" || student.exam_status === "failed"
+          ? student.exam_status
+          : "training";
+      counts[status] += 1;
+      return counts;
+    },
+    { training: 0, passed: 0, failed: 0 },
+  );
 
   const scheduleDayIds = scheduleDays.map((day) => day.id);
   let slots: ReportSlot[] = [];
@@ -2240,43 +2300,11 @@ export default async function DirectorReportsPage({
           />
         </section>
 
-        <Card className="border-blue-200 bg-blue-50/60">
-          <CardContent className="p-4 text-sm leading-6 text-blue-950">
-            Начислено — сумма по ставкам инструкторов за выбранный период.
-            Выдано — выплаты, которыми закрыли эти начисления. К выдаче —
-            остаток, который ещё нужно отдать. Частный доп. заработок считается
-            отдельно, не требует выдачи руководителем и не входит в маржу школы.
-          </CardContent>
-        </Card>
-
-        <InstructorPayoutQuickPanel
-          items={instructorPayoutQuickItems}
-          selectedPeriod={selectedPeriod}
-          from={from}
-          to={to}
-          selectedInstructorId={selectedInstructorId}
-          status={params.payout}
-        />
-
         <PrivateExtraIncomeReport items={directIncomeItems} />
 
         <ExamRouteReport items={examRouteItems} />
 
-        <PayoutPaymentHistory
-          items={payoutPayments}
-          instructorsById={instructorsById}
-          selectedPeriod={selectedPeriod}
-          from={from}
-          to={to}
-          selectedInstructorId={selectedInstructorId}
-        />
-
-        <PayoutReturnHistory
-          items={payoutReturns}
-          instructorsById={instructorsById}
-        />
-
-        <PrepaidCreditsReport items={prepaidCreditReport} />
+        <ExamStatusSummary counts={examStatusCounts} />
 
         <section className="grid gap-4 xl:grid-cols-2">
           <MoneyGroupTable

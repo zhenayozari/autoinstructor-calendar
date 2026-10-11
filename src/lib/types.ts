@@ -133,6 +133,7 @@ export type StudentAccess = {
   weekly_lesson_limit: number | null;
   is_active: boolean;
   passed_exam: boolean;
+  exam_status?: StudentExamStatus;
   school_id: string | null;
   is_archived: boolean;
   archived_at: string | null;
@@ -143,6 +144,8 @@ export type StudentAccess = {
   updated_at: string;
   lesson_type_ids: string[];
 };
+
+export type StudentExamStatus = "training" | "passed" | "failed";
 
 export type StudentLessonPackage = {
   id: string;

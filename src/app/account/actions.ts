@@ -10,7 +10,6 @@ import {
   verifyAppUserPassword,
 } from "@/lib/app-users/password";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne } from "@/lib/db/postgres";
 import { logAuditEvent } from "@/lib/audit-log";
 
@@ -75,10 +74,6 @@ export async function updateAccountCredentialsAction(
   const membership = await requireActiveOrganizationMember();
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Смена данных входа доступна в PostgreSQL-режиме");
-    }
-
     const email = validateEmail(readString(formData, "email"));
     const currentPassword = readString(formData, "current_password");
     const newPassword = readString(formData, "new_password");

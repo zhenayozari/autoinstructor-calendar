@@ -7,9 +7,8 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
-import { formatMoney } from "@/lib/formatters";
+import { formatMoney, formatNumericDate } from "@/lib/formatters";
 import { FinanceStudentPaymentsTable } from "@/components/director/finance-student-payments-table";
 import {
   FinanceInstructorSettlements,
@@ -23,6 +22,9 @@ import {
 export const dynamic = "force-dynamic";
 
 type FinanceView = "overview" | "student-payments" | "instructor-settlements" | "operations";
+type FinancePeriod = "all" | "day" | "week" | "month" | "custom";
+
+type PeriodBounds = { start: string; end: string };
 
 type StudentPaymentRow = {
   id: string;
@@ -115,9 +117,64 @@ function getView(value: string | undefined): FinanceView {
   return "overview";
 }
 
-function financeHref(view: FinanceView) {
-  return `/director/finances?view=${view}`;
+function getPeriod(value: string | undefined): FinancePeriod {
+  if (value === "day" || value === "week" || value === "month" || value === "custom") return value;
+  return "all";
 }
+
+function getPeriodBounds(period: FinancePeriod, from?: string, to?: string): PeriodBounds | null {
+  if (period === "all") return null;
+
+  if (period === "custom") {
+    if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return null;
+    const offsetMs = 8 * 60 * 60 * 1000;
+    const startLocal = new Date(`${from}T00:00:00.000Z`);
+    const endLocal = new Date(`${to}T00:00:00.000Z`);
+    endLocal.setUTCDate(endLocal.getUTCDate() + 1);
+    return {
+      start: new Date(startLocal.getTime() - offsetMs).toISOString(),
+      end: new Date(endLocal.getTime() - offsetMs).toISOString(),
+    };
+  }
+
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const now = new Date(Date.now() + offsetMs);
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const date = now.getUTCDate();
+  const dayOfWeek = now.getUTCDay();
+  const mondayOffset = (dayOfWeek + 6) % 7;
+  const startDay = period === "week" ? date - mondayOffset : period === "month" ? 1 : date;
+  const startLocal = new Date(Date.UTC(year, month, startDay));
+  const endLocal = period === "month"
+    ? new Date(Date.UTC(year, month + 1, 1))
+    : period === "week"
+      ? new Date(startLocal.getTime() + 7 * 24 * 60 * 60 * 1000)
+      : new Date(startLocal.getTime() + 24 * 60 * 60 * 1000);
+
+  return {
+    start: new Date(startLocal.getTime() - offsetMs).toISOString(),
+    end: new Date(endLocal.getTime() - offsetMs).toISOString(),
+  };
+}
+
+function financeHref(view: FinanceView, period: FinancePeriod = "all", from?: string, to?: string) {
+  const params = new URLSearchParams({ view });
+  if (period !== "all") params.set("period", period);
+  if (period === "custom" && from && to) {
+    params.set("from", from);
+    params.set("to", to);
+  }
+  return `/director/finances?${params.toString()}`;
+}
+
+const periodOptions: Array<{ value: FinancePeriod; label: string }> = [
+  { value: "all", label: "Всё время" },
+  { value: "day", label: "Сегодня" },
+  { value: "week", label: "Эта неделя" },
+  { value: "month", label: "Этот месяц" },
+  { value: "custom", label: "Свой период" },
+];
 
 function SummaryLink({
   href,
@@ -147,21 +204,18 @@ function SummaryLink({
 export default async function DirectorFinancesPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ view?: string; section?: string }>;
+  searchParams?: Promise<{ view?: string; section?: string; period?: string; from?: string; to?: string }>;
 }) {
   const membership = await requireDirectorAccess();
   const params = (await searchParams) ?? {};
   const view = getView(params.view ?? params.section);
-
-  if (!isPostgresBackend()) {
-    return (
-      <main className="px-3 py-4 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-6xl rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950">
-          Финансовый раздел работает с новой базой PostgreSQL. Старые отчёты доступны в разделе «Итоги».
-        </div>
-      </main>
-    );
-  }
+  const period = getPeriod(params.period);
+  const periodBounds = getPeriodBounds(period, params.from, params.to);
+  const periodStartFilter = periodBounds ? "and {column} >= $2::timestamptz and {column} < $3::timestamptz" : "";
+  const periodParams = periodBounds ? [membership.organizationId, periodBounds.start, periodBounds.end] : [membership.organizationId];
+  const periodLabel = period === "custom" && periodBounds ? `Свой период: ${formatNumericDate(params.from!)} — ${formatNumericDate(params.to!)}` : periodOptions.find((option) => option.value === period)?.label ?? "Всё время";
+  const currentFinanceHref = (target: FinanceView) => financeHref(target, period, params.from, params.to);
+  const financeReturnPath = currentFinanceHref("instructor-settlements");
 
   const [summary, studentPayments, instructorSettlements, instructorStudentSettlements, instructorPayments, instructorDirectIncome, operations, paymentOptions, paymentSchools, paymentLessonTypes, paymentPrices] = await Promise.all([
     queryRows<{
@@ -173,13 +227,13 @@ export default async function DirectorFinancesPage({
     }>(
       `
         select
-          (select coalesce(sum(final_total_amount), 0)::integer from public.student_prepaid_credits where organization_id = $1) as student_paid,
-          (select coalesce(sum(refunds.amount), 0)::integer from public.student_prepaid_refunds refunds join public.student_prepaid_credits credits on credits.id = refunds.credit_id where refunds.organization_id = $1 and refunds.cancelled_at is null) as student_refunded,
-          (select coalesce(sum(amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned') as instructor_accrued,
-          (select coalesce(sum(paid_amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned') as instructor_paid,
+          (select coalesce(sum(final_total_amount), 0)::integer from public.student_prepaid_credits where organization_id = $1 ${periodStartFilter.replaceAll("{column}", "paid_at")}) as student_paid,
+          (select coalesce(sum(refunds.amount), 0)::integer from public.student_prepaid_refunds refunds join public.student_prepaid_credits credits on credits.id = refunds.credit_id where refunds.organization_id = $1 and refunds.cancelled_at is null ${periodStartFilter.replaceAll("{column}", "refunds.refunded_at")}) as student_refunded,
+          (select coalesce(sum(amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned' ${periodStartFilter.replaceAll("{column}", "coalesce(event_at, planned_at)")}) as instructor_accrued,
+          (select coalesce(sum(allocations.amount), 0)::integer from public.instructor_payout_payment_allocations allocations join public.instructor_payout_payments payments on payments.id = allocations.payment_id where payments.organization_id = $1 ${periodStartFilter.replaceAll("{column}", "payments.paid_at")}) as instructor_paid,
           (select coalesce(sum(remaining_amount), 0)::integer from public.instructor_payout_entry_balances where organization_id = $1 and status = 'planned') as instructor_remaining
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<StudentPaymentRow>(
       `
@@ -232,10 +286,10 @@ export default async function DirectorFinancesPage({
           from public.student_prepaid_credit_adjustments adjustments
           where adjustments.credit_id = credits.id
         ) adjustment_rows on true
-        where credits.organization_id = $1
+        where credits.organization_id = $1 ${periodStartFilter.replaceAll("{column}", "credits.paid_at")}
         order by credits.paid_at desc, credits.created_at desc
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<InstructorSettlementRow>(
       `
@@ -247,11 +301,12 @@ export default async function DirectorFinancesPage({
         from public.instructors instructors
         left join public.instructor_payout_entry_balances balances
           on balances.instructor_id = instructors.id and balances.organization_id = instructors.organization_id
+          ${periodBounds ? periodStartFilter.replaceAll("{column}", "coalesce(balances.event_at, balances.planned_at)") : ""}
         where instructors.organization_id = $1 and instructors.is_active = true
         group by instructors.id, instructors.public_name, instructors.name
         order by remaining_amount desc, instructor_name
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<InstructorStudentSettlementRow>(
       `
@@ -270,21 +325,22 @@ export default async function DirectorFinancesPage({
         left join public.student_prepaid_credits credits on credits.id = entries.student_prepaid_credit_id
         where entries.organization_id = $1
           and entries.status = 'planned'
+          ${periodBounds ? periodStartFilter.replaceAll("{column}", "coalesce(entries.event_at, entries.planned_at)") : ""}
         group by entries.instructor_id, entries.student_access_id, accesses.display_label
         having coalesce(sum(balances.remaining_amount), 0) <> 0
         order by entries.instructor_id, remaining_amount desc, student_name
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<InstructorPaymentRow>(
       `
         select id::text, instructor_id::text, amount::integer,
                paid_at::text, payment_note
         from public.instructor_payout_payments
-        where organization_id = $1
+        where organization_id = $1 ${periodStartFilter.replaceAll("{column}", "paid_at")}
         order by paid_at desc
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<{ instructor_id: string; amount: number }>(
       `
@@ -296,9 +352,10 @@ export default async function DirectorFinancesPage({
         where i.organization_id = $1
           and b.direct_instructor_income_amount is not null
           and b.direct_instructor_income_recognized_at is not null
+          ${periodBounds ? periodStartFilter.replaceAll("{column}", "b.direct_instructor_income_recognized_at") : ""}
         group by s.instructor_id
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<FinanceOperation>(
       `
@@ -319,9 +376,10 @@ export default async function DirectorFinancesPage({
           on instructor_subject.id::text = audit_logs.metadata->>'instructor_id'
         where audit_logs.organization_id = $1
           and (audit_logs.action like 'student_prepaid_%' or audit_logs.action like 'director_report_payout_%' or audit_logs.action like 'instructor_payout_%' or audit_logs.action = 'booking.source_settlement_completed')
+          ${periodBounds ? periodStartFilter.replaceAll("{column}", "audit_logs.created_at") : ""}
         order by audit_logs.created_at desc limit 100
       `,
-      [membership.organizationId],
+      periodParams,
     ),
     queryRows<StudentPaymentOption>(
       `
@@ -402,9 +460,38 @@ export default async function DirectorFinancesPage({
           </div>
         </header>
 
+        <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-zinc-900">Период финансов</p>
+              <p className="mt-1 text-xs text-zinc-500">Сейчас показано: {periodLabel}. «Всё время» показывает полный расчёт.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex" aria-label="Период финансов">
+              {periodOptions.map((option) => (
+                <Link key={option.value} href={option.value === "custom" ? currentFinanceHref(view) : financeHref(view, option.value)} className={`rounded-lg border px-3 py-2 text-center text-sm font-medium transition-colors ${period === option.value ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"}`}>
+                  {option.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+          <form method="get" className="mt-3 grid gap-2 border-t border-zinc-100 pt-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <input type="hidden" name="view" value={view} />
+            <input type="hidden" name="period" value="custom" />
+            <label className="text-xs font-medium text-zinc-600">
+              С даты
+              <input name="from" type="date" defaultValue={period === "custom" ? params.from : ""} required className="mt-1 block w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900" />
+            </label>
+            <label className="text-xs font-medium text-zinc-600">
+              По дату
+              <input name="to" type="date" defaultValue={period === "custom" ? params.to : ""} required className="mt-1 block w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900" />
+            </label>
+            <button type="submit" className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700">Показать период</button>
+          </form>
+        </section>
+
         <nav className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4" aria-label="Финансовые разделы">
           {views.map(({ key, label, description, icon: Icon }) => (
-            <Link key={key} href={financeHref(key)} className={`rounded-xl border p-3 transition-colors ${view === key ? "border-zinc-900 bg-zinc-900 text-white" : "bg-white text-zinc-800 hover:bg-zinc-50"}`}>
+            <Link key={key} href={currentFinanceHref(key)} className={`rounded-xl border p-3 transition-colors ${view === key ? "border-zinc-900 bg-zinc-900 text-white" : "bg-white text-zinc-800 hover:bg-zinc-50"}`}>
               <span className="flex items-center gap-2 text-sm font-semibold"><Icon className="size-4" />{label}</span>
               <span className={`mt-1 block text-xs ${view === key ? "text-zinc-300" : "text-zinc-500"}`}>{description}</span>
             </Link>
@@ -412,11 +499,11 @@ export default async function DirectorFinancesPage({
         </nav>
 
         {view === "overview" && <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <SummaryLink href={financeHref("student-payments")} label="Оплачено учениками" value={formatMoney(totals.student_paid)} tone="emerald" />
-          <SummaryLink href={financeHref("student-payments")} label="Возвращено ученикам" value={formatMoney(totals.student_refunded)} tone="amber" />
-          <SummaryLink href={financeHref("student-payments")} label="Осталось после возвратов" value={formatMoney(studentRemaining)} />
-          <SummaryLink href={financeHref("instructor-settlements")} label="Начислено инструкторам" value={formatMoney(totals.instructor_accrued)} />
-          <SummaryLink href={financeHref("instructor-settlements")} label="К выдаче инструкторам" value={formatMoney(totals.instructor_remaining)} tone="amber" />
+          <SummaryLink href={currentFinanceHref("student-payments")} label="Оплачено учениками" value={formatMoney(totals.student_paid)} tone="emerald" />
+          <SummaryLink href={currentFinanceHref("student-payments")} label="Возвращено ученикам" value={formatMoney(totals.student_refunded)} tone="amber" />
+          <SummaryLink href={currentFinanceHref("student-payments")} label="Деньги после возвратов" value={formatMoney(studentRemaining)} />
+          <SummaryLink href={currentFinanceHref("instructor-settlements")} label="Начислено инструкторам" value={formatMoney(totals.instructor_accrued)} />
+          <SummaryLink href={currentFinanceHref("instructor-settlements")} label="К выдаче инструкторам" value={formatMoney(totals.instructor_remaining)} tone="amber" />
         </section>}
 
         {view === "overview" && (
@@ -430,14 +517,14 @@ export default async function DirectorFinancesPage({
 
             <section className="grid gap-4 lg:grid-cols-2">
               <Card>
-                <CardHeader><CardTitle>Что сейчас происходит с деньгами</CardTitle><CardDescription>Коротко о главных суммах за всё время.</CardDescription></CardHeader>
+                <CardHeader><CardTitle>Что сейчас происходит с деньгами</CardTitle><CardDescription>Деньги после возвратов = все внесённые деньги минус фактические возвраты. Закрытые оплаты тоже входят в эту сумму.</CardDescription></CardHeader>
                 <CardContent>
                   <dl className="divide-y divide-zinc-200 rounded-xl border border-zinc-200 bg-white text-sm">
                     <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">Ученики внесли</dt><dd className="font-semibold text-emerald-800">{formatMoney(totals.student_paid)}</dd></div>
                     <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">Ученикам фактически возвращено</dt><dd className="font-semibold text-amber-800">{formatMoney(totals.student_refunded)}</dd></div>
-                    <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">После возвратов осталось</dt><dd className="font-semibold">{formatMoney(studentRemaining)}</dd></div>
+                    <div className="flex items-center justify-between gap-4 px-4 py-3"><dt className="text-zinc-600">Деньги после возвратов</dt><dd className="font-semibold">{formatMoney(studentRemaining)}</dd></div>
                   </dl>
-                  <Link href={financeHref("student-payments")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть оплаты учеников</Link>
+                  <Link href={currentFinanceHref("student-payments")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть оплаты учеников</Link>
                 </CardContent>
               </Card>
 
@@ -450,20 +537,20 @@ export default async function DirectorFinancesPage({
                     </div>
                     <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-950"><strong>Занятий доступно для записи: {availableStudentUnits}</strong><p className="mt-1 text-xs">Это оплаченные, но ещё не использованные занятия учеников.</p></div>
                   </div>
-                  <Link href={financeHref("instructor-settlements")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть расчёты с инструкторами</Link>
+                  <Link href={currentFinanceHref("instructor-settlements")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть расчёты с инструкторами</Link>
                 </CardContent>
               </Card>
             </section>
 
             <Card>
               <CardHeader><CardTitle>Последние финансовые действия</CardTitle><CardDescription>Последние изменения по оплатам, возвратам и выплатам. Нажмите на строку, чтобы открыть подробности.</CardDescription></CardHeader>
-              <CardContent><FinanceOperationsTable operations={operations.slice(0, 5)} /><Link href={financeHref("operations")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть всю историю операций</Link></CardContent>
+              <CardContent><FinanceOperationsTable operations={operations.slice(0, 5)} /><Link href={currentFinanceHref("operations")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть всю историю операций</Link></CardContent>
             </Card>
           </div>
         )}
 
         {view === "student-payments" && (
-          <Card><CardHeader><CardTitle>Оплаты учеников</CardTitle><CardDescription>Предоплаты, их использование и фактически отмеченные возвраты.</CardDescription></CardHeader><CardContent><FinanceStudentPaymentsTable payments={studentPayments} students={paymentOptions} schools={paymentSchools} lessonTypes={paymentLessonTypes} prices={paymentPrices} /></CardContent></Card>
+          <Card><CardHeader><CardTitle>Оплаты учеников</CardTitle><CardDescription>Период: {periodLabel}. Предоплаты, их использование и фактически отмеченные возвраты.</CardDescription></CardHeader><CardContent><FinanceStudentPaymentsTable payments={studentPayments} students={paymentOptions} schools={paymentSchools} lessonTypes={paymentLessonTypes} prices={paymentPrices} /></CardContent></Card>
         )}
 
         {view === "instructor-settlements" && (
@@ -471,17 +558,18 @@ export default async function DirectorFinancesPage({
             <CardHeader>
               <CardTitle>Инструкторы и выплаты</CardTitle>
               <CardDescription>
+                Период: {periodLabel}.{" "}
                 Здесь видно, сколько начислено, сколько уже выдано, из чего сложился расчёт и какое действие нужно выполнить.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <FinanceInstructorSettlements items={financeInstructorItems} />
+              <FinanceInstructorSettlements items={financeInstructorItems} period={period} returnPath={financeReturnPath} />
             </CardContent>
           </Card>
         )}
 
         {view === "operations" && (
-          <Card><CardHeader><CardTitle>История денежных операций</CardTitle><CardDescription>Последние изменения по оплатам, возвратам и расчётам. Нажмите на строку, чтобы увидеть пояснение.</CardDescription></CardHeader><CardContent><FinanceOperationsTable operations={operations} /></CardContent></Card>
+          <Card><CardHeader><CardTitle>История денежных операций</CardTitle><CardDescription>Период: {periodLabel}. Последние изменения по оплатам, возвратам и расчётам.</CardDescription></CardHeader><CardContent><FinanceOperationsTable operations={operations} /></CardContent></Card>
         )}
       </div>
     </main>

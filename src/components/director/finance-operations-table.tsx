@@ -1,3 +1,6 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import { formatDateTime, formatMoney } from "@/lib/formatters";
 
 export type FinanceOperation = {
@@ -108,13 +111,61 @@ function formatOperationDate(value: string) {
 }
 
 export function FinanceOperationsTable({ operations }: { operations: FinanceOperation[] }) {
+  const [search, setSearch] = useState("");
+  const [action, setAction] = useState("all");
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+
+  const actionOptions = useMemo(
+    () => Array.from(new Set(operations.map((operation) => operation.action))).sort((left, right) => getActionLabel(left).localeCompare(getActionLabel(right), "ru")),
+    [operations],
+  );
+
+  const filteredOperations = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("ru");
+    return operations.filter((operation) => {
+      if (action !== "all" && operation.action !== action) return false;
+      if (!normalizedSearch) return true;
+      const haystack = [
+        getActionLabel(operation.action),
+        getEntityLabel(operation.entity_type),
+        getActorLabel(operation.actor_role),
+        operation.student_name ?? "",
+        operation.instructor_name ?? "",
+        getDescription(operation),
+      ].join(" ").toLocaleLowerCase("ru");
+      return haystack.includes(normalizedSearch);
+    });
+  }, [action, operations, search]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredOperations.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const visibleOperations = filteredOperations.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
   if (operations.length === 0) {
     return <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">Финансовых операций пока нет.</div>;
   }
 
   return (
-    <div className="space-y-2">
-      {operations.map((operation) => {
+    <div className="space-y-3">
+      <div className="grid gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <label className="text-xs font-medium text-zinc-600">
+          Поиск
+          <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Ученик, инструктор или операция" className="mt-1 block w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900" />
+        </label>
+        <label className="text-xs font-medium text-zinc-600">
+          Тип операции
+          <select value={action} onChange={(event) => { setAction(event.target.value); setPage(1); }} className="mt-1 block w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900">
+            <option value="all">Все операции</option>
+            {actionOptions.map((option) => <option key={option} value={option}>{getActionLabel(option)}</option>)}
+          </select>
+        </label>
+        <p className="text-xs text-zinc-500">Показано {visibleOperations.length} из {filteredOperations.length}</p>
+      </div>
+
+      {visibleOperations.length === 0 ? (
+        <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">По выбранным условиям операций нет.</div>
+      ) : visibleOperations.map((operation) => {
         const amount = getAmount(operation.metadata);
 
         return (
@@ -139,6 +190,14 @@ export function FinanceOperationsTable({ operations }: { operations: FinanceOper
           </details>
         );
       })}
+
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between border-t border-zinc-200 pt-3 text-sm">
+          <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1} className="rounded-lg border border-zinc-200 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-40">Назад</button>
+          <span className="text-zinc-500">Страница {currentPage} из {pageCount}</span>
+          <button type="button" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={currentPage === pageCount} className="rounded-lg border border-zinc-200 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-40">Вперёд</button>
+        </div>
+      )}
     </div>
   );
 }

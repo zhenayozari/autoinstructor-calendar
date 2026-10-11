@@ -13,6 +13,7 @@ import { hashBookingAccessCode } from "@/lib/booking-access-code";
 import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
+  requireOwnerOrAdmin,
 } from "@/lib/auth";
 import { logAuditEvent } from "@/lib/audit-log";
 import {
@@ -4127,7 +4128,7 @@ export async function moveLessonTypeAction(formData: FormData) {
 }
 
 export async function togglePaymentAction(formData: FormData) {
-  await requireActiveOrganizationMember();
+  await requireOwnerOrAdmin();
   const bookingId = readRequiredString(formData, "booking_id");
   const isPaid = formData.get("is_paid") === "true";
 
@@ -4233,7 +4234,7 @@ export async function updateBookingPaymentAction(
   formData: FormData,
 ): Promise<BookingPaymentActionState> {
   void previousState;
-  await requireActiveOrganizationMember();
+  await requireOwnerOrAdmin();
   const bookingId = readRequiredString(formData, "booking_id");
 
   try {
@@ -4378,7 +4379,7 @@ export async function settleSourcePaymentsAction(
   formData: FormData,
 ): Promise<SourceSettlementActionState> {
   void previousState;
-  await requireActiveOrganizationMember();
+  await requireOwnerOrAdmin();
 
   try {
     const instructorId = readRequiredString(formData, "instructor_id");

@@ -43,7 +43,6 @@ import type {
   StudentAccess,
   StudentPrepaidCredit,
 } from "@/lib/types";
-import { StudentPrepaidCreditsPanel } from "@/components/admin/student-prepaid-credits-panel";
 import { StudentProfileEditor } from "@/components/director/student-profile-editor";
 import { StudentExamStatusEditor } from "@/components/director/student-exam-status-editor";
 
@@ -358,19 +357,6 @@ function StudentCard({
         </div>
       </div>
 
-      <div className="mt-3">
-        <StudentPrepaidCreditsPanel
-          accessId={student.id}
-          accessSchoolId={student.school_id}
-          accessLessonTypeIds={student.lesson_type_ids}
-          credits={student.prepaidCredits}
-          schools={student.school_id ? schools.filter((school) => school.id === student.school_id) : schools}
-          lessonTypes={lessonTypes}
-          prices={prices}
-          canManage
-        />
-      </div>
-
       <StudentAccessActions student={student} />
     </article>
   );
@@ -521,19 +507,6 @@ function StudentListItem({
         <StudentProfileEditor student={student} />
         <StudentExamStatusEditor student={student} />
 
-        <div className="mt-3">
-          <StudentPrepaidCreditsPanel
-            accessId={student.id}
-            accessSchoolId={student.school_id}
-            accessLessonTypeIds={student.lesson_type_ids}
-            credits={student.prepaidCredits}
-            schools={student.school_id ? schools.filter((school) => school.id === student.school_id) : schools}
-            lessonTypes={lessonTypes}
-            prices={prices}
-            canManage
-          />
-        </div>
-
         <StudentAccessActions student={student} />
       </div>
     </details>
@@ -604,7 +577,7 @@ export default async function DirectorStudentsPage({
                      student_phone,
                      student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
-                     is_active, passed_exam, is_archived, archived_at::text as archived_at,
+                     is_active, passed_exam, exam_status, is_archived, archived_at::text as archived_at,
                      created_at::text as created_at, updated_at::text as updated_at
               from public.student_accesses
               where organization_id = $1

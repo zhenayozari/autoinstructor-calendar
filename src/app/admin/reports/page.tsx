@@ -33,6 +33,7 @@ import type {
   ScheduleDay,
   School,
   Slot,
+  StudentExamStatus,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { SourceSettlementButton } from "@/components/admin/source-settlement-button";
@@ -154,6 +155,48 @@ type InstructorPayoutPeriodSummary = {
   paid_amount: number;
   remaining_amount: number;
 };
+
+type ExamStatusCounts = Record<StudentExamStatus, number>;
+
+function ExamStatusSummary({ counts }: { counts: ExamStatusCounts }) {
+  const total = counts.training + counts.passed + counts.failed;
+
+  return (
+    <Card className="border-sky-200 bg-sky-50/40">
+      <CardHeader className="pb-3">
+        <CardTitle>Статус экзамена в ГАИ</CardTitle>
+        <CardDescription>
+          Текущая отметка по ученикам выбранного инструктора. Выбранный период
+          на эту статистику не влияет.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-2 sm:grid-cols-4">
+        <MetricTile
+          label="Всего учеников"
+          value={`${total}`}
+          hint="По карточкам учеников"
+        />
+        <MetricTile
+          label="Сдали"
+          value={`${counts.passed}`}
+          hint="Отмечена галочка «Сдал в ГАИ»"
+          tone="emerald"
+        />
+        <MetricTile
+          label="Не сдали"
+          value={`${counts.failed}`}
+          hint="Отмечена галочка «Не сдал в ГАИ»"
+          tone="amber"
+        />
+        <MetricTile
+          label="Обучаются"
+          value={`${counts.training}`}
+          hint="Обе галочки не установлены"
+        />
+      </CardContent>
+    </Card>
+  );
+}
 
 type InstructorPayoutEntryDetail = {
   id: string;
@@ -974,6 +1017,7 @@ export default async function AdminReportsPage({
     instructor_id: string;
     school_id: string | null;
     is_archived: boolean;
+    exam_status?: StudentExamStatus | null;
   }[] = [];
   let scheduleDays: ScheduleDay[] = [];
   let slots: ReportSlot[] = [];
@@ -1178,9 +1222,11 @@ export default async function AdminReportsPage({
             instructor_id: string;
             school_id: string | null;
             is_archived: boolean;
+            exam_status: StudentExamStatus | null;
           }>(
             `
-              select id, display_label, instructor_id, school_id, is_archived
+              select id, display_label, instructor_id, school_id, is_archived,
+                     exam_status
               from public.student_accesses
               where organization_id = $1
                 and instructor_id = any($2::uuid[])
@@ -1256,6 +1302,23 @@ export default async function AdminReportsPage({
       studentAccessError ??
       scheduleDayError;
   }
+
+  const examStatusStudents = studentAccesses.filter(
+    (student) =>
+      (selectedStudentId === "all" || student.id === selectedStudentId) &&
+      (selectedSchoolId === "all" || student.school_id === selectedSchoolId),
+  );
+  const examStatusCounts = examStatusStudents.reduce<ExamStatusCounts>(
+    (counts, student) => {
+      const status: StudentExamStatus =
+        student.exam_status === "passed" || student.exam_status === "failed"
+          ? student.exam_status
+          : "training";
+      counts[status] += 1;
+      return counts;
+    },
+    { training: 0, passed: 0, failed: 0 },
+  );
 
   const selectedLessonTypeId =
     params.lessonType && params.lessonType !== "all" ? params.lessonType : "all";
@@ -1957,6 +2020,8 @@ export default async function AdminReportsPage({
 
         {isInstructorPayoutReport ? (
           <section className="space-y-3">
+            <ExamStatusSummary counts={examStatusCounts} />
+
             <div className="grid gap-3 md:grid-cols-4">
               <SummaryCard
                 label="Начислено"
@@ -2040,6 +2105,8 @@ export default async function AdminReportsPage({
             </div>
 
             <ExamRouteDetails items={examRouteItems} />
+
+            <ExamStatusSummary counts={examStatusCounts} />
 
             <div className="grid gap-3 md:grid-cols-2">
               <Card className="border-emerald-200 bg-emerald-50/50">

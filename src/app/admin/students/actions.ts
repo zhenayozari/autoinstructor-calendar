@@ -20,7 +20,11 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingPricingTableError } from "@/lib/pricing";
 import { purgeStudentAccessData } from "@/lib/destructive-data-cleanup";
-import type { BookingCategory, SchoolPaymentRule } from "@/lib/types";
+import type {
+  BookingCategory,
+  SchoolPaymentRule,
+  StudentExamStatus,
+} from "@/lib/types";
 import {
   createInstructorPayoutEntryForPrepaidCredit,
   syncInstructorPayoutEntryForPrepaidCredit,
@@ -2433,21 +2437,38 @@ export async function updateStudentExamStatusAction(
   try {
     const accessId = readRequiredString(formData, "student_access_id");
     const { membership, access } = await getManageableAccess(accessId);
-    const passedExam = formData.get("passed_exam") === "true";
+    const examStatusValue = formData.get("exam_status");
+    const examStatus: StudentExamStatus =
+      examStatusValue === "passed" || examStatusValue === "failed"
+        ? examStatusValue
+        : "training";
+    const passedExam = examStatus === "passed";
 
     if (isPostgresBackend()) {
       await executeQuery(
         `
           update public.student_accesses
-          set passed_exam = $1,
+          set exam_status = $1,
+              passed_exam = $2,
               updated_at = now()
-          where id = $2
-            and organization_id = $3
-            and instructor_id = $4
+          where id = $3
+            and organization_id = $4
+            and instructor_id = $5
         `,
-        [passedExam, access.id, membership.organizationId, access.instructor_id],
+        [
+          examStatus,
+          passedExam,
+          access.id,
+          membership.organizationId,
+          access.instructor_id,
+        ],
       );
     } else {
+      if (examStatus === "failed") {
+        throw new Error(
+          "Статус «Не сдал в ГАИ» доступен после перехода на новую базу",
+        );
+      }
       const supabase = createAdminClient();
       const { error } = await supabase
         .from("student_accesses")
@@ -2467,15 +2488,23 @@ export async function updateStudentExamStatusAction(
       metadata: {
         instructor_id: access.instructor_id,
         passed_exam: passedExam,
+        exam_status: examStatus,
       },
     });
 
     revalidatePath("/admin/students");
     revalidatePath("/director/students");
+    revalidatePath("/admin/reports");
+    revalidatePath("/director/reports");
 
     return {
       status: "success",
-      message: passedExam ? "Отметка «Сдал в ГАИ» сохранена" : "Отметка снята",
+      message:
+        examStatus === "passed"
+          ? "Отметка «Сдал в ГАИ» сохранена"
+          : examStatus === "failed"
+            ? "Отметка «Не сдал в ГАИ» сохранена"
+            : "Отметки сняты: ученик обучается",
     };
   } catch (error) {
     console.error("updateStudentExamStatusAction:", error);
@@ -3590,6 +3619,7 @@ export async function updateStudentPrepaidCreditAction(
 
     const creditId = readRequiredString(formData, "student_prepaid_credit_id");
     const membership = await requireActiveOrganizationMember();
+    assertCanManageStudentPrepaidCredits(membership);
     const credit = await queryOne<{
       id: string;
       student_access_id: string;
@@ -3635,7 +3665,6 @@ export async function updateStudentPrepaidCreditAction(
     if (!credit) {
       throw new Error("Предоплата не найдена");
     }
-    assertCanManageStudentPrepaidCredits(membership);
     if (credit.status !== "active") {
       throw new Error("Отменённую предоплату нельзя редактировать");
     }
@@ -3906,6 +3935,7 @@ export async function cancelStudentPrepaidCreditAction(
     }
 
     const membership = await requireActiveOrganizationMember();
+    assertCanManageStudentPrepaidCredits(membership);
     const access = await queryOne<{ instructor_id: string }>(
       `
         select instructor_id
@@ -3919,7 +3949,6 @@ export async function cancelStudentPrepaidCreditAction(
     if (!access) {
       throw new Error("Предоплата не найдена");
     }
-    assertCanManageStudentPrepaidCredits(membership);
 
     const result = await withTransaction(async (client) => {
       const creditResult = await client.query<{
@@ -4144,6 +4173,7 @@ export async function createStudentPrepaidRefundAction(
     }
 
     const membership = await requireActiveOrganizationMember();
+    assertCanManageStudentPrepaidCredits(membership);
     const access = await queryOne<{ instructor_id: string }>(
       `
         select instructor_id
@@ -4157,7 +4187,6 @@ export async function createStudentPrepaidRefundAction(
     if (!access) {
       throw new Error("Предоплата не найдена");
     }
-    assertCanManageStudentPrepaidCredits(membership);
 
     const result = await withTransaction(async (client) => {
       const creditResult = await client.query<{
@@ -4292,6 +4321,7 @@ export async function cancelStudentPrepaidRefundAction(
     }
 
     const membership = await requireActiveOrganizationMember();
+    assertCanManageStudentPrepaidCredits(membership);
     const refund = await queryOne<{
       id: string;
       instructor_id: string;
@@ -4311,7 +4341,6 @@ export async function cancelStudentPrepaidRefundAction(
       throw new Error("Возврат не найден или уже отменён");
     }
 
-    assertCanManageStudentPrepaidCredits(membership);
 
     const cancelledRefund = await queryOne<{
       id: string;

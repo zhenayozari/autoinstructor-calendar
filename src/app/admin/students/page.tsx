@@ -61,6 +61,7 @@ type StudentAccessRow = {
   school_id: string | null;
   is_active: boolean;
   passed_exam: boolean;
+  exam_status: "training" | "passed" | "failed";
   is_archived: boolean;
   archived_at: string | null;
   profile_completed_at?: string | null;
@@ -91,12 +92,14 @@ type StudentBookingRow = Pick<
   | "student_access_id"
   | "student_lesson_package_id"
   | "school_id"
-  | "price_amount"
-  | "paid_amount"
-  | "is_paid"
   | "lesson_state"
 > & {
   student_access_id: string;
+  price_amount?: number | null;
+  paid_amount?: number | null;
+  is_paid?: boolean;
+  booking_category?: Booking["booking_category"];
+  instructor_payout_amount?: number | null;
 };
 
 type StudentSlotRow = Pick<
@@ -118,6 +121,7 @@ export default async function AdminStudentsPage({
   const postgresBackend = isPostgresBackend();
   const adminEnabled = postgresBackend || hasSupabaseAdminKey();
   const origin = getPublicOrigin(requestHeaders);
+  const isEmployeeInstructor = membership.role === "instructor";
   let instructors: Instructor[] = [];
   let lessonTypes: LessonType[] = [];
   let schools: School[] = [];
@@ -237,7 +241,7 @@ export default async function AdminStudentsPage({
               select id, instructor_id, display_label, first_name, last_name,
                      student_phone, student_photo_url, login,
                      total_lesson_limit, weekly_lesson_limit, school_id,
-                     is_active, passed_exam, is_archived, archived_at::text as archived_at,
+                     is_active, passed_exam, exam_status, is_archived, archived_at::text as archived_at,
                      profile_completed_at::text as profile_completed_at,
                      personal_data_consent_at::text as personal_data_consent_at,
                      personal_data_consent_source,
@@ -511,19 +515,61 @@ export default async function AdminStudentsPage({
             [packageIds],
           )
         : [];
-    studentBookings =
-      accessIds.length > 0
-        ? await queryRows<StudentBookingRow>(
-            `
-              select id, slot_id, student_access_id, student_lesson_package_id,
-                     school_id, price_amount, paid_amount, is_paid, lesson_state
-              from public.bookings
-              where student_access_id = any($1::uuid[])
-                and status = 'confirmed'
-            `,
-            [accessIds],
-          )
-        : [];
+    if (accessIds.length === 0) {
+      studentBookings = [];
+    } else if (isEmployeeInstructor) {
+      studentBookings = await queryRows<StudentBookingRow>(
+        `
+          select bookings.id,
+                 bookings.slot_id,
+                 bookings.student_access_id,
+                 bookings.student_lesson_package_id,
+                 bookings.school_id,
+                 bookings.lesson_state,
+                 bookings.booking_category,
+                 coalesce(
+                   bookings.direct_instructor_income_amount,
+                   payout_rule.amount
+                 ) as instructor_payout_amount
+          from public.bookings
+          left join public.slots lesson_slots
+            on lesson_slots.id = bookings.slot_id
+          left join lateral (
+            select rules.amount
+            from public.instructor_payout_rate_rules rules
+            where rules.organization_id = $2::uuid
+              and rules.instructor_id = $3::uuid
+              and rules.is_active = true
+              and (rules.school_id is null or rules.school_id = bookings.school_id)
+              and (rules.lesson_type_id is null or rules.lesson_type_id = lesson_slots.lesson_type_id)
+              and (rules.booking_category is null or rules.booking_category = bookings.booking_category)
+              and rules.effective_from <= lesson_slots.start_time::date
+              and (rules.effective_to is null or rules.effective_to >= lesson_slots.start_time::date)
+            order by
+              case when rules.school_id is null then 0 else 1 end desc,
+              case when rules.lesson_type_id is null then 0 else 1 end desc,
+              case when rules.booking_category is null then 0 else 1 end desc,
+              rules.effective_from desc,
+              rules.created_at desc
+            limit 1
+          ) payout_rule on true
+          where bookings.student_access_id = any($1::uuid[])
+            and bookings.status = 'confirmed'
+        `,
+        [accessIds, membership.organizationId, selectedInstructorId],
+      );
+    } else {
+      studentBookings = await queryRows<StudentBookingRow>(
+        `
+          select id, slot_id, student_access_id, student_lesson_package_id,
+                 school_id, price_amount, paid_amount, is_paid, lesson_state
+          from public.bookings
+          where student_access_id = any($1::uuid[])
+            and status = 'confirmed'
+        `,
+        [accessIds],
+      );
+    }
   } else {
     const supabase = adminEnabled ? createAdminClient() : await createClient();
     const { data: packageLessonTypeData, error: packageLessonTypeError } =
@@ -533,26 +579,34 @@ export default async function AdminStudentsPage({
             .select("package_id, lesson_type_id")
             .in("package_id", packageIds)
         : { data: [], error: null };
-    const { data: bookingData, error: bookingError } =
+    const bookingResult =
       adminEnabled && accessIds.length > 0
-        ? await supabase
-            .from("bookings")
-            .select(
-              "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state",
-            )
-            .in("student_access_id", accessIds)
-            .eq("status", "confirmed")
+        ? isEmployeeInstructor
+          ? await supabase
+              .from("bookings")
+              .select(
+                "id, slot_id, student_access_id, student_lesson_package_id, school_id, lesson_state, booking_category",
+              )
+              .in("student_access_id", accessIds)
+              .eq("status", "confirmed")
+          : await supabase
+              .from("bookings")
+              .select(
+                "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state",
+              )
+              .in("student_access_id", accessIds)
+              .eq("status", "confirmed")
         : { data: [], error: null };
 
     packageLessonTypes = (packageLessonTypeData ??
       []) as StudentLessonPackageTypeRow[];
-    studentBookings = (bookingData ?? []) as StudentBookingRow[];
+    studentBookings = (bookingResult.data ?? []) as StudentBookingRow[];
     loadError =
       loadError ??
       (packageLessonTypeError && !isMissingPricingTableError(packageLessonTypeError)
         ? packageLessonTypeError
         : null) ??
-      bookingError;
+      bookingResult.error;
   }
 
   const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
@@ -588,7 +642,7 @@ export default async function AdminStudentsPage({
 
   const bookingIds = studentBookings.map((booking) => booking.id);
 
-  if (postgresBackend) {
+  if (postgresBackend && !isEmployeeInstructor) {
     studentPaymentChanges =
       bookingIds.length > 0
         ? await queryRows<StudentBookingPaymentChangeRow>(
@@ -608,7 +662,7 @@ export default async function AdminStudentsPage({
             ],
           )
         : [];
-  } else {
+  } else if (!isEmployeeInstructor) {
     const supabase = adminEnabled ? createAdminClient() : await createClient();
     const { data: paymentChangeData, error: paymentChangeError } =
       adminEnabled && bookingIds.length > 0
@@ -647,11 +701,24 @@ export default async function AdminStudentsPage({
     registrationSettings.student_registration_enabled
       ? `${origin}/student/register?token=${registrationSettings.student_registration_token}`
       : null;
-  const schoolsById = new Map(schools.map((school) => [school.id, school]));
+  const panelLessonTypes = isEmployeeInstructor
+    ? schedulableLessonTypes.map((lessonType) => ({
+        ...lessonType,
+        default_price_amount: null,
+      }))
+    : schedulableLessonTypes;
+  const panelSchoolsWithSafePrices = isEmployeeInstructor
+    ? schools.map((school) => ({ ...school, default_price: null }))
+    : schools;
+  const schoolsById = new Map(
+    panelSchoolsWithSafePrices.map((school) => [school.id, school]),
+  );
   const panelSchools =
     membership.role === "owner" || sourceVisibilityMode === "all_active"
-      ? schools
-      : schools.filter((school) => visibleSchoolIds.has(school.id));
+      ? panelSchoolsWithSafePrices
+      : panelSchoolsWithSafePrices.filter((school) =>
+          visibleSchoolIds.has(school.id),
+        );
   const lessonTypesById = new Map(
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
   );
@@ -735,27 +802,42 @@ export default async function AdminStudentsPage({
     const unpaidCompletedLessons = completedLessons.filter(
       ({ booking }) => !booking.is_paid,
     );
+    const lastLessons = lessons.map(({ booking, slot, lessonType }) => ({
+      id: booking.id,
+      startsAt: slot.start_time,
+      lessonTypeName: lessonType?.name ?? "Занятие",
+      lessonState: booking.lesson_state,
+      ...(isEmployeeInstructor
+        ? {
+            instructorPayoutAmount: booking.instructor_payout_amount ?? null,
+          }
+        : {
+            isPaid: booking.is_paid ?? false,
+            priceAmount: booking.price_amount ?? null,
+            paidAmount: booking.paid_amount ?? 0,
+            paymentChanges: paymentChangesByBookingId.get(booking.id) ?? [],
+          }),
+    }));
     const crm: StudentAccessCrmSummary = {
       plannedCount,
       completedCount: completedLessons.length,
       noShowCount,
-      paidCount,
-      unpaidCompletedCount: unpaidCompletedLessons.length,
-      debtAmount: unpaidCompletedLessons.reduce(
-        (sum, { booking }) =>
-          sum + Math.max((booking.price_amount ?? 0) - (booking.paid_amount ?? 0), 0),
-        0,
-      ),
-      lastLessons: lessons.map(({ booking, slot, lessonType }) => ({
-        id: booking.id,
-        startsAt: slot.start_time,
-        lessonTypeName: lessonType?.name ?? "Занятие",
-        lessonState: booking.lesson_state,
-        isPaid: booking.is_paid,
-        priceAmount: booking.price_amount ?? null,
-        paidAmount: booking.paid_amount ?? 0,
-        paymentChanges: paymentChangesByBookingId.get(booking.id) ?? [],
-      })),
+      ...(isEmployeeInstructor
+        ? {}
+        : {
+            paidCount,
+            unpaidCompletedCount: unpaidCompletedLessons.length,
+            debtAmount: unpaidCompletedLessons.reduce(
+              (sum, { booking }) =>
+                sum +
+                Math.max(
+                  (booking.price_amount ?? 0) - (booking.paid_amount ?? 0),
+                  0,
+                ),
+              0,
+            ),
+          }),
+      lastLessons,
     };
 
     return {
@@ -768,6 +850,9 @@ export default async function AdminStudentsPage({
       lesson_type_ids: lessonTypeIdsByAccessId.get(access.id) ?? [],
       packages: (packagesByAccessId.get(access.id) ?? []).map((item) => ({
         ...item,
+        custom_price_amount: isEmployeeInstructor
+          ? null
+          : item.custom_price_amount,
         school: item.school_id ? schoolsById.get(item.school_id) ?? null : null,
         lesson_type_ids: packageLessonTypeIdsByPackageId.get(item.id) ?? [],
         lessonTypes: (packageLessonTypeIdsByPackageId.get(item.id) ?? [])
@@ -839,7 +924,7 @@ export default async function AdminStudentsPage({
         {selectedInstructor ? (
           <StudentAccessesPanel
             instructors={instructors}
-            lessonTypes={schedulableLessonTypes}
+            lessonTypes={panelLessonTypes}
             schools={panelSchools}
             schoolLessonTypePrices={schoolLessonTypePrices}
             accesses={activeAccesses}
@@ -855,6 +940,7 @@ export default async function AdminStudentsPage({
             canDeleteStudents={membership.role === "owner"}
             canManageStudentPrices={canManageStudentPrices}
             canManageStudentLessonPackages={canManageStudentLessonPackages}
+            isEmployeeInstructor={isEmployeeInstructor}
             highlightedStudentAccessId={params.student ?? null}
           />
         ) : (

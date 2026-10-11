@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { logAuditEvent } from "@/lib/audit-log";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import {
   cancelInstructorPayoutPayment,
@@ -102,10 +101,6 @@ export async function createDirectorReportPayoutPaymentAction(formData: FormData
   let paymentId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Выплаты доступны только в PostgreSQL-режиме");
-    }
-
     const instructorId = readRequiredString(formData, "instructor_id");
     const amount = readOptionalInteger(formData, "amount");
 
@@ -159,10 +154,6 @@ export async function cancelDirectorReportPayoutPaymentAction(formData: FormData
   let status = "cancelled";
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Отмена выплат доступна только в PostgreSQL-режиме");
-    }
-
     const paymentId = readRequiredString(formData, "payment_id");
     const payment = await cancelInstructorPayoutPayment({
       organizationId: membership.organizationId,
@@ -205,10 +196,6 @@ export async function createDirectorInstructorReturnAction(formData: FormData) {
   let status = "returned";
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Возвраты доступны только в PostgreSQL-режиме");
-    }
-
     const instructorId = readRequiredString(formData, "instructor_id");
     const amount = readOptionalInteger(formData, "amount");
     if (amount === null || amount <= 0) {
@@ -256,10 +243,6 @@ export async function markDirectorInstructorDebtWithholdingAction(
   let status = "withheld";
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Удержания доступны только в PostgreSQL-режиме");
-    }
-
     const instructorId = readRequiredString(formData, "instructor_id");
     await markInstructorDebtForWithholding({
       organizationId: membership.organizationId,

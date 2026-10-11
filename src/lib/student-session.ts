@@ -120,6 +120,10 @@ export async function clearStudentSession() {
 }
 
 export async function revokeAllStudentSessions(accessId: string) {
+  if (!isPostgresBackend()) {
+    return;
+  }
+
   await executeQuery(
     `
       update public.student_access_sessions

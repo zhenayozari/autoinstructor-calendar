@@ -35,8 +35,6 @@ export type FinanceInstructorItem = {
   }>;
 };
 
-const financeReturnPath = "/director/finances?view=instructor-settlements";
-
 function Sources({ item }: { item: FinanceInstructorItem["students"][number] }) {
   const sources = [
     item.bookingUnits > 0 ? `по записям: ${item.bookingUnits} ${item.bookingUnits === 1 ? "занятие" : "занятий"}` : null,
@@ -47,7 +45,15 @@ function Sources({ item }: { item: FinanceInstructorItem["students"][number] }) 
   return <span>{sources.join(" · ") || "прочие начисления"}</span>;
 }
 
-export function FinanceInstructorSettlements({ items }: { items: FinanceInstructorItem[] }) {
+export function FinanceInstructorSettlements({
+  items,
+  period,
+  returnPath,
+}: {
+  items: FinanceInstructorItem[];
+  period: string;
+  returnPath: string;
+}) {
   if (items.length === 0) {
     return (
       <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-zinc-500">
@@ -109,7 +115,7 @@ export function FinanceInstructorSettlements({ items }: { items: FinanceInstruct
                 {schoolOwes ? (
                   <form action={createDirectorReportPayoutPaymentAction} className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                     <input type="hidden" name="instructor_id" value={item.id} />
-                    <input type="hidden" name="return_path" value={financeReturnPath} />
+                    <input type="hidden" name="return_path" value={returnPath} />
                     <p className="text-sm font-semibold text-emerald-900">Передали деньги инструктору?</p>
                     <div className="mt-2 grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto] sm:items-end">
                       <label className="text-xs font-medium">Сумма<Input name="amount" type="number" min={1} max={item.remainingAmount} defaultValue={item.remainingAmount} required /></label>
@@ -125,11 +131,11 @@ export function FinanceInstructorSettlements({ items }: { items: FinanceInstruct
                     debtAmount={debt}
                     returnedAt={new Date().toISOString().slice(0, 10)}
                     isWithholding={false}
-                    selectedPeriod="all"
+                    selectedPeriod={period}
                     from=""
                     to=""
                     selectedInstructorId={item.id}
-                    returnPath={financeReturnPath}
+                    returnPath={returnPath}
                   />
                 ) : null}
 
@@ -143,11 +149,11 @@ export function FinanceInstructorSettlements({ items }: { items: FinanceInstruct
                           <CancelPayoutButton
                             action={cancelDirectorReportPayoutPaymentAction}
                             paymentId={payment.id}
-                            returnPeriod="all"
+                            returnPeriod={period}
                             returnFrom=""
                             returnTo=""
                             returnInstructor={item.id}
-                            returnPath={financeReturnPath}
+                            returnPath={returnPath}
                           />
                         </div>
                       ))}

@@ -1,6 +1,5 @@
 import "server-only";
 
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne } from "@/lib/db/postgres";
 
 function isMissingColumnError(error: unknown) {
@@ -13,10 +12,6 @@ function isMissingColumnError(error: unknown) {
 }
 
 export async function isStudentProfileConsentRequired(organizationId: string) {
-  if (!isPostgresBackend()) {
-    return false;
-  }
-
   try {
     const settings = await queryOne<{
       require_student_profile_consent: boolean;

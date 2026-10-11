@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useActionState } from "react";
+import { useEffect, useRef, useState, useActionState } from "react";
 import {
   Archive,
   Check,
@@ -53,6 +53,7 @@ import type {
   StudentLessonPackage,
   StudentPrepaidCredit,
   SchoolPaymentRule,
+  StudentExamStatus,
 } from "@/lib/types";
 import {
   bookingCategoryOptions,
@@ -70,24 +71,30 @@ const INITIAL_STATE: StudentAccessActionState = {
   message: "",
 };
 
+const INITIAL_PAYMENT_STATE: BookingPaymentActionState = {
+  status: "idle",
+  message: "",
+};
+
 const LEGACY_NO_SOURCE_LABEL = "Без источника (архивное)";
 
 export type StudentAccessCrmSummary = {
   plannedCount: number;
   completedCount: number;
   noShowCount: number;
-  paidCount: number;
-  unpaidCompletedCount: number;
-  debtAmount: number;
+  paidCount?: number;
+  unpaidCompletedCount?: number;
+  debtAmount?: number;
   lastLessons: {
     id: string;
     startsAt: string;
     lessonTypeName: string;
     lessonState: "scheduled" | "completed" | "no_show";
-    isPaid: boolean;
-    priceAmount: number | null;
-    paidAmount: number;
-    paymentChanges: string[];
+    isPaid?: boolean;
+    priceAmount?: number | null;
+    paidAmount?: number;
+    paymentChanges?: string[];
+    instructorPayoutAmount?: number | null;
   }[];
 };
 
@@ -106,17 +113,14 @@ function getInstructorLabel(instructor: Instructor) {
   return instructor.public_name ?? instructor.name;
 }
 
-const INITIAL_PAYMENT_STATE: BookingPaymentActionState = {
-  status: "idle",
-  message: "",
-};
-
 function StudentLessonHistoryRow({
   lesson,
   canManageStudentPrices,
+  isEmployeeInstructor,
 }: {
   lesson: StudentAccessCrmSummary["lastLessons"][number];
   canManageStudentPrices: boolean;
+  isEmployeeInstructor: boolean;
 }) {
   const [paymentState, paymentAction, isPaymentPending] = useActionState(
     updateBookingPaymentAction,
@@ -131,9 +135,9 @@ function StudentLessonHistoryRow({
           <p className="text-xs text-zinc-500">
             {formatLocalDateTime(lesson.startsAt)}
           </p>
-          {lesson.paymentChanges.length > 0 && (
+          {!isEmployeeInstructor && (lesson.paymentChanges?.length ?? 0) > 0 && (
             <p className="mt-1 text-[11px] text-zinc-400">
-              Изменено {formatLocalDateTime(lesson.paymentChanges[0])}
+              Изменено {formatLocalDateTime(lesson.paymentChanges![0])}
             </p>
           )}
         </div>
@@ -145,29 +149,39 @@ function StudentLessonHistoryRow({
                 ? "Неявка"
                 : "План"}
           </span>
-          {lesson.priceAmount !== null && (
+          {isEmployeeInstructor ? (
+            <span className="font-semibold">
+              {lesson.instructorPayoutAmount === null ||
+              lesson.instructorPayoutAmount === undefined
+                ? "Ставка не указана"
+                : `${formatMoney(lesson.instructorPayoutAmount)} за занятие`}
+            </span>
+          ) : lesson.priceAmount !== null && lesson.priceAmount !== undefined ? (
             <>
               <span className="font-semibold">
-                {formatMoney(lesson.paidAmount)} / {formatMoney(lesson.priceAmount)}
+                {formatMoney(lesson.paidAmount ?? 0)} / {formatMoney(lesson.priceAmount)}
               </span>
-              {lesson.paidAmount >= lesson.priceAmount ? (
+              {(lesson.paidAmount ?? 0) >= lesson.priceAmount ? (
                 <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
                   Долга нет
                 </span>
               ) : (
                 <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
-                  Долг {formatMoney(lesson.priceAmount - lesson.paidAmount)}
+                  Долг {formatMoney(lesson.priceAmount - (lesson.paidAmount ?? 0))}
                 </span>
               )}
             </>
-          )}
+          ) : null}
           <span className="text-zinc-400 transition group-open:rotate-180">⌄</span>
         </div>
       </summary>
 
       <div className="space-y-3 border-t bg-zinc-50 px-3 py-3">
-        {canManageStudentPrices ? (
-          <form action={paymentAction} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        {!isEmployeeInstructor && canManageStudentPrices ? (
+          <form
+            action={paymentAction}
+            className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
+          >
             <input type="hidden" name="booking_id" value={lesson.id} />
             <div className="space-y-1">
               <Label htmlFor={`history-price-${lesson.id}`}>К оплате, ₽</Label>
@@ -189,7 +203,7 @@ function StudentLessonHistoryRow({
                 type="number"
                 min="0"
                 step="1"
-                defaultValue={lesson.paidAmount}
+                defaultValue={lesson.paidAmount ?? 0}
                 disabled={isPaymentPending}
               />
             </div>
@@ -197,13 +211,13 @@ function StudentLessonHistoryRow({
               {isPaymentPending ? "Сохраняем..." : "Сохранить"}
             </Button>
           </form>
-        ) : (
+        ) : !isEmployeeInstructor ? (
           <p className="text-xs text-zinc-500">
             Изменять стоимость и оплату может только руководитель.
           </p>
-        )}
+        ) : null}
 
-        {paymentState.message && (
+        {!isEmployeeInstructor && paymentState.message && (
           <p
             className={`text-xs ${
               paymentState.status === "error" ? "text-red-700" : "text-emerald-700"
@@ -213,13 +227,13 @@ function StudentLessonHistoryRow({
           </p>
         )}
 
-        {lesson.paymentChanges.length > 0 && (
+        {!isEmployeeInstructor && (lesson.paymentChanges?.length ?? 0) > 0 && (
           <div className="border-t pt-2">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">
               История изменений оплаты
             </p>
             <div className="mt-1 space-y-1">
-              {lesson.paymentChanges.map((changedAt, index) => (
+              {lesson.paymentChanges?.map((changedAt, index) => (
                 <p key={`${changedAt}-${index}`} className="text-[11px] text-zinc-400">
                   Изменено {formatLocalDateTime(changedAt)}
                 </p>
@@ -446,6 +460,7 @@ function LessonTypeCheckboxes({
 
 function getPackageDescription(
   packageItem: NonNullable<StudentAccessCrm["packages"]>[number],
+  hidePrice = false,
 ) {
   const source = packageItem.school?.name ?? LEGACY_NO_SOURCE_LABEL;
   const category = getBookingCategoryLabel(packageItem.booking_category);
@@ -455,11 +470,15 @@ function getPackageDescription(
   const weeklyLimit = packageItem.weekly_lesson_limit
     ? `до ${packageItem.weekly_lesson_limit} в неделю`
     : "без недельного лимита";
-  const price = packageItem.custom_price_amount !== null
-    ? `цена ${formatMoney(packageItem.custom_price_amount)}`
-    : "цена по настройкам школы";
+  const price = hidePrice
+    ? null
+    : packageItem.custom_price_amount !== null
+      ? `цена ${formatMoney(packageItem.custom_price_amount)}`
+      : "цена по настройкам школы";
 
-  return `${source} · ${category} · ${price} · ${totalLimit} · ${weeklyLimit}`;
+  return [source, category, price, totalLimit, weeklyLimit]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function getAccessUsedCount(access: StudentAccessCrm) {
@@ -546,6 +565,7 @@ function StudentLessonPackageList({
   schools,
   canManageStudentPrices,
   canManageStudentLessonPackages,
+  isEmployeeInstructor,
 }: {
   access: StudentAccessCrm;
   packages: NonNullable<StudentAccessCrm["packages"]>;
@@ -553,6 +573,7 @@ function StudentLessonPackageList({
   schools: School[];
   canManageStudentPrices: boolean;
   canManageStudentLessonPackages: boolean;
+  isEmployeeInstructor: boolean;
 }) {
   if (packages.length === 0) {
     return (
@@ -638,7 +659,7 @@ function StudentLessonPackageList({
                 {index === 0 ? "Основной доступ" : "Дополнительный доступ"}
               </p>
               <p className="text-muted-foreground mt-1 text-xs">
-                {getPackageDescription(packageItem)}
+                {getPackageDescription(packageItem, isEmployeeInstructor)}
               </p>
             </div>
             <Badge
@@ -1661,6 +1682,7 @@ function StudentAccessCard({
   canDeleteStudents,
   canManageStudentPrices,
   canManageStudentLessonPackages,
+  isEmployeeInstructor,
   isHighlighted = false,
 }: {
   access: StudentAccessCrm;
@@ -1670,6 +1692,7 @@ function StudentAccessCard({
   canDeleteStudents: boolean;
   canManageStudentPrices: boolean;
   canManageStudentLessonPackages: boolean;
+  isEmployeeInstructor: boolean;
   isHighlighted?: boolean;
 }) {
   const [newSecret, setNewSecret] = useState("");
@@ -1701,6 +1724,34 @@ function StudentAccessCard({
     updateStudentExamStatusAction,
     INITIAL_STATE,
   );
+  const [examStatus, setExamStatus] = useState<StudentExamStatus>(
+    access.exam_status ?? (access.passed_exam ? "passed" : "training"),
+  );
+  const examFormRef = useRef<HTMLFormElement>(null);
+  const examStatusInputRef = useRef<HTMLInputElement>(null);
+  const wasExamPendingRef = useRef(false);
+  const [isExamSubmitting, setIsExamSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isExamPending) {
+      wasExamPendingRef.current = true;
+    } else if (wasExamPendingRef.current) {
+      wasExamPendingRef.current = false;
+      setIsExamSubmitting(false);
+    }
+  }, [isExamPending]);
+
+  function selectExamStatus(status: StudentExamStatus, checked: boolean) {
+    if (isExamSubmitting) return;
+
+    const nextStatus = checked ? status : "training";
+    setIsExamSubmitting(true);
+    setExamStatus(nextStatus);
+    if (examStatusInputRef.current) {
+      examStatusInputRef.current.value = nextStatus;
+    }
+    window.setTimeout(() => examFormRef.current?.requestSubmit(), 0);
+  }
   const [, toggleAction, isTogglePending] = useActionState(
     toggleStudentAccessAction,
     INITIAL_STATE,
@@ -1754,7 +1805,7 @@ function StudentAccessCard({
                 <span className="rounded-full bg-emerald-100 px-2 py-1 font-semibold text-emerald-800">
                   Проведено {access.crm?.completedCount ?? 0}
                 </span>
-                {(access.crm?.debtAmount ?? 0) > 0 && (
+                {!isEmployeeInstructor && (access.crm?.debtAmount ?? 0) > 0 && (
                   <span className="rounded-full bg-amber-100 px-2 py-1 font-semibold text-amber-800">
                     Долг {formatMoney(access.crm?.debtAmount ?? 0)}
                   </span>
@@ -1764,27 +1815,46 @@ function StudentAccessCard({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <form
+              ref={examFormRef}
               action={examAction}
               onClick={(event) => event.stopPropagation()}
-              className={`flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
-                access.passed_exam
-                  ? "border-emerald-200 bg-emerald-100 text-emerald-800"
-                  : "border-zinc-200 bg-zinc-50 text-zinc-600"
-              }`}
+              className="flex flex-wrap items-center gap-3 rounded-xl border border-violet-100 bg-violet-50/50 px-3 py-2 text-xs font-semibold"
             >
               <input type="hidden" name="student_access_id" value={access.id} />
+              <input
+                ref={examStatusInputRef}
+                type="hidden"
+                name="exam_status"
+                defaultValue={examStatus}
+              />
+              <span className="text-zinc-500">Экзамен:</span>
               <label className="flex cursor-pointer items-center gap-1.5">
                 <input
                   type="checkbox"
-                  name="passed_exam"
-                  value="true"
-                  defaultChecked={access.passed_exam}
-                  onChange={(event) => event.currentTarget.form?.requestSubmit()}
-                  disabled={isExamPending}
+                  checked={examStatus === "passed"}
+                  onChange={(event) =>
+                    selectExamStatus("passed", event.currentTarget.checked)
+                  }
+                  disabled={isExamPending || isExamSubmitting}
                   className="size-3.5"
                 />
-                {access.passed_exam ? "Сдал в ГАИ" : "Ещё учится"}
+                Сдал в ГАИ
               </label>
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={examStatus === "failed"}
+                  onChange={(event) =>
+                    selectExamStatus("failed", event.currentTarget.checked)
+                  }
+                  disabled={isExamPending || isExamSubmitting}
+                  className="size-3.5"
+                />
+                Не сдал в ГАИ
+              </label>
+              {examStatus === "training" && (
+                <span className="font-normal text-zinc-500">Обучается</span>
+              )}
             </form>
             <Badge
               className={
@@ -1845,7 +1915,7 @@ function StudentAccessCard({
 
         <section className="space-y-3 rounded-2xl border border-amber-100 bg-amber-50/50 p-3">
           <p className="text-sm font-semibold">Финансы и история</p>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className={`grid gap-3 ${isEmployeeInstructor ? "md:grid-cols-2" : "md:grid-cols-4"}`}>
             <div className="rounded-xl bg-white px-3 py-2">
               <p className="text-xs text-zinc-500">Источник</p>
               <p className="truncate font-semibold">
@@ -1858,18 +1928,18 @@ function StudentAccessCard({
                 {access.crm?.plannedCount ?? 0} / {access.crm?.completedCount ?? 0}
               </p>
             </div>
-            <div className="rounded-xl bg-white px-3 py-2">
+            {!isEmployeeInstructor && <div className="rounded-xl bg-white px-3 py-2">
               <p className="text-xs text-zinc-500">Оплачено</p>
               <p className="font-semibold">
                 {access.crm?.paidCount ?? 0} занятий
               </p>
-            </div>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+            </div>}
+            {!isEmployeeInstructor && <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
               <p className="text-xs text-amber-700">Долг</p>
               <p className="font-semibold text-amber-950">
                 {formatMoney(access.crm?.debtAmount ?? 0)}
               </p>
-            </div>
+            </div>}
           </div>
 
           {access.crm && access.crm.lastLessons.length > 0 && (
@@ -1881,6 +1951,7 @@ function StudentAccessCard({
                     key={lesson.id}
                     lesson={lesson}
                     canManageStudentPrices={canManageStudentPrices}
+                    isEmployeeInstructor={isEmployeeInstructor}
                   />
                 ))}
               </div>
@@ -1894,7 +1965,11 @@ function StudentAccessCard({
             accessSchoolId={access.school_id}
             accessLessonTypeIds={access.lesson_type_ids}
             credits={access.prepaidCredits ?? []}
-            schools={access.school_id ? schools.filter((school) => school.id === access.school_id) : schools}
+            schools={
+              access.school_id
+                ? schools.filter((school) => school.id === access.school_id)
+                : schools
+            }
             lessonTypes={lessonTypes}
             prices={schoolLessonTypePrices}
             canManage
@@ -1917,6 +1992,7 @@ function StudentAccessCard({
             schools={schools}
             canManageStudentPrices={canManageStudentPrices}
             canManageStudentLessonPackages={canManageStudentLessonPackages}
+            isEmployeeInstructor={isEmployeeInstructor}
           />
           {canManageStudentLessonPackages ? (
             <AddStudentLessonPackageForm
@@ -2480,6 +2556,7 @@ function StudentSearchPanel({
   onSourceFilterChange,
   debtFilter,
   onDebtFilterChange,
+  isEmployeeInstructor,
   schools,
   resultCount,
   totalCount,
@@ -2491,6 +2568,7 @@ function StudentSearchPanel({
   onSourceFilterChange: (value: string) => void;
   debtFilter: string;
   onDebtFilterChange: (value: string) => void;
+  isEmployeeInstructor: boolean;
   schools: School[];
   resultCount: number;
   totalCount: number;
@@ -2500,7 +2578,7 @@ function StudentSearchPanel({
   const hasFilters =
     Boolean(searchQuery.trim()) ||
     sourceFilter !== "all" ||
-    debtFilter !== "all";
+    (!isEmployeeInstructor && debtFilter !== "all");
 
   return (
     <section className="rounded-2xl border border-sky-200 bg-sky-50/80 p-4 shadow-sm sm:p-5">
@@ -2537,19 +2615,21 @@ function StudentSearchPanel({
             </select>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="student-debt-filter">Долги</Label>
-            <select
-              id="student-debt-filter"
-              value={debtFilter}
-              onChange={(event) => onDebtFilterChange(event.target.value)}
-              className={`${selectClassName} bg-white`}
-            >
-              <option value="all">Все ученики</option>
-              <option value="with_debt">Есть долг</option>
-              <option value="without_debt">Без долга</option>
-            </select>
-          </div>
+          {!isEmployeeInstructor && (
+            <div className="space-y-2">
+              <Label htmlFor="student-debt-filter">Долги</Label>
+              <select
+                id="student-debt-filter"
+                value={debtFilter}
+                onChange={(event) => onDebtFilterChange(event.target.value)}
+                className={`${selectClassName} bg-white`}
+              >
+                <option value="all">Все ученики</option>
+                <option value="with_debt">Есть долг</option>
+                <option value="without_debt">Без долга</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2587,6 +2667,7 @@ export function StudentAccessesPanel({
   canDeleteStudents = false,
   canManageStudentPrices = false,
   canManageStudentLessonPackages = false,
+  isEmployeeInstructor = false,
   highlightedStudentAccessId,
 }: {
   instructors: Instructor[];
@@ -2604,6 +2685,7 @@ export function StudentAccessesPanel({
   canDeleteStudents?: boolean;
   canManageStudentPrices?: boolean;
   canManageStudentLessonPackages?: boolean;
+  isEmployeeInstructor?: boolean;
   highlightedStudentAccessId?: string | null;
 }) {
   const [tab, setTab] = useState<"active" | "pending" | "archive">(() =>
@@ -2651,13 +2733,13 @@ export function StudentAccessesPanel({
     (access) =>
       matchesStudentAccessSearch(access, searchQuery) &&
       matchesSourceFilter(access, sourceFilter) &&
-      matchesDebtFilter(access, debtFilter),
+      (isEmployeeInstructor || matchesDebtFilter(access, debtFilter)),
   );
   const filteredArchivedAccesses = archivedAccesses.filter(
     (access) =>
       matchesStudentAccessSearch(access, searchQuery) &&
       matchesSourceFilter(access, sourceFilter) &&
-      matchesDebtFilter(access, debtFilter),
+      (isEmployeeInstructor || matchesDebtFilter(access, debtFilter)),
   );
   const filteredPendingRequests = pendingRequests.filter((request) =>
     matchesStudentRequestSearch(request, searchQuery),
@@ -2716,6 +2798,7 @@ export function StudentAccessesPanel({
         onSourceFilterChange={setSourceFilter}
         debtFilter={debtFilter}
         onDebtFilterChange={setDebtFilter}
+        isEmployeeInstructor={isEmployeeInstructor}
         schools={schools}
         resultCount={currentResultCount}
         totalCount={currentTotalCount}
@@ -2789,6 +2872,7 @@ export function StudentAccessesPanel({
                   canDeleteStudents={canDeleteStudents}
                   canManageStudentPrices={canManageStudentPrices}
                   canManageStudentLessonPackages={canManageStudentLessonPackages}
+                  isEmployeeInstructor={isEmployeeInstructor}
                   isHighlighted={access.id === highlightedStudentAccessId}
                 />
               ))}

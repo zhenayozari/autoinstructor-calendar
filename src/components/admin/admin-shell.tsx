@@ -12,7 +12,6 @@ import {
   Settings,
   UserRoundCheck,
   UserRoundPen,
-  UsersRound,
   X,
 } from "lucide-react";
 import { useState } from "react";
@@ -28,7 +27,6 @@ type AdminShellProps = {
   role: string;
   email?: string | null;
   instructorName?: string | null;
-  showTeam: boolean;
   pushPublicKey?: string;
   pushPreferences?: NotificationPreference[];
 };
@@ -59,7 +57,6 @@ export function AdminShell({
   role,
   email,
   instructorName,
-  showTeam,
   pushPublicKey,
   pushPreferences,
 }: AdminShellProps) {
@@ -179,21 +176,6 @@ export function AdminShell({
                   </Link>
                 )}
 
-                {showTeam && (
-                  <Link
-                    href="/admin/team"
-                    className={cn(
-                      "flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors",
-                      isActivePath(pathname, "/admin/team")
-                        ? "bg-zinc-900 text-white"
-                        : "text-zinc-700 hover:bg-zinc-100",
-                    )}
-                    onClick={() => setIsMenuOpen(false)}
-                  >
-                    <UsersRound className="size-4" />
-                    Команда
-                  </Link>
-                )}
               </div>
 
               {(role === "owner" || role === "instructor") && (

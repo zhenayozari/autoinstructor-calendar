@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
-export default function TeamPage() {
+// Старый интерфейс отключён. Оставляем адрес для старых закладок и ссылок.
+export default function LegacyTeamRedirectPage() {
   redirect("/admin");
 }

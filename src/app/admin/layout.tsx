@@ -55,7 +55,6 @@ export default async function AdminLayout({
       role={membership.role}
       email={membership.user.email}
       instructorName={selectedInstructor?.public_name ?? selectedInstructor?.name}
-      showTeam={false}
       pushPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY}
       pushPreferences={pushPreferences}
     >

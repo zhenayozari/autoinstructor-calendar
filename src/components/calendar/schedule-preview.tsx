@@ -1,8 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, CalendarDays, Clock3, UserRound } from "lucide-react";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
-import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 
 type PreviewSlot = {
@@ -49,48 +47,28 @@ function formatTime(value: string, timezone: string) {
 }
 
 export async function SchedulePreview() {
-  if (isPostgresBackend()) {
-    let slots: PreviewSlot[] = [];
-    let error: unknown = null;
+  let slots: PreviewSlot[] = [];
+  let error: unknown = null;
 
-    try {
-      slots = await queryRows<PreviewSlot>(
-        `
-          select id, instructor_name, instructor_slug, timezone, date,
-                 lesson_type_name, lesson_type_color, start_time, status,
-                 is_booked
-          from public.public_schedule_slots
-          where date >= $1
-            and start_time >= $2
-            and status = 'available'
-            and is_booked = false
-          order by date asc, start_time asc
-          limit 4
-        `,
-        [getCurrentDate(), new Date().toISOString()],
-      );
-    } catch (caughtError) {
-      error = caughtError;
-    }
-
-    return <SchedulePreviewContent slots={slots} error={error} />;
+  try {
+    slots = await queryRows<PreviewSlot>(
+      `
+        select id, instructor_name, instructor_slug, timezone, date,
+               lesson_type_name, lesson_type_color, start_time, status,
+               is_booked
+        from public.public_schedule_slots
+        where date >= $1
+          and start_time >= $2
+          and status = 'available'
+          and is_booked = false
+        order by date asc, start_time asc
+        limit 4
+      `,
+      [getCurrentDate(), new Date().toISOString()],
+    );
+  } catch (caughtError) {
+    error = caughtError;
   }
-
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("public_schedule_slots")
-    .select(
-      "id, instructor_name, instructor_slug, timezone, date, lesson_type_name, lesson_type_color, start_time, status, is_booked",
-    )
-    .gte("date", getCurrentDate())
-    .gte("start_time", new Date().toISOString())
-    .eq("status", "available")
-    .eq("is_booked", false)
-    .order("date", { ascending: true })
-    .order("start_time", { ascending: true })
-    .limit(4);
-
-  const slots = (data ?? []) as PreviewSlot[];
 
   return <SchedulePreviewContent slots={slots} error={error} />;
 }

@@ -1,9 +1,7 @@
 import "server-only";
 
 import webPush from "web-push";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryRows } from "@/lib/db/postgres";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export type PushPayload = {
   title: string;
@@ -46,33 +44,15 @@ export async function sendPushToMember(
 ) {
   configureWebPush();
 
-  let subscriptions: PushSubscriptionRow[] = [];
-  const supabase = isPostgresBackend() ? null : createAdminClient();
-
-  if (isPostgresBackend()) {
-    subscriptions = await queryRows<PushSubscriptionRow>(
-      `
-        select id, subscription
-        from public.push_subscriptions
-        where organization_member_id = $1
-          and is_active = true
-      `,
-      [organizationMemberId],
-    );
-  } else {
-    const { data, error } = await supabase!
-      .from("push_subscriptions")
-      .select("id, subscription")
-      .eq("organization_member_id", organizationMemberId)
-      .eq("is_active", true);
-
-    if (error) {
-      console.error("sendPushToMember subscriptions:", error);
-      return { sent: 0, failed: 0 };
-    }
-
-    subscriptions = (data ?? []) as PushSubscriptionRow[];
-  }
+  const subscriptions = await queryRows<PushSubscriptionRow>(
+    `
+      select id, subscription
+      from public.push_subscriptions
+      where organization_member_id = $1
+        and is_active = true
+    `,
+    [organizationMemberId],
+  );
 
   let sent = 0;
   let failed = 0;
@@ -101,23 +81,16 @@ export async function sendPushToMember(
             : null;
 
         if (statusCode === 404 || statusCode === 410) {
-          if (isPostgresBackend()) {
-            await executeQuery(
-              `
-                update public.push_subscriptions
-                set is_active = false,
-                    last_seen_at = now(),
-                    updated_at = now()
-                where id = $1
-              `,
-              [item.id],
-            );
-          } else {
-            await supabase!
-              .from("push_subscriptions")
-              .update({ is_active: false, last_seen_at: new Date().toISOString() })
-              .eq("id", item.id);
-          }
+          await executeQuery(
+            `
+              update public.push_subscriptions
+              set is_active = false,
+                  last_seen_at = now(),
+                  updated_at = now()
+              where id = $1
+            `,
+            [item.id],
+          );
         } else {
           console.error("sendPushToMember failed:", error);
         }

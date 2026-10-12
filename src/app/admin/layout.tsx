@@ -1,12 +1,6 @@
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
-import {
-  buildActiveInstructorsQuery,
-  getSelectedInstructor,
-} from "@/lib/queries";
-import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { getSelectedInstructor } from "@/lib/queries";
 import { getNotificationPreferencesForMember } from "@/lib/notification-preferences";
 import type { Instructor } from "@/lib/types";
 import { AdminShell } from "@/components/admin/admin-shell";
@@ -19,30 +13,20 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }>) {
   const membership = await requireActiveOrganizationMember();
-  let instructors: Instructor[] = [];
-
-  if (isPostgresBackend()) {
-    instructors = await queryRows<Instructor>(
-      `
-        select id, name, slug, public_name, timezone
-        from public.instructors
-        where organization_id = $1
-          and is_active = true
-          and ($2::uuid is null or id = $2::uuid)
-        order by name
-      `,
-      [
-        membership.organizationId,
-        membership.isInstructor ? membership.instructorId : null,
-      ],
-    );
-  } else {
-    const adminEnabled = hasSupabaseAdminKey();
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data } = await buildActiveInstructorsQuery(supabase, membership);
-
-    instructors = (data ?? []) as Instructor[];
-  }
+  const instructors = await queryRows<Instructor>(
+    `
+      select id, name, slug, public_name, timezone
+      from public.instructors
+      where organization_id = $1
+        and is_active = true
+        and ($2::uuid is null or id = $2::uuid)
+      order by name
+    `,
+    [
+      membership.organizationId,
+      membership.isInstructor ? membership.instructorId : null,
+    ],
+  );
 
   const selectedInstructor = getSelectedInstructor(
     instructors,

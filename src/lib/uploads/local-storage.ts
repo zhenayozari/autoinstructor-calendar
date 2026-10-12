@@ -1,6 +1,6 @@
 import "server-only";
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -60,4 +60,26 @@ export async function saveLocalImageUpload({
     relativePath,
     publicUrl: getLocalUploadPublicUrl(relativePath),
   };
+}
+
+export async function deleteLocalImageUpload(relativePath: string) {
+  const root = path.resolve(getUploadsDir());
+  const fullPath = path.resolve(root, relativePath);
+
+  if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
+    throw new Error("Недопустимый путь к загруженному файлу.");
+  }
+
+  try {
+    await unlink(fullPath);
+  } catch (error) {
+    if (
+      !error ||
+      typeof error !== "object" ||
+      !("code" in error) ||
+      error.code !== "ENOENT"
+    ) {
+      throw error;
+    }
+  }
 }

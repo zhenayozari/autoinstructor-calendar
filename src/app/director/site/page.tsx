@@ -14,11 +14,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
 import { getLegalDocumentsForOrganization } from "@/lib/legal-documents";
-import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import type {
   InstructorProfile,
   InstructorSiteSettings,
@@ -70,23 +67,13 @@ function getDefaultSiteSettings(
 
 export default async function DirectorSitePage() {
   const membership = await requireDirectorAccess();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
-  let organization: Organization | null = null;
-  let settingsData: OrganizationSiteSettings | null = null;
-  let instructorData: InstructorRow[] = [];
-  let instructorSettingsData: InstructorSiteSettings[] = [];
-  let legalDocuments: LegalDocument[] = [];
-  let loadError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    [
-      organization,
-      settingsData,
-      instructorData,
-      instructorSettingsData,
-      legalDocuments,
-    ] = await Promise.all([
+  const [
+    organization,
+    settingsData,
+    instructorData,
+    instructorSettingsData,
+    legalDocuments,
+  ] = await Promise.all([
       queryOne<Organization>(
         `
           select id, name
@@ -133,54 +120,6 @@ export default async function DirectorSitePage() {
       ),
       getLegalDocumentsForOrganization(membership.organizationId),
     ]);
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-
-    const [
-      { data: organizationResult, error: organizationError },
-      { data: settingsResult, error: settingsError },
-      { data: instructorResult, error: instructorError },
-      { data: instructorSettingsResult, error: instructorSettingsError },
-    ] = await Promise.all([
-      supabase
-        .from("organizations")
-        .select("id, name")
-        .eq("id", membership.organizationId)
-        .maybeSingle(),
-      supabase
-        .from("organization_site_settings")
-        .select(
-          "organization_id, hero_label, hero_title, hero_text, about_title, about_text, contact_phone, telegram_url, whatsapp_url, landing_content, show_about, show_lesson_types, show_instructors, show_contacts, show_student_login, updated_at",
-        )
-        .eq("organization_id", membership.organizationId)
-        .maybeSingle(),
-      supabase
-        .from("instructors")
-        .select(
-          "id, organization_id, name, slug, public_name, timezone, is_active, photo_url, short_bio, contact_text, car_description, experience_text, public_is_visible, profile_updated_at",
-        )
-        .eq("organization_id", membership.organizationId)
-        .order("name"),
-      supabase
-        .from("instructor_site_settings")
-        .select(
-          "instructor_id, organization_id, is_visible, show_photo, show_bio, show_contact, show_car, show_experience, public_note, public_contact, sort_order, updated_at",
-        )
-        .eq("organization_id", membership.organizationId),
-    ]);
-
-    organization = organizationResult as Organization | null;
-    settingsData = settingsResult as OrganizationSiteSettings | null;
-    instructorData = (instructorResult ?? []) as InstructorRow[];
-    instructorSettingsData = (instructorSettingsResult ??
-      []) as InstructorSiteSettings[];
-    loadError =
-      organizationError ??
-      settingsError ??
-      instructorError ??
-      instructorSettingsError;
-  }
-
   const settings =
     settingsData ??
     getDefaultSiteSettings(membership.organizationId, organization?.name);
@@ -224,12 +163,6 @@ export default async function DirectorSitePage() {
             </Button>
           </div>
         </header>
-
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить настройки сайта: {loadError.message}
-          </div>
-        )}
 
         <section className="grid gap-3 lg:grid-cols-3">
           <Card>
@@ -290,10 +223,10 @@ export default async function DirectorSitePage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <LegalDocumentsSettings
-              documents={legalDocuments}
-              enabled={postgresBackend}
-            />
+              <LegalDocumentsSettings
+                documents={legalDocuments}
+                enabled
+              />
           </CardContent>
         </Card>
 

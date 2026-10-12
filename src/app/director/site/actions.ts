@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { logAuditEvent } from "@/lib/audit-log";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne, withTransaction } from "@/lib/db/postgres";
 import {
   getLegalDocumentDefinition,
@@ -13,12 +12,14 @@ import {
   DEFAULT_LANDING_CONTENT,
   normalizeLandingContent,
 } from "@/lib/landing-content";
-import { createAdminClient } from "@/lib/supabase/admin";
 import {
   deleteLocalLegalDocumentUpload,
   saveLocalLegalDocumentUpload,
 } from "@/lib/uploads/legal-documents";
-import { saveLocalImageUpload } from "@/lib/uploads/local-storage";
+import {
+  deleteLocalImageUpload,
+  saveLocalImageUpload,
+} from "@/lib/uploads/local-storage";
 
 const SITE_MEDIA_BUCKET = "public-site";
 const ALLOWED_SITE_IMAGE_TYPES = new Set([
@@ -107,16 +108,6 @@ function readStringList(formData: FormData, prefix: string, fallback: string[]) 
   );
 }
 
-function getFileExtension(file: File) {
-  const [, extension = "png"] = file.name.toLowerCase().match(/\.([a-z0-9]+)$/) ?? [];
-
-  if (["jpg", "jpeg", "png", "webp", "gif"].includes(extension)) {
-    return extension;
-  }
-
-  return "png";
-}
-
 function readImageFile(formData: FormData, key: string) {
   const value = formData.get(key);
 
@@ -145,80 +136,19 @@ function readDocumentFile(formData: FormData, key: string) {
   return value;
 }
 
-async function uploadSiteImage({
-  file,
-  kind,
-  organizationId,
-  supabase,
-}: {
-  file: File;
-  kind: "logo" | "hero";
-  organizationId: string;
-  supabase: ReturnType<typeof createAdminClient>;
-}) {
-  const { data: bucket } = await supabase.storage.getBucket(SITE_MEDIA_BUCKET);
-
-  if (!bucket) {
-    const { error: bucketError } = await supabase.storage.createBucket(
-      SITE_MEDIA_BUCKET,
-      {
-        public: true,
-        fileSizeLimit: 4 * 1024 * 1024,
-        allowedMimeTypes: [
-          "image/jpeg",
-          "image/png",
-          "image/webp",
-          "image/gif",
-        ],
-      },
-    );
-
-    if (bucketError) {
-      throw new Error(bucketError.message);
-    }
-  }
-
-  const extension = getFileExtension(file);
-  const path = `${organizationId}/${kind}-${Date.now()}.${extension}`;
-  const { error: uploadError } = await supabase.storage
-    .from(SITE_MEDIA_BUCKET)
-    .upload(path, file, {
-      contentType: file.type || "image/png",
-      upsert: true,
-    });
-
-  if (uploadError) {
-    throw new Error(uploadError.message);
-  }
-
-  const { data } = supabase.storage.from(SITE_MEDIA_BUCKET).getPublicUrl(path);
-
-  return data.publicUrl;
-}
-
 export async function updateOrganizationSiteSettingsAction(
   _prevState: DirectorSiteActionState,
   formData: FormData,
 ): Promise<DirectorSiteActionState> {
   const membership = await requireDirectorAccess();
-  const postgresBackend = isPostgresBackend();
-  const supabase = postgresBackend ? null : createAdminClient();
-  const currentSettings = postgresBackend
-    ? await queryOne<{ landing_content: unknown }>(
-        `
-          select landing_content
-          from public.organization_site_settings
-          where organization_id = $1
-        `,
-        [membership.organizationId],
-      )
-    : (
-        await supabase!
-          .from("organization_site_settings")
-          .select("landing_content")
-          .eq("organization_id", membership.organizationId)
-          .maybeSingle()
-      ).data;
+  const currentSettings = await queryOne<{ landing_content: unknown }>(
+    `
+      select landing_content
+      from public.organization_site_settings
+      where organization_id = $1
+    `,
+    [membership.organizationId],
+  );
   const currentContent = normalizeLandingContent(
     currentSettings?.landing_content,
   );
@@ -239,47 +169,48 @@ export async function updateOrganizationSiteSettingsAction(
   let heroImageUrl = readText(formData, "current_hero_image_url");
   let logoUploaded = false;
   let heroImageUploaded = false;
+  const uploadedLocalFiles: string[] = [];
+
+  const cleanupUploadedLocalFiles = async () => {
+    await Promise.all(
+      uploadedLocalFiles.map(async (relativePath) => {
+        try {
+          await deleteLocalImageUpload(relativePath);
+        } catch (error) {
+          console.error("updateOrganizationSiteSettingsAction file cleanup:", error);
+        }
+      }),
+    );
+  };
 
   try {
     const logoFile = readImageFile(formData, "logo_file");
     const heroFile = readImageFile(formData, "hero_image_file");
 
     if (logoFile) {
-      logoUploaded = true;
-      logoUrl = postgresBackend
-        ? (
-            await saveLocalImageUpload({
-              file: logoFile,
-              bucket: SITE_MEDIA_BUCKET,
-              maxSize: 4 * 1024 * 1024,
-            })
-          ).publicUrl
-        : await uploadSiteImage({
-            file: logoFile,
-            kind: "logo",
-            organizationId: membership.organizationId,
-            supabase: supabase!,
-          });
+    logoUploaded = true;
+      const savedLogo = await saveLocalImageUpload({
+        file: logoFile,
+        bucket: SITE_MEDIA_BUCKET,
+        maxSize: 4 * 1024 * 1024,
+      });
+      uploadedLocalFiles.push(savedLogo.relativePath);
+      logoUrl = savedLogo.publicUrl;
     }
 
     if (heroFile) {
       heroImageUploaded = true;
-      heroImageUrl = postgresBackend
-        ? (
-            await saveLocalImageUpload({
-              file: heroFile,
-              bucket: SITE_MEDIA_BUCKET,
-              maxSize: 4 * 1024 * 1024,
-            })
-          ).publicUrl
-        : await uploadSiteImage({
-            file: heroFile,
-            kind: "hero",
-            organizationId: membership.organizationId,
-            supabase: supabase!,
-          });
+      const savedHeroImage = await saveLocalImageUpload({
+        file: heroFile,
+        bucket: SITE_MEDIA_BUCKET,
+        maxSize: 4 * 1024 * 1024,
+      });
+      uploadedLocalFiles.push(savedHeroImage.relativePath);
+      heroImageUrl = savedHeroImage.publicUrl;
     }
   } catch (error) {
+    await cleanupUploadedLocalFiles();
+
     return {
       status: "error",
       message:
@@ -483,7 +414,7 @@ export async function updateOrganizationSiteSettingsAction(
     },
   };
 
-  if (postgresBackend) {
+  try {
     await executeQuery(
       `
         insert into public.organization_site_settings (
@@ -530,35 +461,14 @@ export async function updateOrganizationSiteSettingsAction(
         readCheckbox(formData, "require_student_profile_consent"),
       ],
     );
-  } else {
-    const { error } = await supabase!.from("organization_site_settings").upsert(
-      {
-        organization_id: membership.organizationId,
-        hero_label: landingContent.hero.label,
-        hero_title: heroTitle,
-        hero_text: heroText,
-        about_title: landingContent.situations.title,
-        about_text: landingContent.situations.desktopText,
-        contact_phone: landingContent.contacts.phoneLabel,
-        telegram_url: landingContent.contacts.telegramUrl,
-        whatsapp_url: landingContent.contacts.maxUrl,
-        landing_content: landingContent,
-        show_about: landingContent.situations.enabled,
-        show_lesson_types: readCheckbox(formData, "show_lesson_types"),
-        show_instructors: landingContent.instructors.enabled,
-        show_contacts: landingContent.contacts.enabled,
-        show_student_login: readCheckbox(formData, "show_student_login"),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "organization_id" },
-    );
+  } catch (error) {
+    await cleanupUploadedLocalFiles();
 
-    if (error) {
-      return {
-        status: "error",
-        message: error.message,
-      };
-    }
+    return {
+      status: "error",
+      message:
+        error instanceof Error ? error.message : "Не удалось сохранить настройки сайта.",
+    };
   }
 
   await logAuditEvent({
@@ -600,12 +510,8 @@ export async function uploadLegalDocumentAction(
 ): Promise<DirectorSiteActionState> {
   const membership = await requireDirectorAccess();
 
-  if (!isPostgresBackend()) {
-    return {
-      status: "error",
-      message: "Загрузка документов доступна после переключения на PostgreSQL.",
-    };
-  }
+  let savedDocument: Awaited<ReturnType<typeof saveLocalLegalDocumentUpload>> | null = null;
+  let documentPersisted = false;
 
   try {
     const documentType = readText(formData, "document_type");
@@ -623,11 +529,12 @@ export async function uploadLegalDocumentAction(
     const versionLabel = readNullableText(formData, "version_label");
     const publishNow = readCheckbox(formData, "publish_now");
     const file = readDocumentFile(formData, "document_file");
-    const savedDocument = await saveLocalLegalDocumentUpload({
+    const uploadedDocument = await saveLocalLegalDocumentUpload({
       file,
       organizationId: membership.organizationId,
       documentType,
     });
+    savedDocument = uploadedDocument;
 
     const document = await withTransaction(async (client) => {
       if (publishNow) {
@@ -659,10 +566,10 @@ export async function uploadLegalDocumentAction(
           documentType,
           title,
           versionLabel,
-          savedDocument.originalFileName,
-          savedDocument.storagePath,
-          savedDocument.mimeType,
-          savedDocument.fileSizeBytes,
+          uploadedDocument.originalFileName,
+          uploadedDocument.storagePath,
+          uploadedDocument.mimeType,
+          uploadedDocument.fileSizeBytes,
           publishNow ? "published" : "draft",
           publishNow ? new Date().toISOString() : null,
           membership.id,
@@ -671,6 +578,8 @@ export async function uploadLegalDocumentAction(
 
       return rows[0] ?? null;
     });
+
+    documentPersisted = Boolean(document);
 
     if (!document) {
       throw new Error("Не удалось сохранить документ.");
@@ -685,8 +594,8 @@ export async function uploadLegalDocumentAction(
       entityId: document.id,
       metadata: {
         document_type: documentType,
-        mime_type: savedDocument.mimeType,
-        file_size_bytes: savedDocument.fileSizeBytes,
+        mime_type: uploadedDocument.mimeType,
+        file_size_bytes: uploadedDocument.fileSizeBytes,
       },
     });
 
@@ -701,6 +610,14 @@ export async function uploadLegalDocumentAction(
         : "Документ загружен как черновик.",
     };
   } catch (error) {
+    if (savedDocument && !documentPersisted) {
+      try {
+        await deleteLocalLegalDocumentUpload(savedDocument.storagePath);
+      } catch (cleanupError) {
+        console.error("uploadLegalDocumentAction file cleanup:", cleanupError);
+      }
+    }
+
     console.error("uploadLegalDocumentAction:", error);
 
     return {
@@ -713,10 +630,6 @@ export async function uploadLegalDocumentAction(
 
 export async function updateLegalDocumentAudienceAction(formData: FormData) {
   const membership = await requireDirectorAccess();
-
-  if (!isPostgresBackend()) {
-    return;
-  }
 
   const documentId = readText(formData, "document_id");
 
@@ -779,10 +692,6 @@ export async function updateLegalDocumentAudienceAction(formData: FormData) {
 export async function deleteLegalDocumentAction(formData: FormData) {
   const membership = await requireDirectorAccess();
 
-  if (!isPostgresBackend()) {
-    return;
-  }
-
   const documentId = readText(formData, "document_id");
 
   if (!documentId) {
@@ -835,10 +744,6 @@ export async function deleteLegalDocumentAction(formData: FormData) {
 
 export async function publishLegalDocumentAction(formData: FormData) {
   const membership = await requireDirectorAccess();
-
-  if (!isPostgresBackend()) {
-    return;
-  }
 
   const documentId = readText(formData, "document_id");
 
@@ -909,10 +814,6 @@ export async function publishLegalDocumentAction(formData: FormData) {
 export async function unpublishLegalDocumentAction(formData: FormData) {
   const membership = await requireDirectorAccess();
 
-  if (!isPostgresBackend()) {
-    return;
-  }
-
   const documentId = readText(formData, "document_id");
 
   if (!documentId) {
@@ -960,7 +861,6 @@ export async function updateInstructorSiteSettingsAction(
   formData: FormData,
 ): Promise<DirectorSiteActionState> {
   const membership = await requireDirectorAccess();
-  const postgresBackend = isPostgresBackend();
   const instructorId = readText(formData, "instructor_id");
 
   if (!instructorId) {
@@ -970,103 +870,57 @@ export async function updateInstructorSiteSettingsAction(
     };
   }
 
-  const instructor = postgresBackend
-    ? await queryOne<{ id: string }>(
-        `
-          select id
-          from public.instructors
-          where id = $1
-            and organization_id = $2
-        `,
-        [instructorId, membership.organizationId],
+  const instructor = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.instructors
+      where id = $1
+        and organization_id = $2
+    `,
+    [instructorId, membership.organizationId],
+  );
+
+  if (!instructor) {
+    return {
+      status: "error",
+      message: "Инструктор не найден в этой школе.",
+    };
+  }
+
+  await executeQuery(
+    `
+      insert into public.instructor_site_settings (
+        instructor_id, organization_id, is_visible, show_photo, show_bio,
+        show_contact, show_car, show_experience, public_note, public_contact,
+        sort_order, updated_at
       )
-    : null;
-
-  if (postgresBackend && !instructor) {
-    return {
-      status: "error",
-      message: "Инструктор не найден в этой школе.",
-    };
-  }
-
-  const supabase = postgresBackend ? null : createAdminClient();
-  const supabaseInstructorResult = postgresBackend
-    ? { data: instructor, error: null }
-    : await supabase!
-        .from("instructors")
-        .select("id")
-        .eq("id", instructorId)
-        .eq("organization_id", membership.organizationId)
-        .maybeSingle();
-
-  if (supabaseInstructorResult.error || !supabaseInstructorResult.data) {
-    return {
-      status: "error",
-      message: "Инструктор не найден в этой школе.",
-    };
-  }
-
-  if (postgresBackend) {
-    await executeQuery(
-      `
-        insert into public.instructor_site_settings (
-          instructor_id, organization_id, is_visible, show_photo, show_bio,
-          show_contact, show_car, show_experience, public_note, public_contact,
-          sort_order, updated_at
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
-        on conflict (instructor_id) do update
-        set is_visible = excluded.is_visible,
-            show_photo = excluded.show_photo,
-            show_bio = excluded.show_bio,
-            show_contact = excluded.show_contact,
-            show_car = excluded.show_car,
-            show_experience = excluded.show_experience,
-            public_note = excluded.public_note,
-            public_contact = excluded.public_contact,
-            sort_order = excluded.sort_order,
-            updated_at = now()
-      `,
-      [
-        instructorId,
-        membership.organizationId,
-        readCheckbox(formData, "is_visible"),
-        readCheckbox(formData, "show_photo"),
-        readCheckbox(formData, "show_bio"),
-        readCheckbox(formData, "show_contact"),
-        readCheckbox(formData, "show_car"),
-        readCheckbox(formData, "show_experience"),
-        readNullableText(formData, "public_note"),
-        readNullableText(formData, "public_contact"),
-        readNumber(formData, "sort_order", 100),
-      ],
-    );
-  } else {
-    const { error } = await supabase!.from("instructor_site_settings").upsert(
-      {
-        instructor_id: instructorId,
-        organization_id: membership.organizationId,
-        is_visible: readCheckbox(formData, "is_visible"),
-        show_photo: readCheckbox(formData, "show_photo"),
-        show_bio: readCheckbox(formData, "show_bio"),
-        show_contact: readCheckbox(formData, "show_contact"),
-        show_car: readCheckbox(formData, "show_car"),
-        show_experience: readCheckbox(formData, "show_experience"),
-        public_note: readNullableText(formData, "public_note"),
-        public_contact: readNullableText(formData, "public_contact"),
-        sort_order: readNumber(formData, "sort_order", 100),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "instructor_id" },
-    );
-
-    if (error) {
-      return {
-        status: "error",
-        message: error.message,
-      };
-    }
-  }
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+      on conflict (instructor_id) do update
+      set is_visible = excluded.is_visible,
+          show_photo = excluded.show_photo,
+          show_bio = excluded.show_bio,
+          show_contact = excluded.show_contact,
+          show_car = excluded.show_car,
+          show_experience = excluded.show_experience,
+          public_note = excluded.public_note,
+          public_contact = excluded.public_contact,
+          sort_order = excluded.sort_order,
+          updated_at = now()
+    `,
+    [
+      instructorId,
+      membership.organizationId,
+      readCheckbox(formData, "is_visible"),
+      readCheckbox(formData, "show_photo"),
+      readCheckbox(formData, "show_bio"),
+      readCheckbox(formData, "show_contact"),
+      readCheckbox(formData, "show_car"),
+      readCheckbox(formData, "show_experience"),
+      readNullableText(formData, "public_note"),
+      readNullableText(formData, "public_contact"),
+      readNumber(formData, "sort_order", 100),
+    ],
+  );
 
   await logAuditEvent({
     membership,

@@ -3,7 +3,6 @@ import { requireActiveOrganizationMember } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import { formatUpdatedAt, selectClassName } from "@/lib/formatters";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { InstructorProfile } from "@/lib/types";
 import { ProfileForm } from "@/components/admin/profile-form";
@@ -36,40 +35,19 @@ export default async function InstructorProfilePage({
   void requestedInstructorId;
 
   let instructors: InstructorProfile[] = [];
-  let error: { message: string } | null = null;
-
-  if (isPostgresBackend()) {
-    instructors = await queryRows<InstructorProfile>(
-      `
-        select id, name, slug, public_name, timezone, is_active, photo_url,
-               short_bio, contact_text, car_description, experience_text,
-               show_contact_in_student_cabinet, public_is_visible,
-               profile_updated_at::text as profile_updated_at
-        from public.instructors
-        where organization_id = $1
-          and ($2::uuid is null or id = $2)
-        order by name
-      `,
-      [membership.organizationId, membership.isInstructor ? membership.instructorId : null],
-    );
-  } else {
-    const supabase = createAdminClient();
-    let instructorsQuery = supabase
-      .from("instructors")
-      .select(
-        "id, name, slug, public_name, photo_url, short_bio, contact_text, show_contact_in_student_cabinet, car_description, experience_text, public_is_visible, profile_updated_at",
-      )
-      .eq("organization_id", membership.organizationId)
-      .order("name");
-
-    if (membership.isInstructor) {
-      instructorsQuery = instructorsQuery.eq("id", membership.instructorId!);
-    }
-
-    const result = await instructorsQuery;
-    instructors = (result.data ?? []) as InstructorProfile[];
-    error = result.error;
-  }
+  instructors = await queryRows<InstructorProfile>(
+    `
+      select id, name, slug, public_name, timezone, is_active, photo_url,
+             short_bio, contact_text, car_description, experience_text,
+             show_contact_in_student_cabinet, public_is_visible,
+             profile_updated_at::text as profile_updated_at
+      from public.instructors
+      where organization_id = $1
+        and ($2::uuid is null or id = $2)
+      order by name
+    `,
+    [membership.organizationId, membership.isInstructor ? membership.instructorId : null],
+  );
 
   const defaultInstructorId =
     membership.instructorId &&
@@ -148,11 +126,10 @@ export default async function InstructorProfilePage({
             </div>
           </CardHeader>
           <CardContent>
-            {error || !profile ? (
+            {!profile ? (
               <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
                 Не удалось загрузить профиль:{" "}
-                {error?.message ??
-                  "выберите инструктора, профиль которого нужно редактировать"}
+                {"выберите инструктора, профиль которого нужно редактировать"}
               </div>
             ) : (
               <ProfileForm

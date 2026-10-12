@@ -1,10 +1,4 @@
 import { Settings } from "lucide-react";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  createAdminClient,
-  hasSupabaseAdminKey,
-} from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import { requireActiveOrganizationMember } from "@/lib/auth";
 import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
@@ -40,63 +34,17 @@ type EditableLessonType = LessonType &
     >
   >;
 
-function isMissingColumnError(error: { code?: string; message?: string } | null) {
-  const message = error?.message?.toLowerCase() ?? "";
-
-  return (
-    error?.code === "42703" ||
-    error?.code === "42P01" ||
-    error?.code === "PGRST204" ||
-    message.includes("does not exist") ||
-    message.includes("could not find") ||
-    message.includes("schema cache")
-  );
-}
-
-async function loadLessonTypes(
-  supabase: SupabaseClient,
-  enabled: boolean,
-): Promise<{ data: EditableLessonType[]; error: { message: string } | null }> {
-  if (!enabled) {
-    return { data: [], error: null };
-  }
-
-  const result = await supabase
-    .from("lesson_types")
-    .select(
-      "id, code, name, description, color, kind, default_duration_minutes, tags, sort_order, is_active",
-    )
-    .order("sort_order")
-    .order("name");
-
-  if (!result.error) {
-    return {
-      data: (result.data ?? []) as EditableLessonType[],
-      error: null,
-    };
-  }
-
-  if (!isMissingColumnError(result.error)) {
-    return { data: [], error: result.error };
-  }
-
-  return { data: [], error: result.error };
-}
-
 export default async function AdminSettingsPage() {
   const membership = await requireActiveOrganizationMember();
   const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  const adminEnabled = postgresBackend;
   const canManageCatalog = membership.role === "owner";
   let lessonTypes: EditableLessonType[] = [];
   let schools: School[] = [];
   let prices: SchoolLessonTypePrice[] = [];
-  let loadError: { message: string } | null = null;
-  let priceError: { message: string } | null = null;
   let instructorVisibleSchoolIds: Set<string> | null = null;
 
-  if (postgresBackend) {
-    [lessonTypes, schools, prices] = await Promise.all([
+  [lessonTypes, schools, prices] = await Promise.all([
       queryRows<EditableLessonType>(
         `
           select id, code, name, description, color, kind,
@@ -124,7 +72,7 @@ export default async function AdminSettingsPage() {
         `,
         [membership.organizationId],
       ),
-    ]);
+  ]);
 
     if (membership.isInstructor && membership.instructorId) {
       const payoutSettings = await getInstructorPayoutSettings({
@@ -145,41 +93,6 @@ export default async function AdminSettingsPage() {
         );
       }
     }
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const [
-      { data: lessonTypeData, error: lessonTypeError },
-      { data: schoolData, error: schoolError },
-      { data: priceData, error: loadedPriceError },
-    ] = await Promise.all([
-      loadLessonTypes(supabase, adminEnabled),
-      adminEnabled
-        ? supabase
-            .from("schools")
-            .select(
-              "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
-            )
-            .eq("organization_id", membership.organizationId)
-            .order("name")
-        : Promise.resolve({ data: [], error: null }),
-      adminEnabled
-        ? supabase
-            .from("school_lesson_type_prices")
-            .select(
-              "id, organization_id, school_id, lesson_type_id, price_amount, created_at, updated_at",
-            )
-            .eq("organization_id", membership.organizationId)
-        : Promise.resolve({ data: [], error: null }),
-    ]);
-
-    priceError = loadedPriceError;
-    const normalizedPriceError =
-      priceError && !isMissingColumnError(priceError) ? priceError : null;
-    loadError = lessonTypeError ?? schoolError ?? normalizedPriceError;
-    lessonTypes = lessonTypeData;
-    schools = (schoolData ?? []) as School[];
-    prices = (priceData ?? []) as SchoolLessonTypePrice[];
-  }
   const baseVisibleSchools = canManageCatalog
     ? schools
     : schools.filter((school) => school.is_active);
@@ -211,12 +124,6 @@ export default async function AdminSettingsPage() {
           </div>
         </header>
 
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить часть настроек: {loadError.message}
-          </div>
-        )}
-
         <SchoolsSettings
           schools={visibleSchools}
           adminEnabled={adminEnabled}
@@ -233,7 +140,7 @@ export default async function AdminSettingsPage() {
           schools={visibleSchools}
           lessonTypes={priceLessonTypes}
           prices={prices}
-          adminEnabled={adminEnabled && !priceError}
+          adminEnabled={adminEnabled}
           canManage={canManageCatalog}
         />
 

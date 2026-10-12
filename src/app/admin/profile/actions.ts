@@ -5,9 +5,7 @@ import {
   requireActiveOrganizationMember,
   requireInstructorAccess,
 } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne } from "@/lib/db/postgres";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { saveLocalImageUpload } from "@/lib/uploads/local-storage";
 
 export type ProfileActionState = {
@@ -98,8 +96,7 @@ export async function saveInstructorProfileAction(
 
     let instructor: { id: string; slug: string; photo_url: string | null };
 
-    if (isPostgresBackend()) {
-      const postgresInstructor = await queryOne<{
+    const postgresInstructor = await queryOne<{
         id: string;
         slug: string;
         photo_url: string | null;
@@ -155,71 +152,6 @@ export async function saveInstructorProfileAction(
           instructor.id,
         ],
       );
-    } else {
-      const supabase = createAdminClient();
-      const instructorQuery = supabase
-        .from("instructors")
-        .select("id, slug, photo_url")
-        .eq("organization_id", membership.organizationId)
-        .eq("id", instructorId);
-
-      const { data: supabaseInstructor, error: instructorError } =
-        await instructorQuery.maybeSingle();
-
-      if (instructorError || !supabaseInstructor) {
-        throw new Error("Основной инструктор не найден");
-      }
-
-      instructor = supabaseInstructor;
-      let photoUrl = instructor.photo_url;
-      let uploadedPath: string | null = null;
-
-      if (photo) {
-        const extension = PHOTO_EXTENSIONS[photo.type];
-        uploadedPath = `${instructor.id}-${Date.now()}.${extension}`;
-        const fileBuffer = Buffer.from(await photo.arrayBuffer());
-        const { error: uploadError } = await supabase.storage
-          .from(PHOTO_BUCKET)
-          .upload(uploadedPath, fileBuffer, {
-            contentType: photo.type,
-            cacheControl: "3600",
-            upsert: false,
-          });
-
-        if (uploadError) {
-          throw new Error(`Не удалось загрузить фотографию: ${uploadError.message}`);
-        }
-
-        const { data: publicUrlData } = supabase.storage
-          .from(PHOTO_BUCKET)
-          .getPublicUrl(uploadedPath);
-        photoUrl = publicUrlData.publicUrl;
-      }
-
-      const { error } = await supabase
-        .from("instructors")
-        .update({
-          public_name: publicName,
-          photo_url: photoUrl,
-          short_bio: shortBio,
-          contact_text: contactText,
-          show_contact_in_student_cabinet: showContactInStudentCabinet,
-          car_description: carDescription,
-          experience_text: experienceText,
-          public_is_visible: publicIsVisible,
-          profile_updated_at: new Date().toISOString(),
-        })
-        .eq("id", instructor.id);
-
-      if (error) {
-        if (uploadedPath) {
-          await supabase.storage.from(PHOTO_BUCKET).remove([uploadedPath]);
-        }
-
-        throw new Error(error.message);
-      }
-    }
-
     revalidatePath("/admin/profile");
     revalidatePath("/student");
     revalidatePath("/");

@@ -249,9 +249,9 @@ function RefundHistoryRow({ refund }: { refund: RefundItem }) {
   const cancelled = Boolean(refund.cancelled_at);
 
   return (
-    <div className={`flex flex-col gap-2 border-b p-3 text-xs last:border-b-0 sm:flex-row sm:items-center sm:justify-between ${cancelled ? "bg-zinc-50 text-zinc-400" : ""}`}>
+    <div className={`flex min-w-0 flex-col gap-2 border-b p-3 text-xs last:border-b-0 sm:flex-row sm:items-center sm:justify-between ${cancelled ? "bg-zinc-50 text-zinc-400" : ""}`}>
       <div><p className="font-semibold">{formatMoney(refund.amount)} · {new Intl.DateTimeFormat("ru-RU").format(new Date(refund.refunded_at))}</p><p className="mt-1">{cancelled ? `Отметка отменена${refund.cancellation_note ? `: ${refund.cancellation_note}` : ""}` : refund.refund_note || "Без комментария"}</p></div>
-      {!cancelled && <form action={formAction} className="flex gap-2" onSubmit={(event) => { if (!window.confirm("Аннулировать ошибочную фиксацию возврата?")) event.preventDefault(); }}><input type="hidden" name="student_prepaid_refund_id" value={refund.id} /><Input name="cancellation_note" placeholder="Причина аннулирования" disabled={isPending} className="h-8 text-xs" /><Button type="submit" variant="outline" size="sm" disabled={isPending} className="border-red-200 text-red-700">{isPending ? "Аннулируем…" : "Аннулировать возврат"}</Button></form>}
+      {!cancelled && <form action={formAction} className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:min-w-[min(100%,32rem)] sm:flex-1 sm:flex-row sm:items-center" onSubmit={(event) => { if (!window.confirm("Аннулировать ошибочную фиксацию возврата?")) event.preventDefault(); }}><input type="hidden" name="student_prepaid_refund_id" value={refund.id} /><Input name="cancellation_note" placeholder="Причина аннулирования" disabled={isPending} className="h-8 min-w-0 w-full text-xs sm:flex-1" /><Button type="submit" variant="outline" size="sm" disabled={isPending} className="w-full shrink-0 border-red-200 text-red-700 sm:w-auto">{isPending ? "Аннулируем…" : "Аннулировать возврат"}</Button></form>}
       <StateMessage state={state} />
     </div>
   );

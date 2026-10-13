@@ -529,11 +529,21 @@ export default async function AdminStudentsPage({
                  bookings.booking_category,
                  coalesce(
                    bookings.direct_instructor_income_amount,
+                   payout_entry.amount,
                    payout_rule.amount
                  ) as instructor_payout_amount
           from public.bookings
           left join public.slots lesson_slots
             on lesson_slots.id = bookings.slot_id
+          left join lateral (
+            select entries.amount
+            from public.instructor_payout_entries entries
+            where entries.booking_id = bookings.id
+              and entries.entry_type = 'booking_accrual'
+              and entries.status = 'planned'
+            order by entries.created_at desc
+            limit 1
+          ) payout_entry on true
           left join lateral (
             select rules.amount
             from public.instructor_payout_rate_rules rules

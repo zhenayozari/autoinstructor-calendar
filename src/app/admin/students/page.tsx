@@ -549,13 +549,17 @@ export default async function AdminStudentsPage({
             from public.instructor_payout_rate_rules rules
             where rules.organization_id = $2::uuid
               and rules.instructor_id = $3::uuid
-              and rules.is_active = true
               and (rules.school_id is null or rules.school_id = bookings.school_id)
               and (rules.lesson_type_id is null or rules.lesson_type_id = lesson_slots.lesson_type_id)
               and (rules.booking_category is null or rules.booking_category = bookings.booking_category)
               and rules.effective_from <= lesson_slots.start_time::date
               and (rules.effective_to is null or rules.effective_to >= lesson_slots.start_time::date)
+              and (
+                rules.is_active = true
+                or lesson_slots.start_time::date <= coalesce(rules.effective_to, rules.updated_at::date - 1)
+              )
             order by
+              rules.is_active desc,
               case when rules.school_id is null then 0 else 1 end desc,
               case when rules.lesson_type_id is null then 0 else 1 end desc,
               case when rules.booking_category is null then 0 else 1 end desc,

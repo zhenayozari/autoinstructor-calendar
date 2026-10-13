@@ -602,13 +602,17 @@ export async function findInstructorPayoutRateRule(
       from public.instructor_payout_rate_rules
       where organization_id = $1
         and instructor_id = $2
-        and is_active = true
         and (school_id is null or school_id = $3::uuid)
         and (lesson_type_id is null or lesson_type_id = $4::uuid)
         and (booking_category is null or booking_category = $5)
         and effective_from <= $6::date
         and (effective_to is null or effective_to >= $6::date)
+        and (
+          is_active = true
+          or $6::date <= coalesce(effective_to, updated_at::date - 1)
+        )
       order by
+        is_active desc,
         case when school_id is null then 0 else 1 end desc,
         case when lesson_type_id is null then 0 else 1 end desc,
         case when booking_category is null then 0 else 1 end desc,

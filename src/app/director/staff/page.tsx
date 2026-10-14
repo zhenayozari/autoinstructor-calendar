@@ -39,6 +39,7 @@ import {
   addUtcDays,
   formatDate,
   formatDateValue,
+  formatNumericDate,
   formatLocalDateTime,
   formatMoney,
   getLocalDate,
@@ -596,6 +597,9 @@ function StaffPayoutPanel({
                       {rule.effective_to
                         ? ` по ${formatDate(rule.effective_to)}`
                         : " · дата окончания не указана"}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-600">
+                      Отключена: {rule.disabled_at ? formatNumericDate(rule.disabled_at) : "дата не указана"}
                     </p>
                     <p className="mt-1 text-xs text-zinc-600">
                       Комментарий: {rule.note || "не указан"}

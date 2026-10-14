@@ -556,7 +556,7 @@ export default async function AdminStudentsPage({
               and (rules.effective_to is null or rules.effective_to >= lesson_slots.start_time::date)
               and (
                 rules.is_active = true
-                or lesson_slots.start_time::date <= coalesce(rules.effective_to, rules.updated_at::date - 1)
+                or lesson_slots.start_time::date <= coalesce(rules.effective_to, rules.disabled_at::date - 1, rules.updated_at::date - 1)
               )
             order by
               rules.is_active desc,

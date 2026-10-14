@@ -518,6 +518,7 @@ export async function listInstructorPayoutRateRules({
              booking_category, amount, is_active,
              effective_from::text as effective_from,
              effective_to::text as effective_to,
+             disabled_at::date::text as disabled_at,
              note, created_at::text as created_at, updated_at::text as updated_at
       from public.instructor_payout_rate_rules
       where organization_id = $1
@@ -559,6 +560,7 @@ export async function createInstructorPayoutRateRule(
                 booking_category, amount, is_active,
                 effective_from::text as effective_from,
                 effective_to::text as effective_to,
+                disabled_at::date::text as disabled_at,
                 note, created_at::text as created_at, updated_at::text as updated_at
     `,
     [
@@ -598,6 +600,7 @@ export async function findInstructorPayoutRateRule(
              booking_category, amount, is_active,
              effective_from::text as effective_from,
              effective_to::text as effective_to,
+             disabled_at::date::text as disabled_at,
              note, created_at::text as created_at, updated_at::text as updated_at
       from public.instructor_payout_rate_rules
       where organization_id = $1
@@ -609,7 +612,7 @@ export async function findInstructorPayoutRateRule(
         and (effective_to is null or effective_to >= $6::date)
         and (
           is_active = true
-          or $6::date <= coalesce(effective_to, updated_at::date - 1)
+          or $6::date <= coalesce(effective_to, disabled_at::date - 1, updated_at::date - 1)
         )
       order by
         is_active desc,

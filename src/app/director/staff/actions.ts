@@ -1207,6 +1207,7 @@ export async function disableStaffPayoutRateRuleAction(formData: FormData) {
       `
         update public.instructor_payout_rate_rules
         set is_active = false,
+            disabled_at = coalesce(disabled_at, now()),
             effective_to = case
               when effective_from >= current_date then effective_from
               when effective_to is null or effective_to >= current_date then current_date - 1

@@ -366,6 +366,7 @@ export type InstructorPayoutRateRule = {
   is_active: boolean;
   effective_from: string;
   effective_to: string | null;
+  disabled_at: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;

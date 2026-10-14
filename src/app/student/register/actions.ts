@@ -2,7 +2,6 @@
 
 import { headers } from "next/headers";
 import { hashStudentAccessSecret } from "@/lib/student-access";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne } from "@/lib/db/postgres";
 import { getLegalDocumentDefinition } from "@/lib/legal-document-definitions";
 import { getPublishedLegalDocumentsForAudience } from "@/lib/legal-documents";
@@ -13,7 +12,6 @@ import {
   STUDENT_SECRET_MAX_LENGTH,
   STUDENT_SECRET_MIN_LENGTH,
 } from "@/lib/student-secret-policy";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export type StudentRegistrationActionState = {
   status: "idle" | "success" | "error";
@@ -88,79 +86,42 @@ function getRequestIp(headersList: Headers) {
 }
 
 async function getRegistrationInstructor(token: string) {
-  if (isPostgresBackend()) {
-    const settings = await queryOne<{
-      instructor_id: string;
-      student_registration_enabled: boolean;
-    }>(
-      `
-        select instructor_id, student_registration_enabled
-        from public.instructor_settings
-        where student_registration_token = $1
-        limit 1
-      `,
-      [token],
-    );
+  const settings = await queryOne<{
+    instructor_id: string;
+    student_registration_enabled: boolean;
+  }>(
+    `
+      select instructor_id, student_registration_enabled
+      from public.instructor_settings
+      where student_registration_token = $1
+      limit 1
+    `,
+    [token],
+  );
 
-    if (!settings?.student_registration_enabled) {
-      throw new Error("Ссылка регистрации недоступна");
-    }
-
-    const instructor = await queryOne<{
-      id: string;
-      organization_id: string;
-      is_active: boolean;
-    }>(
-      `
-        select id, organization_id, is_active
-        from public.instructors
-        where id = $1
-        limit 1
-      `,
-      [settings.instructor_id],
-    );
-
-    if (!instructor?.is_active) {
-      throw new Error("Сейчас регистрация недоступна");
-    }
-
-    return instructor;
-  }
-
-  const supabase = createAdminClient();
-  const { data: settings, error: settingsError } = await supabase
-    .from("instructor_settings")
-    .select("instructor_id, student_registration_enabled")
-    .eq("student_registration_token", token)
-    .maybeSingle();
-
-  if (settingsError) {
-    throw new Error(settingsError.message);
-  }
-
-  if (!settings || !settings.student_registration_enabled) {
+  if (!settings?.student_registration_enabled) {
     throw new Error("Ссылка регистрации недоступна");
   }
 
-  const { data: instructor, error: instructorError } = await supabase
-    .from("instructors")
-    .select("id, organization_id, is_active")
-    .eq("id", settings.instructor_id)
-    .maybeSingle();
-
-  if (instructorError) {
-    throw new Error(instructorError.message);
-  }
+  const instructor = await queryOne<{
+    id: string;
+    organization_id: string;
+    is_active: boolean;
+  }>(
+    `
+      select id, organization_id, is_active
+      from public.instructors
+      where id = $1
+      limit 1
+    `,
+    [settings.instructor_id],
+  );
 
   if (!instructor?.is_active) {
     throw new Error("Сейчас регистрация недоступна");
   }
 
-  return instructor as {
-    id: string;
-    organization_id: string;
-    is_active: boolean;
-  };
+  return instructor;
 }
 
 export async function createStudentRegistrationRequestAction(
@@ -199,10 +160,9 @@ export async function createStudentRegistrationRequestAction(
 
     const instructor = await getRegistrationInstructor(token);
 
-    if (isPostgresBackend()) {
-      if (!firstName || !lastName || !studentPhone) {
+    if (!firstName || !lastName || !studentPhone) {
         throw new Error("Заполните фамилию, имя и способ связи");
-      }
+    }
 
       const publishedDocuments = await getPublishedLegalDocumentsForAudience(
         instructor.organization_id,
@@ -297,51 +257,6 @@ export async function createStudentRegistrationRequestAction(
 
         throw error;
       }
-
-      const name = getDisplayName(firstName, lastName);
-
-      return {
-        status: "success",
-        message: name
-          ? `${name}, заявка отправлена. Инструктор подтвердит доступ.`
-          : "Заявка отправлена. Инструктор подтвердит доступ.",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { data: existingAccess, error: accessError } = await supabase
-      .from("student_accesses")
-      .select("id")
-      .eq("organization_id", instructor.organization_id)
-      .eq("login", login)
-      .maybeSingle();
-
-    if (accessError) {
-      throw new Error(accessError.message);
-    }
-
-    if (existingAccess) {
-      throw new Error("Такой логин уже занят");
-    }
-
-    const { error } = await supabase.from("student_registration_requests").insert({
-      organization_id: instructor.organization_id,
-      instructor_id: instructor.id,
-      first_name: firstName,
-      last_name: lastName,
-      student_phone: studentPhone,
-      school_text: schoolText,
-      login,
-      password_hash: hashStudentAccessSecret(secret),
-    });
-
-    if (error) {
-      if (error.code === "23505") {
-        throw new Error("Заявка с таким логином уже ожидает подтверждения");
-      }
-
-      throw new Error(error.message);
-    }
 
     const name = getDisplayName(firstName, lastName);
 

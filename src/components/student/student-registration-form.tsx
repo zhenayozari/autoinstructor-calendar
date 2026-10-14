@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState, type ChangeEvent } from "react";
 import Link from "next/link";
 import { ExternalLink, Send } from "lucide-react";
 import {
@@ -37,12 +37,27 @@ export function StudentRegistrationForm({
   documents?: PublishedLegalDocumentLink[];
   requiresConsent?: boolean;
 }) {
+  const [formValues, setFormValues] = useState({
+    lastName: "",
+    firstName: "",
+    studentPhone: "",
+    schoolText: "",
+    login: "",
+  });
   const [state, formAction, isPending] = useActionState(
     createStudentRegistrationRequestAction,
     INITIAL_STATE,
   );
   const isSuccess = state.status === "success";
   const hasRequiredDocuments = hasRequiredStudentLegalDocuments(documents);
+  const updateField =
+    (field: keyof typeof formValues) =>
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setFormValues((current) => ({
+        ...current,
+        [field]: event.target.value,
+      }));
+    };
 
   return (
     <form action={formAction} className="space-y-4">
@@ -54,6 +69,8 @@ export function StudentRegistrationForm({
           <Input
             id="student-last-name"
             name="last_name"
+            value={formValues.lastName}
+            onChange={updateField("lastName")}
             autoComplete="family-name"
             maxLength={80}
             disabled={isSuccess}
@@ -66,6 +83,8 @@ export function StudentRegistrationForm({
           <Input
             id="student-first-name"
             name="first_name"
+            value={formValues.firstName}
+            onChange={updateField("firstName")}
             autoComplete="given-name"
             maxLength={80}
             disabled={isSuccess}
@@ -79,6 +98,8 @@ export function StudentRegistrationForm({
         <Input
           id="student-contact"
           name="student_phone"
+          value={formValues.studentPhone}
+          onChange={updateField("studentPhone")}
           type="text"
           placeholder="+7..."
           autoComplete="tel"
@@ -93,6 +114,8 @@ export function StudentRegistrationForm({
         <Input
           id="student-school"
           name="school_text"
+          value={formValues.schoolText}
+          onChange={updateField("schoolText")}
           placeholder="Как называется ваша автошкола"
           maxLength={120}
           disabled={isSuccess}
@@ -105,8 +128,14 @@ export function StudentRegistrationForm({
           <Input
             id="student-register-login"
             name="login"
+            value={formValues.login}
+            onChange={updateField("login")}
             placeholder="maria01"
             autoComplete="username"
+            minLength={3}
+            maxLength={50}
+            pattern="[a-z0-9][a-z0-9_-]{2,49}"
+            title="Используйте 3-50 символов: латинские буквы, цифры, дефис или подчёркивание"
             disabled={isSuccess}
             required
           />

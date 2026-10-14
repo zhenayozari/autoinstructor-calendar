@@ -47,7 +47,6 @@ import {
 } from "@/lib/formatters";
 import { getPublicOrigin } from "@/lib/public-origin";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import {
   ensureInstructorPayoutSettingsForOrganization,
@@ -55,8 +54,6 @@ import {
   getOwnerPayoutPolicy,
   type InstructorPayoutSetup,
 } from "@/lib/instructor-payouts";
-import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
   Booking,
@@ -951,8 +948,6 @@ export default async function DirectorStaffPage({
   const membership = await requireDirectorAccess();
   const params = await searchParams;
   const requestHeaders = await headers();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
   const origin = getPublicOrigin(requestHeaders);
   const timezone = DEFAULT_TIMEZONE;
   const currentDate = getLocalDate(timezone);
@@ -961,35 +956,19 @@ export default async function DirectorStaffPage({
   const from = formatDateValue(weekStart);
   const to = formatDateValue(weekEnd);
 
-  let instructors: StaffInstructor[] = [];
-  let instructorError: { message: string } | null = null;
-  let includeOwnerInPayouts = false;
-
-  if (postgresBackend) {
-    includeOwnerInPayouts = await getOwnerPayoutPolicy({
-      organizationId: membership.organizationId,
-    });
-
-    instructors = await queryRows<StaffInstructor>(
-      `
-        select id, organization_id, name, slug, public_name, timezone, is_active,
-               photo_url
-        from public.instructors
-        where organization_id = $1
-        order by name
-      `,
-      [membership.organizationId],
-    );
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: instructorData, error } = await supabase
-      .from("instructors")
-      .select("id, organization_id, name, slug, public_name, timezone, is_active, photo_url")
-      .eq("organization_id", membership.organizationId)
-      .order("name");
-    instructors = (instructorData ?? []) as StaffInstructor[];
-    instructorError = error;
-  }
+  const includeOwnerInPayouts = await getOwnerPayoutPolicy({
+    organizationId: membership.organizationId,
+  });
+  const instructors = await queryRows<StaffInstructor>(
+    `
+      select id, organization_id, name, slug, public_name, timezone, is_active,
+             photo_url
+      from public.instructors
+      where organization_id = $1
+      order by name
+    `,
+    [membership.organizationId],
+  );
 
   await autoCompletePastBookings({
     instructorIds: instructors.map((instructor) => instructor.id),
@@ -1003,12 +982,7 @@ export default async function DirectorStaffPage({
   }[] = [];
   let scheduleDays: Pick<ScheduleDay, "id" | "instructor_id" | "date">[] = [];
   let memberData: StaffMember[] = [];
-  let studentAccessError: { message: string } | null = null;
-  let scheduleDayError: { message: string } | null = null;
-  let memberError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    [studentAccessData, scheduleDays, memberData] = await Promise.all([
+  [studentAccessData, scheduleDays, memberData] = await Promise.all([
       instructorIds.length > 0
         ? queryRows<{
             id: string;
@@ -1047,101 +1021,36 @@ export default async function DirectorStaffPage({
             [membership.organizationId, instructorIds],
           )
         : Promise.resolve([]),
-    ]);
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const [
-      { data: studentAccessResult, error: studentAccessLoadError },
-      { data: scheduleDayResult, error: scheduleDayLoadError },
-      { data: memberResult, error: memberLoadError },
-    ] = await Promise.all([
-      instructorIds.length > 0
-        ? supabase
-            .from("student_accesses")
-            .select("id, instructor_id, is_active, is_archived")
-            .in("instructor_id", instructorIds)
-        : Promise.resolve({ data: [], error: null }),
-      instructorIds.length > 0
-        ? supabase
-            .from("schedule_days")
-            .select("id, instructor_id, date")
-            .in("instructor_id", instructorIds)
-            .gte("date", from)
-            .lte("date", to)
-        : Promise.resolve({ data: [], error: null }),
-      instructorIds.length > 0
-        ? supabase
-            .from("organization_members")
-            .select("id, instructor_id, role, is_active")
-            .eq("organization_id", membership.organizationId)
-            .in("instructor_id", instructorIds)
-        : Promise.resolve({ data: [], error: null }),
-    ]);
-
-    studentAccessData = (studentAccessResult ?? []) as {
-      id: string;
-      instructor_id: string;
-      is_active: boolean;
-      is_archived: boolean;
-    }[];
-    scheduleDays = (scheduleDayResult ?? []) as Pick<
-      ScheduleDay,
-      "id" | "instructor_id" | "date"
-    >[];
-    memberData = (memberResult ?? []) as StaffMember[];
-    studentAccessError = studentAccessLoadError;
-    scheduleDayError = scheduleDayLoadError;
-    memberError = memberLoadError;
-  }
+  ]);
 
   const scheduleDayIds = scheduleDays.map((day) => day.id);
-  let slots: Pick<
+  const slots: Pick<
     Slot,
     "id" | "instructor_id" | "schedule_day_id" | "start_time" | "end_time" | "status"
-  >[] = [];
-  let slotError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    slots =
-      scheduleDayIds.length > 0
-        ? await queryRows<
-            Pick<
-              Slot,
-              | "id"
-              | "instructor_id"
-              | "schedule_day_id"
-              | "start_time"
-              | "end_time"
-              | "status"
-            >
-          >(
-            `
-              select id, instructor_id, schedule_day_id,
-                     start_time::text as start_time, end_time::text as end_time,
-                     status
-              from public.slots
-              where schedule_day_id = any($1::uuid[])
-                and status <> 'cancelled'
-            `,
-            [scheduleDayIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: slotData, error: slotLoadError } =
-      scheduleDayIds.length > 0
-        ? await supabase
-            .from("slots")
-            .select("id, instructor_id, schedule_day_id, start_time, end_time, status")
-            .in("schedule_day_id", scheduleDayIds)
-            .neq("status", "cancelled")
-        : { data: [], error: null };
-    slots = (slotData ?? []) as Pick<
-      Slot,
-      "id" | "instructor_id" | "schedule_day_id" | "start_time" | "end_time" | "status"
-    >[];
-    slotError = slotLoadError;
-  }
+  >[] =
+    scheduleDayIds.length > 0
+      ? await queryRows<
+          Pick<
+            Slot,
+            | "id"
+            | "instructor_id"
+            | "schedule_day_id"
+            | "start_time"
+            | "end_time"
+            | "status"
+          >
+        >(
+          `
+            select id, instructor_id, schedule_day_id,
+                   start_time::text as start_time, end_time::text as end_time,
+                   status
+            from public.slots
+            where schedule_day_id = any($1::uuid[])
+              and status <> 'cancelled'
+          `,
+          [scheduleDayIds],
+        )
+      : [];
 
   const slotIds = slots.map((slot) => slot.id);
   let bookingData: StaffBooking[] = [];
@@ -1149,11 +1058,7 @@ export default async function DirectorStaffPage({
   let schools: School[] = [];
   let lessonTypes: LessonType[] = [];
   const payoutSetupByInstructorId = new Map<string, InstructorPayoutSetup>();
-  let bookingError: { message: string } | null = null;
-  let invitationError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    [bookingData, invitationData, schools, lessonTypes] = await Promise.all([
+  [bookingData, invitationData, schools, lessonTypes] = await Promise.all([
       slotIds.length > 0
         ? queryRows<StaffBooking>(
             `
@@ -1199,62 +1104,29 @@ export default async function DirectorStaffPage({
           order by sort_order, name
         `,
       ),
-    ]);
+  ]);
 
-    if (instructorIds.length > 0) {
-      await ensureInstructorPayoutSettingsForOrganization(
-        membership.organizationId,
+  if (instructorIds.length > 0) {
+    await ensureInstructorPayoutSettingsForOrganization(
+      membership.organizationId,
+    );
+
+    const payoutSetups = await Promise.all(
+      instructorIds.map((instructorId) =>
+        getInstructorPayoutSetup({
+          organizationId: membership.organizationId,
+          instructorId,
+        }),
+      ),
+    );
+
+    for (const payoutSetup of payoutSetups) {
+      payoutSetupByInstructorId.set(
+        payoutSetup.settings.instructor_id,
+        payoutSetup,
       );
-
-      const payoutSetups = await Promise.all(
-        instructorIds.map((instructorId) =>
-          getInstructorPayoutSetup({
-            organizationId: membership.organizationId,
-            instructorId,
-          }),
-        ),
-      );
-
-      for (const payoutSetup of payoutSetups) {
-        payoutSetupByInstructorId.set(
-          payoutSetup.settings.instructor_id,
-          payoutSetup,
-        );
-      }
     }
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: bookingResult, error: bookingLoadError } =
-      slotIds.length > 0
-        ? await supabase
-            .from("bookings")
-            .select("id, slot_id, price_amount, paid_amount, lesson_state")
-            .in("slot_id", slotIds)
-            .eq("status", "confirmed")
-        : { data: [], error: null };
-    const { data: invitationResult, error: invitationLoadError } = adminEnabled
-      ? await supabase
-          .from("staff_invitations")
-          .select("*")
-          .eq("organization_id", membership.organizationId)
-          .order("created_at", { ascending: false })
-          .limit(20)
-      : { data: [], error: null };
-
-    bookingData = (bookingResult ?? []) as StaffBooking[];
-    invitationData = (invitationResult ?? []) as StaffInvitation[];
-    bookingError = bookingLoadError;
-    invitationError = invitationLoadError;
   }
-
-  const loadError =
-    instructorError ??
-    studentAccessError ??
-    scheduleDayError ??
-    memberError ??
-    slotError ??
-    bookingError ??
-    invitationError;
   const statsByInstructorId = new Map<string, StaffStats>();
 
   for (const instructor of instructors) {
@@ -1369,12 +1241,6 @@ export default async function DirectorStaffPage({
           </p>
         </header>
 
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить часть данных: {loadError.message}
-          </div>
-        )}
-
         <InviteStatusMessage status={params?.invite} />
 
         <section className="grid gap-2 sm:grid-cols-4">
@@ -1408,37 +1274,31 @@ export default async function DirectorStaffPage({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {!postgresBackend ? (
-              <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Настройка доступна после перехода на PostgreSQL.
-              </div>
-            ) : (
-              <form action={updateOwnerPayoutPolicyAction} className="space-y-3">
-                <label className="flex items-start gap-3 rounded-xl border bg-zinc-50 px-3 py-3">
-                  <input
-                    type="checkbox"
-                    name="include_owner_in_payouts"
-                    value="true"
-                    defaultChecked={includeOwnerInPayouts}
-                    className="mt-1 size-4 shrink-0"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-zinc-950">
-                      Учитывать занятия владельца в выплатах
-                    </span>
-                    <span className="mt-1 block text-sm leading-5 text-zinc-600">
-                      Если выключено, руководитель остаётся владельцем школы, но
-                      его занятия не считаются зарплатой и не уменьшают маржу.
-                      Если включено, владельцу можно настроить ставку, начислять
-                      выплаты и отмечать выдачу денег как обычному инструктору.
-                    </span>
+            <form action={updateOwnerPayoutPolicyAction} className="space-y-3">
+              <label className="flex items-start gap-3 rounded-xl border bg-zinc-50 px-3 py-3">
+                <input
+                  type="checkbox"
+                  name="include_owner_in_payouts"
+                  value="true"
+                  defaultChecked={includeOwnerInPayouts}
+                  className="mt-1 size-4 shrink-0"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-zinc-950">
+                    Учитывать занятия владельца в выплатах
                   </span>
-                </label>
-                <Button type="submit" variant="accent" className="h-10">
-                  Сохранить настройку
-                </Button>
-              </form>
-            )}
+                  <span className="mt-1 block text-sm leading-5 text-zinc-600">
+                    Если выключено, руководитель остаётся владельцем школы, но
+                    его занятия не считаются зарплатой и не уменьшают маржу.
+                    Если включено, владельцу можно настроить ставку, начислять
+                    выплаты и отмечать выдачу денег как обычному инструктору.
+                  </span>
+                </span>
+              </label>
+              <Button type="submit" variant="accent" className="h-10">
+                Сохранить настройку
+              </Button>
+            </form>
           </CardContent>
         </Card>
 
@@ -1507,47 +1367,41 @@ export default async function DirectorStaffPage({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {!adminEnabled ? (
-              <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Для приглашений нужен служебный ключ проекта в настройках сервера.
+            <form action={createStaffInvitationAction} className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="invited-name">Имя</Label>
+                <Input
+                  id="invited-name"
+                  name="invited_name"
+                  placeholder="Анна Петрова"
+                  maxLength={160}
+                />
               </div>
-            ) : (
-              <form action={createStaffInvitationAction} className="grid gap-3 sm:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="invited-name">Имя</Label>
-                  <Input
-                    id="invited-name"
-                    name="invited_name"
-                    placeholder="Анна Петрова"
-                    maxLength={160}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="invited-email">Эл. почта</Label>
-                  <Input
-                    id="invited-email"
-                    name="invited_email"
-                    type="email"
-                    placeholder="instructor@mail.ru"
-                    maxLength={254}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="invited-phone">Телефон</Label>
-                  <Input
-                    id="invited-phone"
-                    name="invited_phone"
-                    type="tel"
-                    placeholder="+7 999 123-45-67"
-                    maxLength={40}
-                  />
-                </div>
-            <Button type="submit" className="h-10 shadow-md shadow-zinc-950/15 sm:col-span-3">
-              <Link2 className="size-4" />
-              Создать ссылку
-            </Button>
-              </form>
-            )}
+              <div className="space-y-2">
+                <Label htmlFor="invited-email">Эл. почта</Label>
+                <Input
+                  id="invited-email"
+                  name="invited_email"
+                  type="email"
+                  placeholder="instructor@mail.ru"
+                  maxLength={254}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="invited-phone">Телефон</Label>
+                <Input
+                  id="invited-phone"
+                  name="invited_phone"
+                  type="tel"
+                  placeholder="+7 999 123-45-67"
+                  maxLength={40}
+                />
+              </div>
+              <Button type="submit" className="h-10 shadow-md shadow-zinc-950/15 sm:col-span-3">
+                <Link2 className="size-4" />
+                Создать ссылку
+              </Button>
+            </form>
           </CardContent>
         </Card>
 

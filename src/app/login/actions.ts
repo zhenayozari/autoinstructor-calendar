@@ -6,7 +6,6 @@ import {
   clearAppUserSession,
   setAppUserSession,
 } from "@/lib/app-users/session";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import {
   checkLoginRateLimit,
   clearLoginRateLimit,
@@ -15,7 +14,6 @@ import {
   getRequestIp,
   recordFailedLogin,
 } from "@/lib/auth/login-rate-limit";
-import { createClient } from "@/lib/supabase/server";
 
 export type LoginActionState = {
   status: "idle" | "error";
@@ -45,57 +43,32 @@ export async function loginAction(
     };
   }
 
-  if (isPostgresBackend()) {
-    const normalizedEmail = email.trim().toLowerCase();
-    const ipAddress = await getRequestIp();
-    const rateLimit = await checkLoginRateLimit({
-      identifier: normalizedEmail,
-      ipAddress,
-    });
+  const normalizedEmail = email.trim().toLowerCase();
+  const ipAddress = await getRequestIp();
+  const rateLimit = await checkLoginRateLimit({
+    identifier: normalizedEmail,
+    ipAddress,
+  });
 
-    if (rateLimit.isBlocked) {
-      return {
-        status: "error",
-        message: getLoginRateLimitMessage(rateLimit.retryAfterSeconds),
-        retryAfterSeconds: rateLimit.retryAfterSeconds,
-        helpText: getLoginRateLimitHelpText("руководителем"),
-      };
-    }
-
-    const user = await verifyAppUserCredentials({
-      email: normalizedEmail,
-      password,
-    });
-
-    if (!user) {
-      await recordFailedLogin({
-        identifier: normalizedEmail,
-        ipAddress,
-      });
-
-      return {
-        status: "error",
-        message: "Неверная эл. почта или пароль",
-      };
-    }
-
-    await clearLoginRateLimit({
-      identifier: normalizedEmail,
-      ipAddress,
-    });
-    await setAppUserSession(user.id);
-
-    redirect("/admin");
+  if (rateLimit.isBlocked) {
+    return {
+      status: "error",
+      message: getLoginRateLimitMessage(rateLimit.retryAfterSeconds),
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+      helpText: getLoginRateLimitHelpText("руководителем"),
+    };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({
-    email: email.trim(),
+  const user = await verifyAppUserCredentials({
+    email: normalizedEmail,
     password,
   });
 
-  if (error) {
-    console.error("loginAction:", error.message);
+  if (!user) {
+    await recordFailedLogin({
+      identifier: normalizedEmail,
+      ipAddress,
+    });
 
     return {
       status: "error",
@@ -103,16 +76,16 @@ export async function loginAction(
     };
   }
 
+  await clearLoginRateLimit({
+    identifier: normalizedEmail,
+    ipAddress,
+  });
+  await setAppUserSession(user.id);
+
   redirect("/admin");
 }
 
 export async function logoutAction() {
-  if (isPostgresBackend()) {
-    await clearAppUserSession();
-    redirect("/login");
-  }
-
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  await clearAppUserSession();
   redirect("/login");
 }

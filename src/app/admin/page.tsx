@@ -7,12 +7,7 @@ import {
   UserRound,
   UserRoundCheck,
 } from "lucide-react";
-import {
-  createAdminClient,
-  hasSupabaseAdminKey,
-} from "@/lib/supabase/admin";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import {
   getInstructorPayoutSettings,
@@ -26,14 +21,9 @@ import {
   getLocalDate,
   getTransmissionLabel,
 } from "@/lib/formatters";
-import {
-  buildActiveInstructorsQuery,
-  getSelectedInstructor,
-  getSelectedInstructorId,
-} from "@/lib/queries";
+import { getSelectedInstructor, getSelectedInstructorId } from "@/lib/queries";
 
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
-import { createClient } from "@/lib/supabase/server";
 import { getVisibleSlotNote } from "@/lib/slot-notes";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
@@ -225,43 +215,28 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 export default async function AdminPage({ searchParams }: AdminPageProps) {
   const params = (await searchParams) ?? {};
   const membership = await requireActiveOrganizationMember();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  const adminEnabled = true;
   let instructors: Instructor[] = [];
   let scheduleDays: ScheduleDay[] = [];
   let lessonTypes: LessonType[] = [];
   let schools: School[] = [];
   let slots: Slot[] = [];
   let bookings: Booking[] = [];
-  let loadError: { message: string } | null = null;
 
-  if (postgresBackend) {
-    instructors = await queryRows<Instructor>(
-      `
-        select id, name, slug, public_name, timezone
-        from public.instructors
-        where organization_id = $1
-          and is_active = true
-          and ($2::uuid is null or id = $2::uuid)
-        order by name
-      `,
-      [
-        membership.organizationId,
-        membership.isInstructor ? membership.instructorId : null,
-      ],
-    );
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: instructorData, error: instructorError } =
-      await buildActiveInstructorsQuery(
-        supabase,
-        membership,
-        "id, name, slug, public_name, timezone",
-      );
-
-    instructors = (instructorData ?? []) as Instructor[];
-    loadError = loadError ?? instructorError;
-  }
+  instructors = await queryRows<Instructor>(
+    `
+      select id, name, slug, public_name, timezone
+      from public.instructors
+      where organization_id = $1
+        and is_active = true
+        and ($2::uuid is null or id = $2::uuid)
+      order by name
+    `,
+    [
+      membership.organizationId,
+      membership.isInstructor ? membership.instructorId : null,
+    ],
+  );
 
   const selectedInstructorId = getSelectedInstructorId(
     membership,
@@ -279,137 +254,76 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const today = getLocalDate(timezone);
   const tomorrow = getLocalDate(timezone, 1);
 
-  if (postgresBackend) {
-    const [scheduleDayData, lessonTypeData, schoolData] = await Promise.all([
-      allowedInstructorIds.length > 0
-        ? queryRows<ScheduleDay>(
-            `
-              select id, instructor_id, date::text as date, transmission
-              from public.schedule_days
-              where instructor_id = any($1::uuid[])
-                and date = any($2::date[])
-            `,
-            [allowedInstructorIds, [today, tomorrow]],
-          )
-        : Promise.resolve([]),
-      queryRows<LessonType>(
-        `
-          select id, name, color, default_duration_minutes
-          from public.lesson_types
-          order by name
-        `,
-      ),
-      queryRows<School>(
-        `
-          select id, organization_id, name, color, default_price, payment_rule,
-                 is_active, created_at::text as created_at, updated_at::text as updated_at
-          from public.schools
-          where organization_id = $1
-          order by name
-        `,
-        [membership.organizationId],
-      ),
-    ]);
+  const [scheduleDayData, lessonTypeData, schoolData] = await Promise.all([
+    allowedInstructorIds.length > 0
+      ? queryRows<ScheduleDay>(
+          `
+            select id, instructor_id, date::text as date, transmission
+            from public.schedule_days
+            where instructor_id = any($1::uuid[])
+              and date = any($2::date[])
+          `,
+          [allowedInstructorIds, [today, tomorrow]],
+        )
+      : Promise.resolve([]),
+    queryRows<LessonType>(
+      `
+        select id, name, color, default_duration_minutes
+        from public.lesson_types
+        order by name
+      `,
+    ),
+    queryRows<School>(
+      `
+        select id, organization_id, name, color, default_price, payment_rule,
+               is_active, created_at::text as created_at, updated_at::text as updated_at
+        from public.schools
+        where organization_id = $1
+        order by name
+      `,
+      [membership.organizationId],
+    ),
+  ]);
 
-    scheduleDays = scheduleDayData;
-    lessonTypes = lessonTypeData;
-    schools = schoolData;
+  scheduleDays = scheduleDayData;
+  lessonTypes = lessonTypeData;
+  schools = schoolData;
 
-    const scheduleDayIds = scheduleDays.map((day) => day.id);
-    slots =
-      scheduleDayIds.length > 0
-        ? await queryRows<Slot>(
-            `
-              select id, instructor_id, schedule_day_id, lesson_type_id, school_id,
-                     start_time::text as start_time, end_time::text as end_time,
-                     location_type, status, note, created_at::text as created_at,
-                     created_at::text as updated_at
-              from public.slots
-              where schedule_day_id = any($1::uuid[])
-                and status <> 'cancelled'
-              order by start_time
-            `,
-            [scheduleDayIds],
-          )
-        : [];
+  const scheduleDayIds = scheduleDays.map((day) => day.id);
+  slots =
+    scheduleDayIds.length > 0
+      ? await queryRows<Slot>(
+          `
+            select id, instructor_id, schedule_day_id, lesson_type_id, school_id,
+                   start_time::text as start_time, end_time::text as end_time,
+                   location_type, status, note, created_at::text as created_at,
+                   created_at::text as updated_at
+            from public.slots
+            where schedule_day_id = any($1::uuid[])
+              and status <> 'cancelled'
+            order by start_time
+          `,
+          [scheduleDayIds],
+        )
+      : [];
 
-    const slotIds = slots.map((slot) => slot.id);
-    bookings =
-      slotIds.length > 0
-        ? await queryRows<Booking>(
-            `
-              select id, slot_id, student_label, student_access_id,
-                     student_lesson_package_id, school_id, created_at::text as created_at,
-                     price_amount, paid_amount, is_paid, paid_at::text as paid_at,
-                     payment_note, booking_category, lesson_state,
-                     completed_at::text as completed_at, instructor_note
-              from public.bookings
-              where slot_id = any($1::uuid[])
-                and status = 'confirmed'
-            `,
-            [slotIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const [
-      { data: scheduleDayData, error: scheduleDayError },
-      { data: lessonTypeData, error: lessonTypeError },
-      { data: schoolData, error: schoolError },
-    ] = await Promise.all([
-      allowedInstructorIds.length > 0
-        ? supabase
-            .from("schedule_days")
-            .select("id, instructor_id, date, transmission")
-            .in("instructor_id", allowedInstructorIds)
-            .in("date", [today, tomorrow])
-        : Promise.resolve({ data: [], error: null }),
-      supabase.from("lesson_types").select("id, name, color"),
-      supabase
-        .from("schools")
-        .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
-        .eq("organization_id", membership.organizationId)
-        .order("name"),
-    ]);
-
-    scheduleDays = (scheduleDayData ?? []) as ScheduleDay[];
-    lessonTypes = (lessonTypeData ?? []) as LessonType[];
-    schools = (schoolData ?? []) as School[];
-
-    const scheduleDayIds = scheduleDays.map((day) => day.id);
-    const { data: slotData, error: slotError } =
-      scheduleDayIds.length > 0
-        ? await supabase
-            .from("slots")
-            .select(
-              "id, instructor_id, schedule_day_id, lesson_type_id, school_id, start_time, end_time, location_type, status, note",
-            )
-            .in("schedule_day_id", scheduleDayIds)
-            .neq("status", "cancelled")
-            .order("start_time")
-        : { data: [], error: null };
-
-    slots = (slotData ?? []) as Slot[];
-
-    const slotIds = slots.map((slot) => slot.id);
-    const { data: bookingData, error: bookingError } =
-      adminEnabled && slotIds.length > 0
-        ? await supabase
-            .from("bookings")
-            .select("id, slot_id, student_label, student_access_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, completed_at, instructor_note")
-            .in("slot_id", slotIds)
-            .eq("status", "confirmed")
-        : { data: [], error: null };
-
-    bookings = (bookingData ?? []) as Booking[];
-    loadError =
-      loadError ??
-      scheduleDayError ??
-      lessonTypeError ??
-      schoolError ??
-      slotError ??
-      bookingError;
-  }
+  const slotIds = slots.map((slot) => slot.id);
+  bookings =
+    slotIds.length > 0
+      ? await queryRows<Booking>(
+          `
+            select id, slot_id, student_label, student_access_id,
+                   student_lesson_package_id, school_id, created_at::text as created_at,
+                   price_amount, paid_amount, is_paid, paid_at::text as paid_at,
+                   payment_note, booking_category, lesson_state,
+                   completed_at::text as completed_at, instructor_note
+            from public.bookings
+            where slot_id = any($1::uuid[])
+              and status = 'confirmed'
+          `,
+          [slotIds],
+        )
+      : [];
   const lessonTypesById = new Map(
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
   );
@@ -424,7 +338,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     remaining_amount: number;
   } | null = null;
 
-  if (postgresBackend && membership.isInstructor && selectedInstructor) {
+  if (membership.isInstructor && selectedInstructor) {
     const [payoutSettings, payoutSummary] = await Promise.all([
       getInstructorPayoutSettings({
         organizationId: membership.organizationId,
@@ -535,14 +449,6 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
             </h1>
           </div>
         </header>
-
-
-
-                {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить часть данных: {loadError.message}
-          </div>
-        )}
 
         {selectedInstructor && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">

@@ -1,22 +1,13 @@
 import Link from "next/link";
 import { CalendarPlus } from "lucide-react";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import {
   getInstructorPayoutSettings,
   getInstructorSourceVisibility,
 } from "@/lib/instructor-payouts";
 import { getLocalDate } from "@/lib/formatters";
-import {
-  buildActiveInstructorsQuery,
-  getInitialInstructorId,
-} from "@/lib/queries";
-import {
-  createAdminClient,
-  hasSupabaseAdminKey,
-} from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { getInitialInstructorId } from "@/lib/queries";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import type {
@@ -50,8 +41,7 @@ export default async function AdminSchedulePage({
     : params.create;
   const dateParam = Array.isArray(params.date) ? params.date[0] : params.date;
   const membership = await requireActiveOrganizationMember();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  const adminEnabled = true;
   let instructors: Instructor[] = [];
   let lessonTypeCatalog: LessonType[] = [];
   let schools: School[] = [];
@@ -63,35 +53,20 @@ export default async function AdminSchedulePage({
     student_access_id: string;
     lesson_type_id: string;
   }> = [];
-  let loadError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    instructors = await queryRows<Instructor>(
-      `
-        select id, name, slug, public_name, timezone
-        from public.instructors
-        where organization_id = $1
-          and is_active = true
-          and ($2::uuid is null or id = $2::uuid)
-        order by name
-      `,
-      [
-        membership.organizationId,
-        membership.isInstructor ? membership.instructorId : null,
-      ],
-    );
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: instructorData, error: instructorError } =
-      await buildActiveInstructorsQuery(
-        supabase,
-        membership,
-        "id, name, slug, public_name, timezone",
-      );
-
-    instructors = (instructorData ?? []) as Instructor[];
-    loadError = instructorError;
-  }
+  instructors = await queryRows<Instructor>(
+    `
+      select id, name, slug, public_name, timezone
+      from public.instructors
+      where organization_id = $1
+        and is_active = true
+        and ($2::uuid is null or id = $2::uuid)
+      order by name
+    `,
+    [
+      membership.organizationId,
+      membership.isInstructor ? membership.instructorId : null,
+    ],
+  );
 
   const initialInstructorId = getInitialInstructorId(
     instructors,
@@ -104,14 +79,13 @@ export default async function AdminSchedulePage({
   const instructorIds = instructors.map((instructor) => instructor.id);
   await autoCompletePastBookings({ instructorIds });
 
-  if (postgresBackend) {
-    const [
-      lessonTypeData,
-      schoolData,
-      scheduleDayData,
-      slotData,
-      studentAccessData,
-    ] = await Promise.all([
+  const [
+    lessonTypeData,
+    schoolData,
+    scheduleDayData,
+    slotData,
+    studentAccessData,
+  ] = await Promise.all([
       queryRows<LessonType>(
         `
           select id, code, name, description, color, kind, requires_vehicle,
@@ -171,108 +145,30 @@ export default async function AdminSchedulePage({
             [instructorIds],
           )
         : Promise.resolve([]),
-    ]);
+  ]);
 
-    lessonTypeCatalog = lessonTypeData;
-    schools = schoolData;
-    scheduleDays = scheduleDayData;
-    slots = slotData;
-    baseStudentAccesses = studentAccessData;
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const [
-      { data: lessonTypeData, error: lessonTypeError },
-      { data: schoolData, error: schoolError },
-      { data: scheduleDayData, error: scheduleDayError },
-      { data: slotData, error: slotError },
-      { data: studentAccessData, error: studentAccessError },
-    ] = await Promise.all([
-      supabase
-        .from("lesson_types")
-        .select(
-          "id, code, name, description, color, kind, requires_vehicle, default_duration_minutes, tags, sort_order, is_active",
-        )
-        .order("sort_order")
-        .order("name"),
-      supabase
-        .from("schools")
-        .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
-        .eq("organization_id", membership.organizationId)
-        .order("name"),
-      instructorIds.length > 0
-        ? supabase
-            .from("schedule_days")
-            .select("id, instructor_id, date, transmission, published_at")
-            .in("instructor_id", instructorIds)
-            .order("date", { ascending: false })
-        : Promise.resolve({ data: [], error: null }),
-      instructorIds.length > 0
-        ? supabase
-            .from("slots")
-            .select(
-              "id, instructor_id, schedule_day_id, lesson_type_id, school_id, start_time, end_time, location_type, status, note",
-            )
-            .in("instructor_id", instructorIds)
-            .neq("status", "cancelled")
-            .order("start_time", { ascending: true })
-        : Promise.resolve({ data: [], error: null }),
-      instructorIds.length > 0
-        ? supabase
-            .from("student_accesses")
-            .select(
-              "id, instructor_id, display_label, student_phone, login, total_lesson_limit, weekly_lesson_limit, is_active, school_id, is_archived, archived_at, created_at, updated_at",
-            )
-            .in("instructor_id", instructorIds)
-            .order("display_label")
-        : Promise.resolve({ data: [], error: null }),
-    ]);
-
-    lessonTypeCatalog = (lessonTypeData ?? []) as LessonType[];
-    schools = (schoolData ?? []) as School[];
-    scheduleDays = (scheduleDayData ?? []) as ScheduleDay[];
-    slots = (slotData ?? []) as Slot[];
-    baseStudentAccesses = (studentAccessData ?? []) as Array<
-      Omit<StudentAccess, "lesson_type_ids">
-    >;
-    loadError =
-      loadError ??
-      lessonTypeError ??
-      schoolError ??
-      scheduleDayError ??
-      slotError ??
-      studentAccessError;
-  }
+  lessonTypeCatalog = lessonTypeData;
+  schools = schoolData;
+  scheduleDays = scheduleDayData;
+  slots = slotData;
+  baseStudentAccesses = studentAccessData;
 
   const studentAccessIds = baseStudentAccesses.map((access) => access.id);
 
-  if (postgresBackend) {
-    studentAccessLessonTypeData =
-      studentAccessIds.length > 0
-        ? await queryRows<{
-            student_access_id: string;
-            lesson_type_id: string;
-          }>(
-            `
-              select student_access_id, lesson_type_id
-              from public.student_access_lesson_types
-              where student_access_id = any($1::uuid[])
-            `,
-            [studentAccessIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data, error: studentAccessLessonTypeError } =
-      studentAccessIds.length > 0
-        ? await supabase
-            .from("student_access_lesson_types")
-            .select("student_access_id, lesson_type_id")
-            .in("student_access_id", studentAccessIds)
-        : { data: [], error: null };
-
-    studentAccessLessonTypeData = (data ?? []) as typeof studentAccessLessonTypeData;
-    loadError = loadError ?? studentAccessLessonTypeError;
-  }
+  studentAccessLessonTypeData =
+    studentAccessIds.length > 0
+      ? await queryRows<{
+          student_access_id: string;
+          lesson_type_id: string;
+        }>(
+          `
+            select student_access_id, lesson_type_id
+            from public.student_access_lesson_types
+            where student_access_id = any($1::uuid[])
+          `,
+          [studentAccessIds],
+        )
+      : [];
 
   const lessonTypeIdsByAccessId = new Map<string, string[]>();
 
@@ -285,7 +181,7 @@ export default async function AdminSchedulePage({
   let showClientPrices = true;
   let visibleSchoolIds: Set<string> | null = null;
 
-  if (postgresBackend && membership.isInstructor && membership.instructorId) {
+  if (membership.isInstructor && membership.instructorId) {
     const payoutSettings = await getInstructorPayoutSettings({
       organizationId: membership.organizationId,
       instructorId: membership.instructorId,
@@ -322,38 +218,23 @@ export default async function AdminSchedulePage({
     })) as StudentAccess[];
   const slotIds = slots.map((slot) => slot.id);
 
-  if (postgresBackend) {
-    bookings =
-      slotIds.length > 0
-        ? await queryRows<Booking>(
-            `
-              select id, slot_id, student_label, student_access_id,
-                     student_lesson_package_id, school_id, created_at::text as created_at,
-                     price_amount, paid_amount, is_paid, paid_at::text as paid_at,
-                     payment_note, booking_category, lesson_state,
-                     lesson_units,
-                     completed_at::text as completed_at, instructor_note
-              from public.bookings
-              where slot_id = any($1::uuid[])
-                and status = 'confirmed'
-            `,
-            [slotIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: bookingData, error: bookingError } =
-      adminEnabled && slotIds.length > 0
-        ? await supabase
-            .from("bookings")
-            .select("id, slot_id, student_label, student_access_id, student_lesson_package_id, school_id, created_at, price_amount, paid_amount, is_paid, paid_at, payment_note, booking_category, lesson_state, lesson_units, completed_at, instructor_note")
-            .in("slot_id", slotIds)
-            .eq("status", "confirmed")
-        : { data: [], error: null };
-
-    bookings = (bookingData ?? []) as Booking[];
-    loadError = loadError ?? bookingError;
-  }
+  bookings =
+    slotIds.length > 0
+      ? await queryRows<Booking>(
+          `
+            select id, slot_id, student_label, student_access_id,
+                   student_lesson_package_id, school_id, created_at::text as created_at,
+                   price_amount, paid_amount, is_paid, paid_at::text as paid_at,
+                   payment_note, booking_category, lesson_state,
+                   lesson_units,
+                   completed_at::text as completed_at, instructor_note
+            from public.bookings
+            where slot_id = any($1::uuid[])
+              and status = 'confirmed'
+          `,
+          [slotIds],
+        )
+      : [];
 
   const visibleBookings = showClientPrices
     ? bookings
@@ -404,12 +285,6 @@ export default async function AdminSchedulePage({
             </Link>
           </div>
         </header>
-
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить часть данных: {loadError.message}
-          </div>
-        )}
 
         <AdminScheduleWorkspace
           instructors={instructors}

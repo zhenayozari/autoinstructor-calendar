@@ -275,7 +275,7 @@ function StaffPayoutPanel({
     lessonTypes.map((lessonType) => [lessonType.id, lessonType]),
   );
   const activeRateRules = payoutSetup.rateRules.filter((rule) => rule.is_active);
-  const inactiveRateCount = payoutSetup.rateRules.length - activeRateRules.length;
+  const inactiveRateRules = payoutSetup.rateRules.filter((rule) => !rule.is_active);
 
   return (
     <details
@@ -568,10 +568,42 @@ function StaffPayoutPanel({
             </div>
           )}
 
-          {inactiveRateCount > 0 && (
-            <p className="text-xs text-zinc-500">
-              Отключённых ставок: {inactiveRateCount}. Они оставлены в истории.
-            </p>
+          {inactiveRateRules.length > 0 && (
+            <details className="group rounded-xl border border-zinc-200 bg-white">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 text-sm font-semibold text-zinc-800">
+                <span>История ставок · отключено: {inactiveRateRules.length}</span>
+                <ChevronDown className="size-4 text-zinc-500 transition group-open:rotate-180" />
+              </summary>
+              <div className="space-y-2 border-t border-zinc-200 p-3">
+                {inactiveRateRules.map((rule) => (
+                  <div
+                    key={rule.id}
+                    className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-3"
+                  >
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="font-semibold">{formatMoney(rule.amount)}</p>
+                        <p className="mt-0.5 text-xs text-zinc-600">
+                          {getRuleLabel(rule, schoolById, lessonTypeById)}
+                        </p>
+                      </div>
+                      <span className="w-fit rounded-full bg-zinc-200 px-2 py-1 text-xs font-semibold text-zinc-700">
+                        Отключена
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-600">
+                      Период действия: с {formatDate(rule.effective_from)}
+                      {rule.effective_to
+                        ? ` по ${formatDate(rule.effective_to)}`
+                        : " · дата окончания не указана"}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-600">
+                      Комментарий: {rule.note || "не указан"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
         </div>
 

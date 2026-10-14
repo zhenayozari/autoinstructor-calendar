@@ -6,7 +6,6 @@ import { redirect } from "next/navigation";
 import { requireDirectorAccess } from "@/lib/director-auth";
 import { logAuditEvent } from "@/lib/audit-log";
 import { revokeAllAppUserSessions } from "@/lib/app-users/session";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { executeQuery, queryOne, withTransaction } from "@/lib/db/postgres";
 import { purgeInstructorFinancialData } from "@/lib/destructive-data-cleanup";
 import {
@@ -16,7 +15,6 @@ import {
   updateInstructorPayoutSettingsAndVisibility,
   updateOwnerPayoutPolicy,
 } from "@/lib/instructor-payouts";
-import { createAdminClient } from "@/lib/supabase/admin";
 import type {
   BookingCategory,
   InstructorPayoutAccrualPolicy,
@@ -96,8 +94,7 @@ export async function createStaffInvitationAction(formData: FormData) {
     const token = randomBytes(24).toString("hex");
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 14).toISOString();
 
-    if (isPostgresBackend()) {
-      const invitation = await queryOne<{ id: string }>(
+    const invitation = await queryOne<{ id: string }>(
         `
           insert into public.staff_invitations (
             organization_id, invited_by_member_id, token, invited_name,
@@ -117,42 +114,8 @@ export async function createStaffInvitationAction(formData: FormData) {
         ],
       );
 
-      if (!invitation) {
-        throw new Error("Не удалось создать приглашение");
-      }
-
-      await logAuditEvent({
-        membership,
-        action: "staff_invitation.created",
-        entityType: "staff_invitation",
-        entityId: invitation.id,
-        metadata: {
-          has_email: Boolean(invitedEmail),
-          has_phone: Boolean(invitedPhone),
-        },
-      });
-
-      revalidatePath("/director/staff");
-      redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: invitation, error } = await supabase
-      .from("staff_invitations")
-      .insert({
-        organization_id: membership.organizationId,
-        invited_by_member_id: membership.id,
-        token,
-        invited_name: invitedName,
-        invited_email: invitedEmail,
-        invited_phone: invitedPhone,
-        expires_at: expiresAt,
-      })
-      .select("id")
-      .single();
-
-    if (error || !invitation) {
-      throw new Error(error?.message ?? "Не удалось создать приглашение");
+    if (!invitation) {
+      throw new Error("Не удалось создать приглашение");
     }
 
     await logAuditEvent({
@@ -167,6 +130,7 @@ export async function createStaffInvitationAction(formData: FormData) {
     });
 
     revalidatePath("/director/staff");
+    redirectWithStatus(status);
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -186,8 +150,7 @@ export async function approveStaffInvitationAction(formData: FormData) {
   try {
     const invitationId = readRequiredString(formData, "invitation_id");
 
-    if (isPostgresBackend()) {
-      const invitation = await queryOne<{
+    const invitation = await queryOne<{
         id: string;
         organization_id: string;
         status: string;
@@ -267,79 +230,6 @@ export async function approveStaffInvitationAction(formData: FormData) {
       revalidatePath("/director/staff");
       revalidatePath("/director");
       redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: invitation, error: invitationError } = await supabase
-      .from("staff_invitations")
-      .select("id, organization_id, status, user_id, instructor_id")
-      .eq("id", invitationId)
-      .eq("organization_id", membership.organizationId)
-      .maybeSingle();
-
-    if (invitationError || !invitation) {
-      throw new Error(invitationError?.message ?? "Приглашение не найдено");
-    }
-
-    if (invitation.status !== "submitted") {
-      throw new Error("Подтвердить можно только отправленную заявку");
-    }
-
-    if (!invitation.user_id || !invitation.instructor_id) {
-      throw new Error("В заявке нет связанного аккаунта сотрудника");
-    }
-
-    const { error: instructorError } = await supabase
-      .from("instructors")
-      .update({
-        is_active: true,
-        public_is_visible: true,
-        profile_updated_at: new Date().toISOString(),
-      })
-      .eq("id", invitation.instructor_id)
-      .eq("organization_id", membership.organizationId);
-
-    if (instructorError) {
-      throw new Error(instructorError.message);
-    }
-
-    const { error: memberError } = await supabase
-      .from("organization_members")
-      .update({ is_active: true })
-      .eq("organization_id", membership.organizationId)
-      .eq("user_id", invitation.user_id)
-      .eq("instructor_id", invitation.instructor_id)
-      .eq("role", "instructor");
-
-    if (memberError) {
-      throw new Error(memberError.message);
-    }
-
-    const { error: updateError } = await supabase
-      .from("staff_invitations")
-      .update({
-        status: "approved",
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", invitation.id);
-
-    if (updateError) {
-      throw new Error(updateError.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "staff_invitation.approved",
-      entityType: "staff_invitation",
-      entityId: invitation.id,
-      metadata: {
-        instructor_id: invitation.instructor_id,
-      },
-    });
-
-    revalidatePath("/director/staff");
-    revalidatePath("/director");
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -359,8 +249,7 @@ export async function rejectStaffInvitationAction(formData: FormData) {
   try {
     const invitationId = readRequiredString(formData, "invitation_id");
 
-    if (isPostgresBackend()) {
-      const invitation = await queryOne<{
+    const invitation = await queryOne<{
         id: string;
         organization_id: string;
         instructor_id: string | null;
@@ -433,60 +322,6 @@ export async function rejectStaffInvitationAction(formData: FormData) {
 
       revalidatePath("/director/staff");
       redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: invitation, error: invitationError } = await supabase
-      .from("staff_invitations")
-      .select("id, organization_id, instructor_id, user_id")
-      .eq("id", invitationId)
-      .eq("organization_id", membership.organizationId)
-      .maybeSingle();
-
-    if (invitationError || !invitation) {
-      throw new Error(invitationError?.message ?? "Приглашение не найдено");
-    }
-
-    if (invitation.instructor_id) {
-      await supabase
-        .from("instructors")
-        .update({ is_active: false, public_is_visible: false })
-        .eq("id", invitation.instructor_id)
-        .eq("organization_id", membership.organizationId);
-    }
-
-    if (invitation.user_id) {
-      await supabase
-        .from("organization_members")
-        .update({ is_active: false })
-        .eq("organization_id", membership.organizationId)
-        .eq("user_id", invitation.user_id);
-    }
-
-    const { error: updateError } = await supabase
-      .from("staff_invitations")
-      .update({
-        status: "rejected",
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", invitation.id);
-
-    if (updateError) {
-      throw new Error(updateError.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "staff_invitation.rejected",
-      entityType: "staff_invitation",
-      entityId: invitation.id,
-      metadata: {
-        instructor_id: invitation.instructor_id,
-      },
-    });
-
-    revalidatePath("/director/staff");
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -506,8 +341,7 @@ export async function deleteStaffInvitationAction(formData: FormData) {
   try {
     const invitationId = readRequiredString(formData, "invitation_id");
 
-    if (isPostgresBackend()) {
-      const invitation = await queryOne<{
+    const invitation = await queryOne<{
         id: string;
         organization_id: string;
         status: string;
@@ -555,49 +389,6 @@ export async function deleteStaffInvitationAction(formData: FormData) {
 
       revalidatePath("/director/staff");
       redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: invitation, error: invitationError } = await supabase
-      .from("staff_invitations")
-      .select("id, organization_id, status, instructor_id")
-      .eq("id", invitationId)
-      .eq("organization_id", membership.organizationId)
-      .maybeSingle();
-
-    if (invitationError || !invitation) {
-      throw new Error(invitationError?.message ?? "Приглашение не найдено");
-    }
-
-    if (invitation.status !== "invited") {
-      throw new Error("Удалить можно только активную ссылку без заявки");
-    }
-
-    if (invitation.instructor_id) {
-      throw new Error("У этого приглашения уже есть сотрудник. Используйте отклонение или удаление сотрудника.");
-    }
-
-    const { error: deleteError } = await supabase
-      .from("staff_invitations")
-      .delete()
-      .eq("id", invitation.id)
-      .eq("organization_id", membership.organizationId);
-
-    if (deleteError) {
-      throw new Error(deleteError.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "staff_invitation.deleted",
-      entityType: "staff_invitation",
-      entityId: invitation.id,
-      metadata: {
-        status: invitation.status,
-      },
-    });
-
-    revalidatePath("/director/staff");
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -618,8 +409,7 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
     const instructorId = readRequiredString(formData, "instructor_id");
     const nextActive = readRequiredString(formData, "next_active") === "true";
 
-    if (isPostgresBackend()) {
-      const member = await queryOne<{
+    const member = await queryOne<{
         id: string;
         role: "owner" | "admin" | "instructor";
         user_id: string;
@@ -680,62 +470,6 @@ export async function updateStaffInstructorStatusAction(formData: FormData) {
       revalidatePath("/director/staff");
       revalidatePath("/director");
       redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: member, error: memberError } = await supabase
-      .from("organization_members")
-      .select("id, role, user_id")
-      .eq("organization_id", membership.organizationId)
-      .eq("instructor_id", instructorId)
-      .maybeSingle();
-
-    if (memberError) {
-      throw new Error(memberError.message);
-    }
-
-    if (member?.role === "owner") {
-      throw new Error("Руководителя нельзя отключить отсюда");
-    }
-
-    const { error: instructorError } = await supabase
-      .from("instructors")
-      .update({
-        is_active: nextActive,
-        public_is_visible: nextActive,
-        profile_updated_at: new Date().toISOString(),
-      })
-      .eq("id", instructorId)
-      .eq("organization_id", membership.organizationId);
-
-    if (instructorError) {
-      throw new Error(instructorError.message);
-    }
-
-    if (member) {
-      const { error: updateMemberError } = await supabase
-        .from("organization_members")
-        .update({ is_active: nextActive })
-        .eq("id", member.id)
-        .eq("organization_id", membership.organizationId);
-
-      if (updateMemberError) {
-        throw new Error(updateMemberError.message);
-      }
-    }
-
-    await logAuditEvent({
-      membership,
-      action: nextActive ? "staff.enabled" : "staff.disabled",
-      entityType: "instructor",
-      entityId: instructorId,
-      metadata: {
-        is_active: nextActive,
-      },
-    });
-
-    revalidatePath("/director/staff");
-    revalidatePath("/director");
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -759,8 +493,7 @@ export async function deleteStaffInstructorAction(formData: FormData) {
       throw new Error("Подтвердите удаление сотрудника");
     }
 
-    if (isPostgresBackend()) {
-      const member = await queryOne<{
+    const member = await queryOne<{
         id: string;
         role: "owner" | "admin" | "instructor";
         user_id: string | null;
@@ -863,97 +596,6 @@ export async function deleteStaffInstructorAction(formData: FormData) {
       revalidatePath("/director/reports");
       revalidatePath("/admin");
       redirectWithStatus(status);
-    }
-
-    const supabase = createAdminClient();
-    const { data: member, error: memberError } = await supabase
-      .from("organization_members")
-      .select("id, role, user_id")
-      .eq("organization_id", membership.organizationId)
-      .eq("instructor_id", instructorId)
-      .maybeSingle();
-
-    if (memberError) {
-      throw new Error(memberError.message);
-    }
-
-    if (member?.role === "owner") {
-      throw new Error("Руководителя нельзя удалить отсюда");
-    }
-
-    const staffUserId =
-      typeof member?.user_id === "string" ? member.user_id : null;
-    let shouldDeleteAuthUser = false;
-
-    if (staffUserId) {
-      const { count, error: membershipsCountError } = await supabase
-        .from("organization_members")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", staffUserId);
-
-      if (membershipsCountError) {
-        throw new Error(membershipsCountError.message);
-      }
-
-      shouldDeleteAuthUser = (count ?? 0) <= 1;
-    }
-
-    const { data: instructor, error: instructorError } = await supabase
-      .from("instructors")
-      .select("id")
-      .eq("id", instructorId)
-      .eq("organization_id", membership.organizationId)
-      .maybeSingle();
-
-    if (instructorError || !instructor) {
-      throw new Error(instructorError?.message ?? "Сотрудник не найден");
-    }
-
-    const { error: invitationsDeleteError } = await supabase
-      .from("staff_invitations")
-      .delete()
-      .eq("organization_id", membership.organizationId)
-      .eq("instructor_id", instructorId);
-
-    if (invitationsDeleteError) {
-      throw new Error(invitationsDeleteError.message);
-    }
-
-    const { error: deleteError } = await supabase
-      .from("instructors")
-      .delete()
-      .eq("id", instructorId)
-      .eq("organization_id", membership.organizationId);
-
-    if (deleteError) {
-      throw new Error(deleteError.message);
-    }
-
-    if (staffUserId && shouldDeleteAuthUser) {
-      const { error: authDeleteError } =
-        await supabase.auth.admin.deleteUser(staffUserId);
-
-      if (authDeleteError) {
-        throw new Error(authDeleteError.message);
-      }
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "staff.deleted",
-      entityType: "instructor",
-      entityId: instructorId,
-      metadata: {
-        auth_user_deleted: Boolean(staffUserId && shouldDeleteAuthUser),
-      },
-    });
-
-    revalidatePath("/director");
-    revalidatePath("/director/staff");
-    revalidatePath("/director/schedule");
-    revalidatePath("/director/students");
-    revalidatePath("/director/reports");
-    revalidatePath("/admin");
   } catch (error) {
     if (isNextRedirectError(error)) {
       throw error;
@@ -1027,10 +669,6 @@ export async function updateStaffPayoutSettingsAction(formData: FormData) {
   let instructorId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Настройки выплат доступны только в PostgreSQL-режиме");
-    }
-
     instructorId = readRequiredString(formData, "instructor_id");
     const accrualPolicy = readAccrualPolicy(
       readRequiredString(formData, "accrual_policy"),
@@ -1096,10 +734,6 @@ export async function updateOwnerPayoutPolicyAction(formData: FormData) {
   let status = "owner-payout-updated";
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Настройка выплат владельцу доступна только в PostgreSQL-режиме");
-    }
-
     const includeOwnerInPayouts =
       formData.get("include_owner_in_payouts") === "true";
 
@@ -1139,10 +773,6 @@ export async function createStaffPayoutRateRuleAction(formData: FormData) {
   let instructorId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Ставки выплат доступны только в PostgreSQL-режиме");
-    }
-
     instructorId = readRequiredString(formData, "instructor_id");
     const amount = readOptionalInteger(formData, "amount");
 
@@ -1193,10 +823,6 @@ export async function disableStaffPayoutRateRuleAction(formData: FormData) {
   let instructorId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Ставки выплат доступны только в PostgreSQL-режиме");
-    }
-
     const ruleId = readRequiredString(formData, "rule_id");
 
     const rule = await queryOne<{
@@ -1256,10 +882,6 @@ export async function createStaffPayoutPaymentAction(formData: FormData) {
   let instructorId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Выплаты доступны только в PostgreSQL-режиме");
-    }
-
     instructorId = readRequiredString(formData, "instructor_id");
     const amount = readOptionalInteger(formData, "amount");
 
@@ -1310,10 +932,6 @@ export async function backfillStaffPayoutEntriesAction(formData: FormData) {
   let instructorId: string | null = null;
 
   try {
-    if (!isPostgresBackend()) {
-      throw new Error("Начисления доступны только в PostgreSQL-режиме");
-    }
-
     instructorId = readRequiredString(formData, "instructor_id");
     const result = await backfillInstructorPayoutEntries({
       organizationId: membership.organizationId,

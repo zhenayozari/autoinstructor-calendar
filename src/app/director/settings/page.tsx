@@ -10,12 +10,8 @@ import { LessonTypesSettings } from "@/components/admin/lesson-types-settings";
 import { PriceMatrixSettings } from "@/components/admin/price-matrix-settings";
 import { SchoolsSettings } from "@/components/admin/schools-settings";
 import { requireDirectorAccess } from "@/lib/director-auth";
-import { isMissingPricingTableError } from "@/lib/pricing";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
-import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import type { LessonType, School, SchoolLessonTypePrice } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -60,103 +56,47 @@ function MetricCard({
 
 export default async function DirectorSettingsPage() {
   const membership = await requireDirectorAccess();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
   const canManageCatalog = membership.role === "owner";
-  let organization: Organization | null = null;
-  let schools: School[] = [];
-  let lessonTypes: EditableLessonType[] = [];
-  let prices: SchoolLessonTypePrice[] = [];
-  let loadError: { message: string } | null = null;
-  let priceLoadError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    [organization, schools, lessonTypes, prices] = await Promise.all([
-      queryOne<Organization>(
-        `
-          select id, name, slug
-          from public.organizations
-          where id = $1
-          limit 1
-        `,
-        [membership.organizationId],
-      ),
-      queryRows<School>(
-        `
-          select id, organization_id, name, color, default_price, payment_rule,
-                 is_active, created_at::text as created_at, updated_at::text as updated_at
-          from public.schools
-          where organization_id = $1
-          order by name
-        `,
-        [membership.organizationId],
-      ),
-      queryRows<EditableLessonType>(
-        `
-          select id, code, name, color, kind, description,
-                 default_duration_minutes, default_price_amount, tags,
-                 sort_order, is_active, requires_vehicle
-          from public.lesson_types
-          order by sort_order, name
-        `,
-      ),
-      queryRows<SchoolLessonTypePrice>(
-        `
-          select id, organization_id, school_id, lesson_type_id, price_amount,
-                 created_at::text as created_at, updated_at::text as updated_at
-          from public.school_lesson_type_prices
-          where organization_id = $1
-        `,
-        [membership.organizationId],
-      ),
-    ]);
-  } else {
-    const supabase = hasSupabaseAdminKey()
-      ? createAdminClient()
-      : await createClient();
-    const [
-      { data: organizationData, error: organizationError },
-      { data: schoolData, error: schoolError },
-      { data: lessonTypeData, error: lessonTypeError },
-      { data: priceData, error: priceError },
-    ] = await Promise.all([
-      supabase
-        .from("organizations")
-        .select("id, name, slug")
-        .eq("id", membership.organizationId)
-        .maybeSingle(),
-      supabase
-        .from("schools")
-        .select(
-          "id, organization_id, name, color, default_price, payment_rule, is_active, created_at, updated_at",
-        )
-        .eq("organization_id", membership.organizationId)
-        .order("name"),
-      supabase
-        .from("lesson_types")
-        .select(
-          "id, code, name, color, kind, description, default_duration_minutes, default_price_amount, tags, sort_order, is_active, requires_vehicle",
-        )
-        .order("sort_order")
-        .order("name"),
-      supabase
-        .from("school_lesson_type_prices")
-        .select(
-          "id, organization_id, school_id, lesson_type_id, price_amount, created_at, updated_at",
-        )
-        .eq("organization_id", membership.organizationId),
-    ]);
-    const normalizedPriceError =
-      priceError && !isMissingPricingTableError(priceError) ? priceError : null;
-    priceLoadError = normalizedPriceError;
-
-    loadError =
-      organizationError ?? schoolError ?? lessonTypeError ?? normalizedPriceError;
-    organization = organizationData as Organization | null;
-    schools = (schoolData ?? []) as School[];
-    lessonTypes = (lessonTypeData ?? []) as EditableLessonType[];
-    prices = (priceData ?? []) as SchoolLessonTypePrice[];
-  }
+  const adminEnabled = true;
+  const [organization, schools, lessonTypes, prices] = await Promise.all([
+    queryOne<Organization>(
+      `
+        select id, name, slug
+        from public.organizations
+        where id = $1
+        limit 1
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<School>(
+      `
+        select id, organization_id, name, color, default_price, payment_rule,
+               is_active, created_at::text as created_at, updated_at::text as updated_at
+        from public.schools
+        where organization_id = $1
+        order by name
+      `,
+      [membership.organizationId],
+    ),
+    queryRows<EditableLessonType>(
+      `
+        select id, code, name, color, kind, description,
+               default_duration_minutes, default_price_amount, tags,
+               sort_order, is_active, requires_vehicle
+        from public.lesson_types
+        order by sort_order, name
+      `,
+    ),
+    queryRows<SchoolLessonTypePrice>(
+      `
+        select id, organization_id, school_id, lesson_type_id, price_amount,
+               created_at::text as created_at, updated_at::text as updated_at
+        from public.school_lesson_type_prices
+        where organization_id = $1
+      `,
+      [membership.organizationId],
+    ),
+  ]);
   const activeSchools = schools.filter((school) => school.is_active !== false);
   const hiddenSchools = schools.length - activeSchools.length;
   const activeLessonTypes = lessonTypes.filter(
@@ -184,12 +124,6 @@ export default async function DirectorSettingsPage() {
           </p>
         </header>
 
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить часть данных: {loadError.message}
-          </div>
-        )}
-
         <Card>
           <CardHeader>
             <CardTitle>Вход в аккаунт</CardTitle>
@@ -200,7 +134,7 @@ export default async function DirectorSettingsPage() {
           <CardContent>
             <AccountCredentialsForm
               email={membership.user.email ?? ""}
-              canManageCredentials={isPostgresBackend()}
+              canManageCredentials
             />
           </CardContent>
         </Card>
@@ -251,7 +185,7 @@ export default async function DirectorSettingsPage() {
           schools={visibleSchools}
           lessonTypes={priceLessonTypes}
           prices={prices}
-          adminEnabled={adminEnabled && !priceLoadError}
+          adminEnabled={adminEnabled}
           canManage={canManageCatalog}
         />
       </div>

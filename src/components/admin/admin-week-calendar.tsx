@@ -23,6 +23,7 @@ import {
   cancelBookingAction,
   deleteSelectedSlotsAction,
   deleteSlotAction,
+  toggleSlotVisibilityAction,
   applyOwnerExamRouteAction,
   updateBookingCategoryAction,
   updateDayPublicationAction,
@@ -288,6 +289,42 @@ function getPublicationStatus(day: ScheduleDay | undefined) {
     label: "Опубликован",
     className: "bg-emerald-100 text-emerald-800",
     isPublished: true,
+  };
+}
+
+function getSlotPublicationInfo(
+  slot: Slot,
+  day: ScheduleDay | undefined,
+  timezone: string,
+) {
+  if (slot.status === "blocked") {
+    return {
+      label: "Слот скрыт",
+      detail: "Этот слот не виден ученикам.",
+      className: "bg-zinc-200 text-zinc-700",
+    };
+  }
+
+  if (!day?.published_at) {
+    return {
+      label: "Скрыт от учеников",
+      detail: "День ещё не опубликован.",
+      className: "bg-zinc-100 text-zinc-700",
+    };
+  }
+
+  if (new Date(day.published_at) > new Date()) {
+    return {
+      label: "Откроется по расписанию",
+      detail: formatDateTime(day.published_at, timezone),
+      className: "bg-blue-100 text-blue-800",
+    };
+  }
+
+  return {
+    label: "Виден ученикам",
+    detail: "День опубликован.",
+    className: "bg-emerald-100 text-emerald-800",
   };
 }
 
@@ -566,12 +603,14 @@ function AssignStudentToSlotForm({
 
 function SlotActions({
   slotId,
+  slotStatus,
   bookingId,
   bookingLessonUnits,
   adminEnabled,
   canUseExamRoute,
 }: {
   slotId: string;
+  slotStatus: Slot["status"];
   bookingId: string | null;
   bookingLessonUnits?: number;
   adminEnabled: boolean;
@@ -624,6 +663,20 @@ function SlotActions({
           >
             <CircleX />
             Отменить запись
+          </Button>
+        </form>
+      )}
+      {!bookingId && slotStatus !== "cancelled" && (
+        <form action={toggleSlotVisibilityAction}>
+          <input type="hidden" name="slot_id" value={slotId} />
+          <Button
+            type="submit"
+            variant="outline"
+            className="h-9 w-full text-xs"
+            disabled={!adminEnabled}
+          >
+            {slotStatus === "blocked" ? <Eye /> : <EyeOff />}
+            {slotStatus === "blocked" ? "Показать слот" : "Скрыть слот"}
           </Button>
         </form>
       )}
@@ -708,6 +761,7 @@ function DesktopSlotCard({
   slot,
   lessonType,
   booking,
+  scheduleDay,
   timezone,
   showClientPrices = true,
   onClick,
@@ -718,6 +772,7 @@ function DesktopSlotCard({
   slot: Slot;
   lessonType: LessonType;
   booking: Booking | null;
+  scheduleDay: ScheduleDay | undefined;
   timezone: string;
   showClientPrices?: boolean;
   onClick: () => void;
@@ -747,6 +802,7 @@ function DesktopSlotCard({
           slot={slot}
           lessonType={lessonType}
           booking={booking}
+          scheduleDay={scheduleDay}
           timezone={timezone}
           showClientPrices={showClientPrices}
         />
@@ -765,6 +821,7 @@ function DesktopSlotCard({
         slot={slot}
         lessonType={lessonType}
         booking={booking}
+        scheduleDay={scheduleDay}
         timezone={timezone}
         showClientPrices={showClientPrices}
       />
@@ -776,12 +833,14 @@ function SlotCardContent({
   slot,
   lessonType,
   booking,
+  scheduleDay,
   timezone,
   showClientPrices = true,
 }: {
   slot: Slot;
   lessonType: LessonType;
   booking: Booking | null;
+  scheduleDay: ScheduleDay | undefined;
   timezone: string;
   showClientPrices?: boolean;
 }) {
@@ -789,6 +848,7 @@ function SlotCardContent({
   const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
   const paymentBadge =
     booking && showClientPrices ? getPaymentBadge(booking) : null;
+  const publicationInfo = getSlotPublicationInfo(slot, scheduleDay, timezone);
 
   return (
     <>
@@ -833,6 +893,9 @@ function SlotCardContent({
             {isBlocked ? "Блок" : "Свободен"}
           </Badge>
         )}
+        <Badge className={`px-1.5 py-0 text-[10px] ${publicationInfo.className}`}>
+          {publicationInfo.label}
+        </Badge>
       </div>
 
       {booking && (
@@ -875,6 +938,11 @@ function DesktopSlotPanel({
   onClose: () => void;
 }) {
   const isBlocked = slot.status === "blocked";
+  const publicationInfo = getSlotPublicationInfo(
+    slot,
+    scheduleDay,
+    instructor.timezone,
+  );
   const visibleNote = getVisibleSlotNote(slot.note);
   return (
     <div className="fixed inset-0 z-50 hidden lg:block">
@@ -929,6 +997,16 @@ function DesktopSlotPanel({
               />
               {lessonType.name}
             </span>
+          </div>
+
+          <div
+            className={`rounded-xl border px-4 py-3 text-sm ${publicationInfo.className}`}
+          >
+            <p className="text-xs font-medium uppercase tracking-wide opacity-75">
+              Доступ ученикам
+            </p>
+            <p className="mt-1 font-semibold">{publicationInfo.label}</p>
+            <p className="mt-1 text-xs">{publicationInfo.detail}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-sm">
@@ -1066,6 +1144,7 @@ function DesktopSlotPanel({
         <div className="border-t p-5">
           <SlotActions
             slotId={slot.id}
+            slotStatus={slot.status}
             bookingId={booking?.id ?? null}
             bookingLessonUnits={booking?.lesson_units}
             adminEnabled={adminEnabled}
@@ -1112,6 +1191,7 @@ function MobileSlotRow({
 }) {
   const isBlocked = slot.status === "blocked";
   const visibleNote = getVisibleSlotNote(slot.note);
+  const publicationInfo = getSlotPublicationInfo(slot, scheduleDay, timezone);
   const lessonStateBadge = booking ? getLessonStateBadge(booking) : null;
   const paymentBadge =
     booking && showClientPrices ? getPaymentBadge(booking) : null;
@@ -1182,7 +1262,7 @@ function MobileSlotRow({
       </summary>
 
       <div className="space-y-3 border-t px-3 py-3">
-        <div className="grid grid-cols-2 gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
             <p className="text-zinc-400">Время</p>
             <p className="mt-0.5 font-semibold">
@@ -1219,6 +1299,16 @@ function MobileSlotRow({
               </p>
             </div>
           )}
+        </div>
+
+        <div
+          className={`rounded-lg border px-3 py-2 text-xs ${publicationInfo.className}`}
+        >
+          <p className="font-medium uppercase tracking-wide opacity-75">
+            Доступ ученикам
+          </p>
+          <p className="mt-1 font-semibold">{publicationInfo.label}</p>
+          <p className="mt-0.5">{publicationInfo.detail}</p>
         </div>
 
         {booking && (
@@ -1295,6 +1385,7 @@ function MobileSlotRow({
 
         <SlotActions
           slotId={slot.id}
+          slotStatus={slot.status}
           bookingId={booking?.id ?? null}
           bookingLessonUnits={booking?.lesson_units}
           adminEnabled={adminEnabled}
@@ -1909,6 +2000,7 @@ export function AdminWeekCalendar({
                         slot={slot}
                         lessonType={lessonType}
                         booking={bookingsBySlotId.get(slot.id) ?? null}
+                        scheduleDay={scheduleDay}
                         timezone={selectedInstructor.timezone}
                         showClientPrices={showClientPrices}
                         selectionMode={selectionMode}

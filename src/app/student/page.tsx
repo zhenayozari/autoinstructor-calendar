@@ -11,7 +11,6 @@ import { LessonReviewForm } from "@/components/student/lesson-review-form";
 import { StudentProfileCompletionForm } from "@/components/student/student-profile-completion-form";
 import { StudentAvatarUploadForm } from "@/components/student/student-avatar-upload-form";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryOne, queryRows } from "@/lib/db/postgres";
 import {
   getLegalDocumentPublicPath,
@@ -19,7 +18,6 @@ import {
 } from "@/lib/legal-documents";
 import { isStudentProfileConsentRequired } from "@/lib/student-profile-consent";
 import { requireCurrentStudentAccess } from "@/lib/student-session";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { StudentBookingButton } from "@/components/student/student-booking-button";
 import { DEFAULT_TIMEZONE } from "@/lib/timezone";
 import { Badge } from "@/components/ui/badge";
@@ -531,8 +529,9 @@ function StudentLessonsSection({
 }
 
 async function getUsedCounts(accessId: string, visibleWeekStart: string) {
-  if (isPostgresBackend()) {
-    const totalBookingData = await queryOne<{ count: string }>(
+  const weekEnd = addDaysToDateValue(visibleWeekStart, 6);
+  const [totalBookingData, weekBookingData] = await Promise.all([
+    queryOne<{ count: string }>(
       `
         select count(*)::text as count
         from public.bookings
@@ -540,9 +539,8 @@ async function getUsedCounts(accessId: string, visibleWeekStart: string) {
           and status = 'confirmed'
       `,
       [accessId],
-    );
-    const weekEnd = addDaysToDateValue(visibleWeekStart, 6);
-    const weekBookingData = await queryOne<{ count: string }>(
+    ),
+    queryOne<{ count: string }>(
       `
         select count(*)::text as count
         from public.bookings b
@@ -554,70 +552,13 @@ async function getUsedCounts(accessId: string, visibleWeekStart: string) {
           and d.date <= $3::date
       `,
       [accessId, visibleWeekStart, weekEnd],
-    );
+    ),
+  ]);
 
-    return {
-      totalUsed: Number(totalBookingData?.count ?? 0),
-      weekUsed: Number(weekBookingData?.count ?? 0),
-    };
-  }
-
-  const supabase = createAdminClient();
-  const { data: totalBookingData, error: totalBookingError } = await supabase
-    .from("bookings")
-    .select("id, slot_id")
-    .eq("student_access_id", accessId)
-    .eq("status", "confirmed");
-
-  if (totalBookingError) {
-    throw new Error(totalBookingError.message);
-  }
-
-  const totalUsed = totalBookingData?.length ?? 0;
-  const slotIds = (totalBookingData ?? []).map((booking) => booking.slot_id);
-
-  if (slotIds.length === 0) {
-    return { totalUsed, weekUsed: 0 };
-  }
-
-  const { data: slots, error: slotsError } = await supabase
-    .from("slots")
-    .select("id, schedule_day_id")
-    .in("id", slotIds);
-
-  if (slotsError) {
-    throw new Error(slotsError.message);
-  }
-
-  const dayIds = [...new Set((slots ?? []).map((slot) => slot.schedule_day_id))];
-
-  if (dayIds.length === 0) {
-    return { totalUsed, weekUsed: 0 };
-  }
-
-  const weekEnd = addDaysToDateValue(visibleWeekStart, 6);
-  const { data: days, error: daysError } = await supabase
-    .from("schedule_days")
-    .select("id")
-    .in("id", dayIds)
-    .gte("date", visibleWeekStart)
-    .lte("date", weekEnd);
-
-  if (daysError) {
-    throw new Error(daysError.message);
-  }
-
-  const weekDayIds = new Set((days ?? []).map((day) => day.id));
-  const weekSlotIds = new Set(
-    (slots ?? [])
-      .filter((slot) => weekDayIds.has(slot.schedule_day_id))
-      .map((slot) => slot.id),
-  );
-  const weekUsed = (totalBookingData ?? []).filter((booking) =>
-    weekSlotIds.has(booking.slot_id),
-  ).length;
-
-  return { totalUsed, weekUsed };
+  return {
+    totalUsed: Number(totalBookingData?.count ?? 0),
+    weekUsed: Number(weekBookingData?.count ?? 0),
+  };
 }
 
 function formatLimit(used: number, limit: number | null) {
@@ -645,52 +586,31 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   let currentInstructor: Instructor | null = null;
   let studentSource: StudentSource | null = null;
 
-  if (isPostgresBackend()) {
-    currentInstructor = await queryOne<Instructor>(
-      `
-        select id, name, public_name, photo_url, contact_text,
-               show_contact_in_student_cabinet, timezone
-        from public.instructors
-        where id = $1
-        limit 1
-      `,
-      [access.instructorId],
-    );
-    studentSource = access.schoolId
-      ? await queryOne<StudentSource>(
-          `
-            select id, name, color
-            from public.schools
-            where id = $1
-            limit 1
-          `,
-          [access.schoolId],
-        )
-      : null;
-  } else {
-    const supabase = createAdminClient();
-    const { data: instructor } = await supabase
-      .from("instructors")
-      .select(
-        "id, name, public_name, photo_url, contact_text, show_contact_in_student_cabinet, timezone",
+  currentInstructor = await queryOne<Instructor>(
+    `
+      select id, name, public_name, photo_url, contact_text,
+             show_contact_in_student_cabinet, timezone
+      from public.instructors
+      where id = $1
+      limit 1
+    `,
+    [access.instructorId],
+  );
+  studentSource = access.schoolId
+    ? await queryOne<StudentSource>(
+        `
+          select id, name, color
+          from public.schools
+          where id = $1
+          limit 1
+        `,
+        [access.schoolId],
       )
-      .eq("id", access.instructorId)
-      .maybeSingle();
-    const { data: sourceData } = access.schoolId
-      ? await supabase
-          .from("schools")
-          .select("id, name, color")
-          .eq("id", access.schoolId)
-          .maybeSingle()
-      : { data: null };
+    : null;
 
-    currentInstructor = instructor as Instructor | null;
-    studentSource = sourceData as StudentSource | null;
-  }
-
-  const profileConsentRequired = isPostgresBackend()
-    ? await isStudentProfileConsentRequired(access.organizationId)
-    : false;
+  const profileConsentRequired = await isStudentProfileConsentRequired(
+    access.organizationId,
+  );
 
   if (profileConsentRequired && !access.profileCompletedAt) {
     const documents = (await getPublishedLegalDocumentsForAudience(
@@ -744,164 +664,78 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
   let bookedSlots: ScheduleSlot[] = [];
   let reviews: LessonReviewRow[] = [];
   let slotsData: unknown[] = [];
-  let bookingLoadError: { message: string } | null = null;
-  let slotsError: { message: string } | null = null;
+  studentBookings = (
+    await queryRows<Partial<StudentBookingRow>>(
+      `
+        select id, slot_id, lesson_state, created_at::text as created_at
+        from public.bookings
+        where student_access_id = $1
+          and status = 'confirmed'
+      `,
+      [access.id],
+    )
+  ).map((booking) => ({
+    id: booking.id ?? "",
+    slot_id: booking.slot_id ?? "",
+    lesson_state: normalizeLessonState(booking.lesson_state),
+    created_at: booking.created_at ?? "",
+  }));
 
-  if (isPostgresBackend()) {
-    studentBookings = (
-      await queryRows<Partial<StudentBookingRow>>(
-        `
-          select id, slot_id, lesson_state, created_at::text as created_at
-          from public.bookings
-          where student_access_id = $1
-            and status = 'confirmed'
-        `,
-        [access.id],
-      )
-    ).map((booking) => ({
-      id: booking.id ?? "",
-      slot_id: booking.slot_id ?? "",
-      lesson_state: normalizeLessonState(booking.lesson_state),
-      created_at: booking.created_at ?? "",
-    }));
+  const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
+  const bookingIds = studentBookings.map((booking) => booking.id);
 
-    const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
-    const bookingIds = studentBookings.map((booking) => booking.id);
+  bookedSlots =
+    bookedSlotIds.length > 0
+      ? await queryRows<ScheduleSlot>(
+          `
+            select id, instructor_id, instructor_name, timezone,
+                   date::text as date, transmission, lesson_type_id, school_id,
+                   lesson_type_name, lesson_type_color,
+                   start_time::text as start_time, end_time::text as end_time,
+                   location_type, status, is_booked
+            from public.public_schedule_slots
+            where id = any($1::uuid[])
+          `,
+          [bookedSlotIds],
+        )
+      : [];
+  reviews =
+    bookingIds.length > 0
+      ? await queryRows<LessonReviewRow>(
+          `
+            select id, booking_id, rating, comment, created_at::text as created_at
+            from public.lesson_reviews
+            where student_access_id = $1
+              and booking_id = any($2::uuid[])
+          `,
+          [access.id, bookingIds],
+        )
+      : [];
 
-    bookedSlots =
-      bookedSlotIds.length > 0
-        ? await queryRows<ScheduleSlot>(
-            `
-              select id, instructor_id, instructor_name, timezone,
-                     date::text as date, transmission, lesson_type_id, school_id,
-                     lesson_type_name, lesson_type_color,
-                     start_time::text as start_time, end_time::text as end_time,
-                     location_type, status, is_booked
-              from public.public_schedule_slots
-              where id = any($1::uuid[])
-            `,
-            [bookedSlotIds],
-          )
-        : [];
-    reviews =
-      bookingIds.length > 0
-        ? await queryRows<LessonReviewRow>(
-            `
-              select id, booking_id, rating, comment, created_at::text as created_at
-              from public.lesson_reviews
-              where student_access_id = $1
-                and booking_id = any($2::uuid[])
-            `,
-            [access.id, bookingIds],
-          )
-        : [];
-
-    if (access.lessonTypeIds.length > 0) {
-      slotsData = await queryRows<ScheduleSlot>(
-        `
-          select id, instructor_id, instructor_name, timezone,
-                 date::text as date, transmission, lesson_type_id, school_id,
-                 lesson_type_name, lesson_type_color,
-                 start_time::text as start_time, end_time::text as end_time,
-                 location_type, status, is_booked
-          from public.public_schedule_slots
-          where instructor_id = $1
-            and lesson_type_id = any($2::uuid[])
-            and status = 'available'
-            and is_booked = false
-            and date >= $3::date
-            and date <= $4::date
-          order by start_time
-        `,
-        [
-          access.instructorId,
-          access.lessonTypeIds,
-          availabilityStartDate,
-          formatDateValue(weekEnd),
-        ],
-      );
-    }
-  } else {
-    const supabase = createAdminClient();
-    const {
-      data: bookingData,
-      error: primaryBookingError,
-    } = await supabase
-      .from("bookings")
-      .select("id, slot_id, lesson_state, created_at")
-      .eq("student_access_id", access.id)
-      .eq("status", "confirmed");
-
-    let bookingError = primaryBookingError;
-    studentBookings = ((bookingData ?? []) as Partial<StudentBookingRow>[]).map(
-      (booking) => ({
-        id: booking.id ?? "",
-        slot_id: booking.slot_id ?? "",
-        lesson_state: normalizeLessonState(booking.lesson_state),
-        created_at: booking.created_at ?? "",
-      }),
+  if (access.lessonTypeIds.length > 0) {
+    slotsData = await queryRows<ScheduleSlot>(
+      `
+        select id, instructor_id, instructor_name, timezone,
+               date::text as date, transmission, lesson_type_id, school_id,
+               lesson_type_name, lesson_type_color,
+               start_time::text as start_time, end_time::text as end_time,
+               location_type, status, is_booked
+        from public.public_schedule_slots
+        where instructor_id = $1
+          and lesson_type_id = any($2::uuid[])
+          and status = 'available'
+          and is_booked = false
+          and date >= $3::date
+          and date <= $4::date
+        order by start_time
+      `,
+      [
+        access.instructorId,
+        access.lessonTypeIds,
+        availabilityStartDate,
+        formatDateValue(weekEnd),
+      ],
     );
-
-    if (primaryBookingError) {
-      const { data: fallbackBookingData, error: fallbackBookingError } =
-        await supabase
-          .from("bookings")
-          .select("id, slot_id, created_at")
-          .eq("student_access_id", access.id)
-          .eq("status", "confirmed");
-
-      bookingError = fallbackBookingError;
-      studentBookings = ((fallbackBookingData ?? []) as {
-        id: string;
-        slot_id: string;
-        created_at: string;
-      }[]).map((booking) => ({
-        id: booking.id,
-        slot_id: booking.slot_id,
-        lesson_state: "scheduled",
-        created_at: booking.created_at,
-      }));
-    }
-
-    const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
-    const bookingIds = studentBookings.map((booking) => booking.id);
-    const { data: bookedSlotData, error: bookedSlotError } =
-      bookedSlotIds.length > 0
-        ? await supabase
-            .from("public_schedule_slots")
-            .select("*")
-            .in("id", bookedSlotIds)
-        : { data: [], error: null };
-
-    bookingLoadError = bookingError ?? bookedSlotError;
-    bookedSlots = (bookedSlotData ?? []) as ScheduleSlot[];
-
-    const { data: reviewData } =
-      bookingIds.length > 0
-        ? await supabase
-            .from("lesson_reviews")
-            .select("id, booking_id, rating, comment, created_at")
-            .eq("student_access_id", access.id)
-            .in("booking_id", bookingIds)
-        : { data: [] };
-
-    reviews = (reviewData ?? []) as LessonReviewRow[];
-
-    if (access.lessonTypeIds.length > 0) {
-      const availableSlotsResult = await supabase
-        .from("public_schedule_slots")
-        .select("*")
-        .eq("instructor_id", access.instructorId)
-        .in("lesson_type_id", access.lessonTypeIds)
-        .eq("status", "available")
-        .eq("is_booked", false)
-        .gte("date", availabilityStartDate)
-        .lte("date", formatDateValue(weekEnd))
-        .order("start_time", { ascending: true });
-
-      slotsData = availableSlotsResult.data ?? [];
-      slotsError = availableSlotsResult.error;
-    }
   }
 
   const reviewsByBookingId = new Map(
@@ -1019,20 +853,12 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
           </div>
         </header>
 
-        {bookingLoadError ? (
-          <section className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить ваши записи. Попробуйте обновить страницу.
-          </section>
-        ) : (
-          <>
-            <NextLessonSection lesson={nextLesson} timezone={timezone} />
-            <StudentLessonsSection
-              upcomingLessons={upcomingLessons}
-              historyLessons={historyLessons}
-              timezone={timezone}
-            />
-          </>
-        )}
+        <NextLessonSection lesson={nextLesson} timezone={timezone} />
+        <StudentLessonsSection
+          upcomingLessons={upcomingLessons}
+          historyLessons={historyLessons}
+          timezone={timezone}
+        />
 
         <section className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -1092,11 +918,7 @@ export default async function StudentPage({ searchParams }: StudentPageProps) {
             </nav>
           </div>
 
-          {slotsError ? (
-            <div className="px-4 py-10 text-center text-sm text-red-700">
-              Не удалось загрузить расписание. Попробуйте обновить страницу.
-            </div>
-          ) : access.lessonTypeIds.length === 0 ? (
+          {access.lessonTypeIds.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-zinc-500">
               Для этого доступа пока не выбраны типы занятий.
             </div>

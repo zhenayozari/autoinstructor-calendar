@@ -140,53 +140,6 @@ function readLocationType(formData: FormData): SlotLocationType {
   return value;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function validateOptionalSchoolId(
-  schoolId: string | null,
-  organizationId: string,
-) {
-  if (!schoolId) {
-    return null;
-  }
-
-  if (isPostgresBackend()) {
-    const data = await queryOne<{ id: string }>(
-      `
-        select id
-        from public.schools
-        where id = $1
-          and organization_id = $2
-        limit 1
-      `,
-      [schoolId, organizationId],
-    );
-
-    if (!data) {
-      throw new Error("Автошкола не найдена");
-    }
-
-    return schoolId;
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("schools")
-    .select("id")
-    .eq("id", schoolId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  if (!data) {
-    throw new Error("Автошкола не найдена");
-  }
-
-  return schoolId;
-}
-
 function readOptionalNote(formData: FormData) {
   const value = formData.get("note");
 
@@ -464,8 +417,7 @@ async function getOrCreateCopyTargetDay({
   transmission: "automatic" | "manual" | null;
   publishedAt: string | null;
 }) {
-  if (isPostgresBackend()) {
-    const existingDay = await queryOne<{
+  const existingDay = await queryOne<{
       id: string;
       transmission: "automatic" | "manual" | null;
     }>(
@@ -479,8 +431,8 @@ async function getOrCreateCopyTargetDay({
       [instructorId, date],
     );
 
-    if (!existingDay) {
-      const createdDay = await queryOne<{
+  if (!existingDay) {
+    const createdDay = await queryOne<{
         id: string;
         transmission: "automatic" | "manual" | null;
       }>(
@@ -494,12 +446,12 @@ async function getOrCreateCopyTargetDay({
         [instructorId, date, transmission, publishedAt],
       );
 
-      if (!createdDay) {
-        throw new Error("Не удалось создать день расписания");
-      }
-
-      return createdDay;
+    if (!createdDay) {
+      throw new Error("Не удалось создать день расписания");
     }
+
+    return createdDay;
+  }
 
     if (
       transmission &&
@@ -532,68 +484,7 @@ async function getOrCreateCopyTargetDay({
       throw new Error("Не удалось обновить день расписания");
     }
 
-    return updatedDay;
-  }
-
-  const supabase = createAdminClient();
-  const { data: existingDay, error: lookupError } = await supabase
-    .from("schedule_days")
-    .select("id, transmission")
-    .eq("instructor_id", instructorId)
-    .eq("date", date)
-    .maybeSingle();
-
-  if (lookupError) {
-    throw new Error(lookupError.message);
-  }
-
-  if (!existingDay) {
-    const { data, error } = await supabase
-      .from("schedule_days")
-      .insert({
-        instructor_id: instructorId,
-        date,
-        transmission,
-        published_at: publishedAt,
-      })
-      .select("id, transmission")
-      .single();
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    return data;
-  }
-
-  if (
-    transmission &&
-    existingDay.transmission &&
-    existingDay.transmission !== transmission
-  ) {
-    throw new Error(
-      `На ${date} уже установлена ${
-        existingDay.transmission === "automatic" ? "АКПП" : "МКПП"
-      }`,
-    );
-  }
-
-  const { data, error } = await supabase
-    .from("schedule_days")
-    .update({
-      transmission: existingDay.transmission ?? transmission,
-      published_at: publishedAt,
-    })
-    .eq("id", existingDay.id)
-    .eq("instructor_id", instructorId)
-    .select("id, transmission")
-    .single();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data;
+  return updatedDay;
 }
 
 async function copySlotsToDate({
@@ -628,9 +519,8 @@ async function copySlotsToDate({
       timezone,
     )}`;
 
-    if (isPostgresBackend()) {
-      try {
-        await executeQuery(
+    try {
+      await executeQuery(
           `
             insert into public.slots (
               instructor_id, schedule_day_id, lesson_type_id, school_id,
@@ -649,34 +539,12 @@ async function copySlotsToDate({
             slot.note,
           ],
         );
-        createdCount += 1;
-      } catch (error) {
-        if (isPostgresErrorCode(error, "23P01")) {
-          conflicts.push(label);
-        } else {
-          throw new Error(`Ошибка при копировании ${label}: ${getErrorMessage(error)}`);
-        }
-      }
-    } else {
-      const supabase = createAdminClient();
-      const { error } = await supabase.from("slots").insert({
-        instructor_id: instructorId,
-        schedule_day_id: scheduleDayId,
-        lesson_type_id: slot.lesson_type_id,
-        school_id: null,
-        start_time: targetStart.toISOString(),
-        end_time: targetEnd.toISOString(),
-        location_type: slot.location_type,
-        status: slot.status,
-        note: slot.note,
-      });
-
-      if (!error) {
-        createdCount += 1;
-      } else if (error.code === "23P01") {
+      createdCount += 1;
+    } catch (error) {
+      if (isPostgresErrorCode(error, "23P01")) {
         conflicts.push(label);
       } else {
-        throw new Error(`Ошибка при копировании ${label}: ${error.message}`);
+        throw new Error(`Ошибка при копировании ${label}: ${getErrorMessage(error)}`);
       }
     }
   }
@@ -705,7 +573,7 @@ export async function copyDayAction(
     parseDateValue(sourceDate);
     parseDateValue(targetDate);
 
-    if (isPostgresBackend()) {
+    {
       const [instructor, sourceDay] = await Promise.all([
         queryOne<{ id: string; timezone: string }>(
           `
@@ -794,86 +662,6 @@ export async function copyDayAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const [
-      { data: instructor, error: instructorError },
-      { data: sourceDay, error: sourceDayError },
-    ] = await Promise.all([
-      supabase
-        .from("instructors")
-        .select("id, timezone")
-        .eq("id", instructorId)
-        .eq("is_active", true)
-        .maybeSingle(),
-      supabase
-        .from("schedule_days")
-        .select("id, transmission")
-        .eq("instructor_id", instructorId)
-        .eq("date", sourceDate)
-        .maybeSingle(),
-    ]);
-
-    if (instructorError || !instructor) {
-      throw new Error("Инструктор не найден или отключён");
-    }
-
-    if (sourceDayError || !sourceDay) {
-      throw new Error("На дате-источнике нет дня расписания");
-    }
-
-    const { data, error } = await supabase
-      .from("slots")
-      .select("lesson_type_id, start_time, end_time, location_type, status, note")
-      .eq("instructor_id", instructorId)
-      .eq("schedule_day_id", sourceDay.id)
-      .in("status", ["available", "blocked"])
-      .order("start_time");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    const sourceSlots = (data ?? []) as SourceSlot[];
-
-    if (sourceSlots.length === 0) {
-      throw new Error("На дате-источнике нет активных слотов");
-    }
-
-    if (!preserveTransmission && sourceDay.transmission) {
-      throw new Error(
-        "Для дня с практическими занятиями включите «Сохранить коробку передач»",
-      );
-    }
-
-    const targetDay = await getOrCreateCopyTargetDay({
-      instructorId,
-      date: targetDate,
-      transmission: preserveTransmission ? sourceDay.transmission : null,
-      publishedAt: getPublicationAt(formData, instructor.timezone),
-    });
-    const result = await copySlotsToDate({
-      instructorId,
-      sourceSlots,
-      targetDate,
-      timezone: instructor.timezone,
-      scheduleDayId: targetDay.id,
-    });
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-
-    return {
-      status: "success",
-      message:
-        result.conflicts.length > 0
-          ? `Скопировано слотов: ${result.createdCount}. Конфликты пропущены.`
-          : `День скопирован: ${result.createdCount} слотов.`,
-      createdCount: result.createdCount,
-      conflicts: result.conflicts,
-    };
   } catch (error) {
     console.error("copyDayAction:", error);
 
@@ -906,7 +694,7 @@ export async function copyWeekAction(
       throw new Error("Неделя-источник и неделя-назначение должны отличаться");
     }
 
-    if (isPostgresBackend()) {
+    {
       const [instructor, sourceDays] = await Promise.all([
         queryOne<{ id: string; timezone: string }>(
           `
@@ -1009,105 +797,6 @@ export async function copyWeekAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const [
-      { data: instructor, error: instructorError },
-      { data: sourceDaysData, error: sourceDaysError },
-    ] = await Promise.all([
-      supabase
-        .from("instructors")
-        .select("id, timezone")
-        .eq("id", instructorId)
-        .eq("is_active", true)
-        .maybeSingle(),
-      supabase
-        .from("schedule_days")
-        .select("id, date, transmission")
-        .eq("instructor_id", instructorId)
-        .gte("date", sourceWeekStart)
-        .lte("date", addDaysToDate(sourceWeekStart, 6))
-        .order("date"),
-    ]);
-
-    if (instructorError || !instructor) {
-      throw new Error("Инструктор не найден или отключён");
-    }
-
-    if (sourceDaysError) {
-      throw new Error(sourceDaysError.message);
-    }
-
-    const sourceDays = sourceDaysData ?? [];
-
-    if (sourceDays.length === 0) {
-      throw new Error("На неделе-источнике нет расписания");
-    }
-
-    let createdCount = 0;
-    const conflicts: string[] = [];
-    const publishedAt = getPublicationAt(formData, instructor.timezone);
-
-    for (const sourceDay of sourceDays) {
-      const dayOffset = Math.round(
-        (parseDateValue(sourceDay.date).getTime() -
-          parseDateValue(sourceWeekStart).getTime()) /
-          86_400_000,
-      );
-      const targetDate = addDaysToDate(targetWeekStart, dayOffset);
-      const { data, error } = await supabase
-        .from("slots")
-        .select("lesson_type_id, start_time, end_time, location_type, status, note")
-        .eq("instructor_id", instructorId)
-        .eq("schedule_day_id", sourceDay.id)
-        .in("status", ["available", "blocked"])
-        .order("start_time");
-
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      const sourceSlots = (data ?? []) as SourceSlot[];
-
-      if (sourceSlots.length === 0) {
-        continue;
-      }
-
-      try {
-        const targetDay = await getOrCreateCopyTargetDay({
-          instructorId,
-          date: targetDate,
-          transmission: sourceDay.transmission,
-          publishedAt,
-        });
-        const result = await copySlotsToDate({
-          instructorId,
-          sourceSlots,
-          targetDate,
-          timezone: instructor.timezone,
-          scheduleDayId: targetDay.id,
-        });
-        createdCount += result.createdCount;
-        conflicts.push(...result.conflicts);
-      } catch (error) {
-        conflicts.push(`${targetDate}: ${getErrorMessage(error)}`);
-      }
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-
-    return {
-      status: "success",
-      message:
-        conflicts.length > 0
-          ? `Скопировано слотов: ${createdCount}. Часть интервалов пропущена.`
-          : `Неделя скопирована: ${createdCount} слотов.`,
-      createdCount,
-      conflicts,
-    };
   } catch (error) {
     console.error("copyWeekAction:", error);
 
@@ -1129,7 +818,7 @@ export async function updateDayPublicationAction(
   try {
     const scheduleDayId = readRequiredString(formData, "schedule_day_id");
 
-    if (isPostgresBackend()) {
+    {
       const scheduleDay = await queryOne<{
         id: string;
         instructor_id: string;
@@ -1178,54 +867,6 @@ export async function updateDayPublicationAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data: scheduleDay, error: scheduleDayError } = await supabase
-      .from("schedule_days")
-      .select("id, instructor_id")
-      .eq("id", scheduleDayId)
-      .maybeSingle();
-
-    if (scheduleDayError || !scheduleDay) {
-      throw new Error("День расписания не найден");
-    }
-
-    await requireInstructorAccess(scheduleDay.instructor_id);
-    const { data: instructor, error: instructorError } = await supabase
-      .from("instructors")
-      .select("timezone")
-      .eq("id", scheduleDay.instructor_id)
-      .maybeSingle();
-
-    if (instructorError || !instructor) {
-      throw new Error("Инструктор не найден");
-    }
-
-    const publishedAt = getPublicationAt(formData, instructor.timezone);
-    const { error } = await supabase
-      .from("schedule_days")
-      .update({ published_at: publishedAt })
-      .eq("id", scheduleDayId)
-      .eq("instructor_id", scheduleDay.instructor_id);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-
-    return {
-      status: "success",
-      message:
-        publishedAt === null
-          ? "День скрыт"
-          : new Date(publishedAt) > new Date()
-            ? "Публикация дня запланирована"
-            : "День опубликован",
-    };
   } catch (error) {
     console.error("updateDayPublicationAction:", error);
 
@@ -1252,7 +893,7 @@ export async function updateWeekPublicationAction(
       throw new Error("Неизвестное действие публикации");
     }
 
-    if (isPostgresBackend()) {
+    {
       const data = await queryRows<{ id: string }>(
         `
           update public.schedule_days
@@ -1285,35 +926,6 @@ export async function updateWeekPublicationAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data, error } = await supabase
-      .from("schedule_days")
-      .update({
-        published_at:
-          operation === "publish" ? new Date().toISOString() : null,
-      })
-      .eq("instructor_id", instructorId)
-      .gte("date", weekStart)
-      .lte("date", addDaysToDate(weekStart, 6))
-      .select("id");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-
-    return {
-      status: "success",
-      message:
-        operation === "publish"
-          ? `Опубликовано дней: ${data.length}`
-          : `Скрыто дней: ${data.length}`,
-    };
   } catch (error) {
     console.error("updateWeekPublicationAction:", error);
 
@@ -1352,7 +964,7 @@ export async function quickCreateDayAction(
         ? requestedTransmission
         : null;
 
-    if (isPostgresBackend()) {
+    {
       const [instructor, lessonType] = await Promise.all([
         queryOne<{ id: string; timezone: string }>(
           `
@@ -1573,7 +1185,7 @@ export async function quickCreateDayAction(
       };
     }
 
-    const supabase = createAdminClient();
+    /*
     const [
       { data: instructor, error: instructorError },
       { data: lessonType, error: lessonTypeError },
@@ -1778,6 +1390,7 @@ export async function quickCreateDayAction(
       createdCount,
       conflicts,
     };
+    */
   } catch (error) {
     console.error("quickCreateDayAction:", error);
 
@@ -1804,14 +1417,13 @@ export async function createSlotAction(
     const startTime = readRequiredString(formData, "start_time");
     const locationType = readLocationType(formData);
     const note = readOptionalNote(formData);
-    const publishDay = formData.get("publish_day") === "on";
     const requestedTransmission = formData.get("transmission");
     const transmission =
       requestedTransmission === "automatic" || requestedTransmission === "manual"
         ? requestedTransmission
         : null;
 
-    if (isPostgresBackend()) {
+    {
       const [instructor, lessonType] = await Promise.all([
         queryOne<{ id: string; timezone: string }>(
           `
@@ -1846,6 +1458,8 @@ export async function createSlotAction(
       if (!lessonType) {
         throw new Error("Тип занятия не найден или отключён");
       }
+
+      const publicationAt = getPublicationAt(formData, instructor.timezone);
 
       if (lessonType.kind === "driving" && !transmission) {
         throw new Error("Для практического занятия выберите АКПП или МКПП");
@@ -1883,14 +1497,11 @@ export async function createSlotAction(
             instructorId,
             date,
             lessonType.kind === "driving" ? transmission : null,
-            publishDay ? new Date().toISOString() : null,
+            publicationAt,
           ],
         );
       } else {
-        const nextPublishedAt =
-          publishDay && !scheduleDay.published_at
-            ? new Date().toISOString()
-            : scheduleDay.published_at;
+        const nextPublishedAt = scheduleDay.published_at ?? publicationAt;
         const nextTransmission =
           lessonType.kind === "driving" && !scheduleDay.transmission
             ? transmission
@@ -1977,6 +1588,7 @@ export async function createSlotAction(
       };
     }
 
+    /*
     const supabase = createAdminClient();
     const [{ data: instructor, error: instructorError }, { data: lessonType, error: lessonError }] =
       await Promise.all([
@@ -2109,6 +1721,7 @@ export async function createSlotAction(
       status: "success",
       message: "Слот создан",
     };
+    */
   } catch (error) {
     console.error("createSlotAction:", error);
 
@@ -2133,7 +1746,7 @@ export async function updateSlotAction(
     const locationType = readLocationType(formData);
     const note = readOptionalNote(formData);
 
-    if (isPostgresBackend()) {
+    {
       const slot = await queryOne<{
         id: string;
         instructor_id: string;
@@ -2359,6 +1972,7 @@ export async function updateSlotAction(
       };
     }
 
+    /*
     const supabase = createAdminClient();
 
     const { data: slot, error: slotLookupError } = await supabase
@@ -2537,6 +2151,7 @@ export async function updateSlotAction(
           ? "Слот обновлён. Не забудьте предупредить ученика."
           : "Слот обновлён",
     };
+    */
   } catch (error) {
     console.error("updateSlotAction:", error);
 
@@ -2552,10 +2167,13 @@ export async function deleteSlotAction(formData: FormData) {
   const slotId = readRequiredString(formData, "slot_id");
 
   try {
-    if (isPostgresBackend()) {
-      const slot = await queryOne<{ instructor_id: string }>(
+    {
+      const slot = await queryOne<{
+        instructor_id: string;
+        schedule_day_id: string;
+      }>(
         `
-          select instructor_id
+          select instructor_id, schedule_day_id
           from public.slots
           where id = $1
           limit 1
@@ -2622,6 +2240,27 @@ export async function deleteSlotAction(formData: FormData) {
             [slotId, slot.instructor_id],
           );
         }
+
+        const remainingSlots = await queryOne<{ count: string }>(
+          `
+            select count(*)::text as count
+            from public.slots
+            where schedule_day_id = $1
+              and status <> 'cancelled'
+          `,
+          [slot.schedule_day_id],
+        );
+
+        if (Number(remainingSlots?.count ?? 0) === 0) {
+          await executeQuery(
+            `
+              update public.schedule_days
+              set published_at = null
+              where id = $1
+            `,
+            [slot.schedule_day_id],
+          );
+        }
       });
 
       await logAuditEvent({
@@ -2647,6 +2286,7 @@ export async function deleteSlotAction(formData: FormData) {
       return;
     }
 
+    /*
     const supabase = createAdminClient();
     const { data: slot, error: slotLookupError } = await supabase
       .from("slots")
@@ -2685,8 +2325,79 @@ export async function deleteSlotAction(formData: FormData) {
     revalidatePath("/admin/bookings");
     revalidatePath("/");
     revalidatePath("/schedule");
+    */
   } catch (error) {
     console.error("deleteSlotAction:", error);
+    throw error;
+  }
+}
+
+export async function toggleSlotVisibilityAction(formData: FormData) {
+  await requireActiveOrganizationMember();
+  const slotId = readRequiredString(formData, "slot_id");
+
+  try {
+    const slot = await queryOne<{
+      id: string;
+      instructor_id: string;
+      status: "available" | "blocked" | "cancelled";
+    }>(
+      `
+        select id, instructor_id, status
+        from public.slots
+        where id = $1
+        limit 1
+      `,
+      [slotId],
+    );
+
+    if (!slot || slot.status === "cancelled") {
+      throw new Error("Слот не найден или уже отменён");
+    }
+
+    const membership = await requireInstructorAccess(slot.instructor_id);
+    const confirmedBooking = await queryOne<{ id: string }>(
+      `
+        select id
+        from public.bookings
+        where slot_id = $1
+          and status = 'confirmed'
+        limit 1
+      `,
+      [slotId],
+    );
+
+    if (confirmedBooking) {
+      throw new Error("Занятый слот нельзя скрыть");
+    }
+
+    const nextStatus = slot.status === "blocked" ? "available" : "blocked";
+    await executeQuery(
+      `
+        update public.slots
+        set status = $1
+        where id = $2
+          and instructor_id = $3
+          and status in ('available', 'blocked')
+      `,
+      [nextStatus, slotId, slot.instructor_id],
+    );
+
+    await logAuditEvent({
+      membership,
+      action: nextStatus === "blocked" ? "slot.hidden" : "slot.unhidden",
+      entityType: "slot",
+      entityId: slotId,
+      metadata: { instructor_id: slot.instructor_id },
+    });
+
+    revalidatePath("/admin");
+    revalidatePath("/admin/schedule");
+    revalidatePath("/");
+    revalidatePath("/schedule");
+    revalidatePath("/student");
+  } catch (error) {
+    console.error("toggleSlotVisibilityAction:", error);
     throw error;
   }
 }
@@ -2716,13 +2427,14 @@ export async function deleteSelectedSlotsAction(
   }
 
   try {
-    if (isPostgresBackend()) {
+    {
       const selectedSlots = await queryRows<{
         id: string;
         instructor_id: string;
+        schedule_day_id: string;
       }>(
         `
-          select id, instructor_id
+          select id, instructor_id, schedule_day_id
           from public.slots
           where id = any($1::uuid[])
             and status <> 'cancelled'
@@ -2808,6 +2520,33 @@ export async function deleteSelectedSlotsAction(
             [unbookedSlotIds],
           );
         }
+
+        const scheduleDayIds = [
+          ...new Set(selectedSlots.map((slot) => slot.schedule_day_id)),
+        ];
+
+        for (const scheduleDayId of scheduleDayIds) {
+          const remainingSlots = await queryOne<{ count: string }>(
+            `
+              select count(*)::text as count
+              from public.slots
+              where schedule_day_id = $1
+                and status <> 'cancelled'
+            `,
+            [scheduleDayId],
+          );
+
+          if (Number(remainingSlots?.count ?? 0) === 0) {
+            await executeQuery(
+              `
+                update public.schedule_days
+                set published_at = null
+                where id = $1
+              `,
+              [scheduleDayId],
+            );
+          }
+        }
       });
 
       await logAuditEvent({
@@ -2838,6 +2577,7 @@ export async function deleteSelectedSlotsAction(
       };
     }
 
+    /*
     const supabase = createAdminClient();
     const { data: selectedSlots, error: lookupError } = await supabase
       .from("slots")
@@ -2896,6 +2636,7 @@ export async function deleteSelectedSlotsAction(
       message: `Удалено слотов: ${manageableSlotIds.length}`,
       deletedCount: manageableSlotIds.length,
     };
+    */
   } catch (error) {
     console.error("deleteSelectedSlotsAction:", error);
 

@@ -5,6 +5,7 @@ import { CalendarPlus, ChevronLeft, ChevronRight, Clock3 } from "lucide-react";
 import { createSlotAction, type SlotActionState } from "@/app/admin/actions";
 import {
   addUtcDays,
+  formatDateTime,
   formatDateValue,
   formatDayTitle,
   formatNumericDate,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/formatters";
 import type { Booking, Instructor, LessonType, ScheduleDay, School, Slot } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { PublicationOptions } from "@/components/admin/publication-options";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -84,6 +86,7 @@ export function SlotForm({
   const initialSelectedDate = defaultDate ?? fallbackDate ?? "";
   const [selectedDate, setSelectedDate] = useState(initialSelectedDate);
   const [visibleWeekDate, setVisibleWeekDate] = useState(initialSelectedDate);
+  const [currentTime] = useState(() => Date.now());
   const [lessonTypeId, setLessonTypeId] = useState(lessonTypes[0]?.id ?? "");
   const [startTime, setStartTime] = useState("10:00");
   const selectedInstructor = instructors[0] ?? null;
@@ -143,7 +146,16 @@ export function SlotForm({
     [lessonTypes],
   );
   const selectedScheduleDay = daysByDate.get(selectedDate);
-  const selectedDayPublished = Boolean(selectedScheduleDay?.published_at);
+  const selectedDayPublicationAt = selectedScheduleDay?.published_at ?? null;
+  const selectedDayPublicationTimestamp = selectedDayPublicationAt
+    ? Date.parse(selectedDayPublicationAt)
+    : Number.NaN;
+  const selectedDayPublished =
+    Number.isFinite(selectedDayPublicationTimestamp) &&
+    selectedDayPublicationTimestamp <= currentTime;
+  const selectedDayScheduled =
+    Number.isFinite(selectedDayPublicationTimestamp) &&
+    selectedDayPublicationTimestamp > currentTime;
   const selectedDaySlots = selectedScheduleDay
     ? slotsByDayId.get(selectedScheduleDay.id) ?? []
     : [];
@@ -315,21 +327,6 @@ export function SlotForm({
               </option>
             ))}
           </select>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <a
-              href="#lesson-types-settings"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              + Добавить свой
-            </a>
-            <span className="text-muted-foreground">·</span>
-            <a
-              href="#lesson-types-settings"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              Управление типами
-            </a>
-          </div>
           {selectedLessonType && (
             <p className="text-muted-foreground text-xs">
               Длительность: {selectedLessonType.default_duration_minutes} мин.
@@ -389,30 +386,23 @@ export function SlotForm({
         </div>
       </div>
 
-      <div className="rounded-xl border bg-white px-3 py-3">
-        <label className="flex items-start gap-3 text-sm font-medium">
-          <input
-            key={selectedDate}
-            type="checkbox"
-            name="publish_day"
-            defaultChecked
-            disabled={selectedDayPublished}
-            className="mt-1 size-4"
-          />
-          <span>
-            <span className="block">
-              {selectedDayPublished
-                ? "День уже опубликован"
-                : "Опубликовать день в расписании"}
-            </span>
-            <span className="text-muted-foreground mt-0.5 block text-xs font-normal">
-              {selectedDayPublished
-                ? "Ученики уже видят свободные слоты этого дня."
-                : "Ученики увидят свободные слоты выбранного дня. Снимите галочку, если готовите слот черновиком."}
-            </span>
-          </span>
-        </label>
-      </div>
+      {selectedDayPublished ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm">
+          <p className="font-medium text-emerald-900">День уже опубликован</p>
+          <p className="mt-1 text-xs text-emerald-800">
+            Новый слот станет виден ученикам сразу после создания.
+          </p>
+        </div>
+      ) : selectedDayScheduled && selectedDayPublicationAt ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm">
+          <p className="font-medium text-amber-900">День уже запланирован к публикации</p>
+          <p className="mt-1 text-xs text-amber-800">
+            День откроется {formatDateTime(selectedDayPublicationAt, selectedInstructor?.timezone ?? "UTC")}. Новый слот откроется вместе с ним.
+          </p>
+        </div>
+      ) : (
+        <PublicationOptions idPrefix="single-slot" />
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="slot-note">Внутренняя заметка</Label>

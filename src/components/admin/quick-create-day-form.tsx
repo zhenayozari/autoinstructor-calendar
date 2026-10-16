@@ -104,21 +104,6 @@ export function QuickCreateDayForm({
               </option>
             ))}
           </select>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <a
-              href="#lesson-types-settings"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              + Добавить свой
-            </a>
-            <span className="text-muted-foreground">·</span>
-            <a
-              href="#lesson-types-settings"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              Управление типами
-            </a>
-          </div>
         </div>
 
         <div className="space-y-2">

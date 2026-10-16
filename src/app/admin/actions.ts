@@ -18,17 +18,12 @@ import {
 import { logAuditEvent } from "@/lib/audit-log";
 import {
   getEffectiveBookingPriceAmount,
-  getConfiguredLessonPriceAmount,
   getConfiguredLessonPriceAmountPostgres,
   getInitialBookingPaymentFields,
-  getSchoolPaymentRule,
   getSchoolPaymentRulePostgres,
   isMissingPricingTableError,
 } from "@/lib/pricing";
-import {
-  selectStudentLessonPackageForBooking,
-  selectStudentLessonPackageForBookingPostgres,
-} from "@/lib/student-lesson-packages";
+import { selectStudentLessonPackageForBookingPostgres } from "@/lib/student-lesson-packages";
 import {
   applyOwnerExamRouteToBooking,
   correctInstructorPayoutForBooking,
@@ -2653,7 +2648,11 @@ export async function cancelBookingAction(formData: FormData) {
   const bookingId = readRequiredString(formData, "booking_id");
 
   try {
-    if (isPostgresBackend()) {
+    if (!isPostgresBackend()) {
+      throw new Error("Отмена записи доступна только в PostgreSQL-версии");
+    }
+
+    {
       const booking = await queryOne<{
         id: string;
         slot_id: string;
@@ -2715,58 +2714,6 @@ export async function cancelBookingAction(formData: FormData) {
       return;
     }
 
-    const supabase = createAdminClient();
-    const { data: booking, error: bookingLookupError } = await supabase
-      .from("bookings")
-      .select("slot_id")
-      .eq("id", bookingId)
-      .maybeSingle();
-
-    if (bookingLookupError || !booking) {
-      throw new Error("Запись не найдена");
-    }
-
-    const { data: slot, error: slotLookupError } = await supabase
-      .from("slots")
-      .select("instructor_id")
-      .eq("id", booking.slot_id)
-      .maybeSingle();
-
-    if (slotLookupError || !slot) {
-      throw new Error("Слот записи не найден");
-    }
-
-    const membership = await requireInstructorAccess(slot.instructor_id);
-
-    const { error } = await supabase
-      .from("bookings")
-      .update({
-        status: "cancelled",
-        cancelled_at: new Date().toISOString(),
-      })
-      .eq("id", bookingId)
-      .eq("status", "confirmed");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "booking.cancelled",
-      entityType: "booking",
-      entityId: bookingId,
-      metadata: {
-        slot_id: booking.slot_id,
-        instructor_id: slot.instructor_id,
-      },
-    });
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
   } catch (error) {
     console.error("cancelBookingAction:", error);
     throw error;
@@ -2840,83 +2787,6 @@ export async function applyOwnerExamRouteAction(formData: FormData) {
   }
 }
 
-async function getStudentLessonPriceAmount(
-  supabase: ReturnType<typeof createAdminClient>,
-  organizationId: string,
-  schoolId: string | null,
-  lessonTypeId: string,
-) {
-  return getConfiguredLessonPriceAmount({
-    supabase,
-    organizationId,
-    schoolId,
-    lessonTypeId,
-  });
-}
-
-async function insertAssignedStudentBooking({
-  supabase,
-  slotId,
-  studentAccessId,
-  studentLabel,
-  packageId,
-  schoolId,
-  bookingCategory,
-  priceAmount,
-  paymentRule,
-}: {
-  supabase: ReturnType<typeof createAdminClient>;
-  slotId: string;
-  studentAccessId: string;
-  studentLabel: string;
-  packageId: string | null;
-  schoolId: string | null;
-  bookingCategory: BookingCategory;
-  priceAmount: number | null;
-  paymentRule: Awaited<ReturnType<typeof getSchoolPaymentRule>>;
-}) {
-  const paymentFields = getInitialBookingPaymentFields({
-    priceAmount,
-    paymentRule,
-    bookingCategory,
-  });
-  const payload = {
-    slot_id: slotId,
-    student_access_id: studentAccessId,
-    student_label: studentLabel,
-    status: "confirmed",
-  };
-  const extendedPayload = {
-    ...payload,
-    student_lesson_package_id: packageId,
-    school_id: schoolId,
-    price_amount: priceAmount,
-    ...paymentFields,
-    booking_category: bookingCategory,
-  };
-  const { error } = await supabase.from("bookings").insert(extendedPayload);
-
-  if (!error || !isMissingColumnError(error)) {
-    return error;
-  }
-
-  const { error: priceOnlyError } = await supabase.from("bookings").insert({
-    ...payload,
-    price_amount: priceAmount,
-    ...paymentFields,
-  });
-
-  if (!priceOnlyError || !isMissingColumnError(priceOnlyError)) {
-    return priceOnlyError;
-  }
-
-  const { error: fallbackError } = await supabase
-    .from("bookings")
-    .insert(payload);
-
-  return fallbackError;
-}
-
 export async function assignStudentToSlotAction(
   previousState: SlotActionState = INITIAL_STATE,
   formData: FormData,
@@ -2928,7 +2798,11 @@ export async function assignStudentToSlotAction(
     const slotId = readRequiredString(formData, "slot_id");
     const studentAccessId = readRequiredString(formData, "student_access_id");
 
-    if (isPostgresBackend()) {
+    if (!isPostgresBackend()) {
+      throw new Error("Назначение ученика доступно только в PostgreSQL-версии");
+    }
+
+    {
       const slot = await queryOne<{
         id: string;
         instructor_id: string;
@@ -3142,161 +3016,6 @@ export async function assignStudentToSlotAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data: slot, error: slotError } = await supabase
-      .from("slots")
-      .select(
-        "id, instructor_id, schedule_day_id, lesson_type_id, status",
-      )
-      .eq("id", slotId)
-      .maybeSingle();
-
-    if (slotError) {
-      throw new Error(slotError.message);
-    }
-
-    if (!slot) {
-      throw new Error("Слот не найден");
-    }
-
-    const membership = await requireInstructorAccess(slot.instructor_id);
-
-    if (slot.status !== "available") {
-      throw new Error("Записать ученика можно только в свободный слот");
-    }
-
-    const { count: activeBookingCount, error: bookingCountError } =
-      await supabase
-        .from("bookings")
-        .select("id", { count: "exact", head: true })
-        .eq("slot_id", slot.id)
-        .eq("status", "confirmed");
-
-    if (bookingCountError) {
-      throw new Error(bookingCountError.message);
-    }
-
-    if ((activeBookingCount ?? 0) > 0) {
-      throw new Error("Этот слот уже занят");
-    }
-
-    const { data: access, error: accessError } = await supabase
-      .from("student_accesses")
-      .select(
-        "id, organization_id, instructor_id, school_id, display_label, total_lesson_limit, weekly_lesson_limit, is_active, is_archived",
-      )
-      .eq("id", studentAccessId)
-      .eq("instructor_id", slot.instructor_id)
-      .maybeSingle();
-
-    if (accessError) {
-      throw new Error(accessError.message);
-    }
-
-    if (!access) {
-      throw new Error("Ученик не найден у этого инструктора");
-    }
-
-    if (!access.is_active || access.is_archived) {
-      throw new Error("Доступ ученика не активен");
-    }
-
-    const { data: allowedLessonTypes, error: allowedLessonTypesError } =
-      await supabase
-        .from("student_access_lesson_types")
-        .select("lesson_type_id")
-        .eq("student_access_id", access.id);
-
-    if (allowedLessonTypesError) {
-      throw new Error(allowedLessonTypesError.message);
-    }
-
-    const { data: scheduleDay, error: scheduleDayError } = await supabase
-      .from("schedule_days")
-      .select("date")
-      .eq("id", slot.schedule_day_id)
-      .maybeSingle();
-
-    if (scheduleDayError) {
-      throw new Error(scheduleDayError.message);
-    }
-
-    if (!scheduleDay) {
-      throw new Error("День расписания не найден");
-    }
-
-    const selectedPackage = await selectStudentLessonPackageForBooking({
-      supabase,
-      access,
-      lessonTypeId: slot.lesson_type_id,
-      lessonDate: scheduleDay.date,
-      legacyLessonTypeIds: (allowedLessonTypes ?? []).map(
-        (item) => item.lesson_type_id,
-      ),
-    });
-
-    const configuredPriceAmount = await getStudentLessonPriceAmount(
-      supabase,
-      access.organization_id,
-      selectedPackage.schoolId,
-      slot.lesson_type_id,
-    );
-    const packagePriceAmount =
-      selectedPackage.customPriceAmount ?? configuredPriceAmount;
-    const priceAmount = getEffectiveBookingPriceAmount({
-      priceAmount: packagePriceAmount,
-      bookingCategory: selectedPackage.bookingCategory,
-    });
-    const paymentRule =
-      selectedPackage.paymentRuleOverride ??
-      (await getSchoolPaymentRule({
-        supabase,
-        organizationId: access.organization_id,
-        schoolId: selectedPackage.schoolId,
-      }));
-    const insertError = await insertAssignedStudentBooking({
-      supabase,
-      slotId: slot.id,
-      studentAccessId: access.id,
-      studentLabel: access.display_label,
-      packageId: selectedPackage.id,
-      schoolId: selectedPackage.schoolId,
-      bookingCategory: selectedPackage.bookingCategory,
-      priceAmount,
-      paymentRule,
-    });
-
-    if (insertError) {
-      if (insertError.code === "23505") {
-        throw new Error("Этот слот уже занят");
-      }
-
-      throw new Error(insertError.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "booking.assigned_by_instructor",
-      entityType: "slot",
-      entityId: slot.id,
-      metadata: {
-        instructor_id: slot.instructor_id,
-        student_access_id: access.id,
-        price_amount: priceAmount,
-      },
-    });
-
-    revalidateAdminCrmPaths();
-    revalidatePath("/student");
-    revalidatePath("/director");
-    revalidatePath("/director/schedule");
-    revalidatePath("/director/students");
-    revalidatePath("/director/reports");
-
-    return {
-      status: "success",
-      message: "Ученик записан на занятие",
-    };
   } catch (error) {
     console.error("assignStudentToSlotAction:", error);
 

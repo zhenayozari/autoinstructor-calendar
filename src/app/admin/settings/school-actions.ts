@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { executeQuery } from "@/lib/db/postgres";
+import { executeQuery, queryOne } from "@/lib/db/postgres";
 import type { SchoolPaymentRule } from "@/lib/types";
 
 export type SchoolActionState = {
@@ -176,6 +176,46 @@ export async function deleteSchoolAction(
   try {
     const membership = await requireSchoolManager();
     const schoolId = readRequiredString(formData, "school_id");
+
+    const school = await queryOne<{
+      has_linked_history: boolean;
+    }>(
+      `
+        select exists(
+          select 1
+          from (
+            select 1 from public.student_accesses where school_id = schools.id
+            union all
+            select 1 from public.student_lesson_packages where school_id = schools.id
+            union all
+            select 1 from public.slots where school_id = schools.id
+            union all
+            select 1 from public.bookings where school_id = schools.id
+            union all
+            select 1 from public.student_prepaid_credits where school_id = schools.id
+            union all
+            select 1 from public.instructor_payout_entries where school_id = schools.id
+          ) linked_records
+        ) as has_linked_history
+        from public.schools schools
+        where schools.id = $1
+          and schools.organization_id = $2
+        limit 1
+      `,
+      [schoolId, membership.organizationId],
+    );
+
+    if (!school) {
+      return { status: "error", message: "Источник не найден" };
+    }
+
+    if (school.has_linked_history) {
+      return {
+        status: "error",
+        message:
+          "Удаление недоступно: источник связан с учениками, занятиями или финансовой историей. Архивируйте его кнопкой «Архивировать», чтобы сохранить отчёты.",
+      };
+    }
 
     await executeQuery(
       `

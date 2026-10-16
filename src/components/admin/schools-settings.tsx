@@ -187,7 +187,7 @@ function DeleteSchoolForm({
       onSubmit={(event) => {
         if (
           !window.confirm(
-            `Удалить источник «${school.name}» навсегда? В связанных старых записях источник станет пустым.`,
+            `Удалить источник «${school.name}» навсегда? Это возможно только если источник никогда не был связан с учениками, занятиями или финансовой историей. Для использованного источника выберите «Архивировать».`,
           )
         ) {
           event.preventDefault();
@@ -236,6 +236,8 @@ export function SchoolsSettings({
           Источник отвечает на вопрос, откуда пришёл ученик: автошкола,
           частный ученик, подарок или рекомендация. Цена задаётся ниже в
           таблице “источник × тип занятия”.
+          Архивирование скрывает источник из новых назначений, но сохраняет
+          его в истории учеников, занятий, финансов и отчётов.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -302,7 +304,7 @@ export function SchoolsSettings({
                             : "bg-zinc-200 text-zinc-700"
                         }
                       >
-                        {school.is_active ? "Показывается" : "Скрыт"}
+                        {school.is_active ? "Активен" : "В архиве"}
                       </Badge>
 
                       {canManage && (
@@ -325,7 +327,9 @@ export function SchoolsSettings({
                               disabled={!adminEnabled}
                             >
                               {school.is_active ? <PowerOff /> : <Power />}
-                              {school.is_active ? "Скрыть" : "Показать"}
+                              {school.is_active
+                                ? "Архивировать"
+                                : "Восстановить"}
                             </Button>
                           </form>
                           <DeleteSchoolForm

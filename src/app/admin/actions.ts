@@ -3373,7 +3373,11 @@ export async function togglePaymentAction(formData: FormData) {
   const isPaid = formData.get("is_paid") === "true";
 
   try {
-    if (isPostgresBackend()) {
+    if (!isPostgresBackend()) {
+      throw new Error("Управление оплатой доступно только в PostgreSQL-версии");
+    }
+
+    {
       const { booking, slot, membership } =
         await requireManageableBookingPostgres(bookingId);
       const paidAt = isPaid ? new Date().toISOString() : null;
@@ -3410,59 +3414,6 @@ export async function togglePaymentAction(formData: FormData) {
       return;
     }
 
-    const supabase = createAdminClient();
-    const { data: booking, error: bookingLookupError } = await supabase
-      .from("bookings")
-      .select("slot_id, price_amount")
-      .eq("id", bookingId)
-      .maybeSingle();
-
-    if (bookingLookupError || !booking) {
-      throw new Error("Запись не найдена");
-    }
-
-    const { data: slot, error: slotLookupError } = await supabase
-      .from("slots")
-      .select("instructor_id")
-      .eq("id", booking.slot_id)
-      .maybeSingle();
-
-    if (slotLookupError || !slot) {
-      throw new Error("Слот записи не найден");
-    }
-
-    const membership = await requireInstructorAccess(slot.instructor_id);
-
-    const { error } = await supabase
-      .from("bookings")
-      .update({
-        is_paid: isPaid,
-        paid_at: isPaid ? new Date().toISOString() : null,
-        paid_amount: isPaid ? (booking.price_amount ?? 0) : 0,
-      })
-      .eq("id", bookingId)
-      .eq("status", "confirmed");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "booking.payment_toggled",
-      entityType: "booking",
-      entityId: bookingId,
-      metadata: {
-        slot_id: booking.slot_id,
-        instructor_id: slot.instructor_id,
-        is_paid: isPaid,
-        paid_amount: isPaid ? (booking.price_amount ?? 0) : 0,
-      },
-    });
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/reports");
   } catch (error) {
     console.error("togglePaymentAction:", error);
     throw error;
@@ -3498,7 +3449,11 @@ export async function updateBookingPaymentAction(
 
     const isPaid = priceAmount !== null && paidAmount >= priceAmount;
 
-    if (isPostgresBackend()) {
+    if (!isPostgresBackend()) {
+      throw new Error("Управление оплатой доступно только в PostgreSQL-версии");
+    }
+
+    {
       const { booking, slot, membership } =
         await requireManageableBookingPostgres(bookingId);
 
@@ -3548,47 +3503,6 @@ export async function updateBookingPaymentAction(
       };
     }
 
-    const { supabase, booking, slot, membership } =
-      await requireManageableBooking(bookingId);
-    const { error } = await supabase
-      .from("bookings")
-      .update({
-        price_amount: priceAmount,
-        paid_amount: paidAmount,
-        is_paid: isPaid,
-        paid_at: isPaid ? new Date().toISOString() : null,
-        payment_note: paymentNote,
-      })
-      .eq("id", bookingId)
-      .eq("status", "confirmed");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "booking.payment_updated",
-      entityType: "booking",
-      entityId: bookingId,
-      metadata: {
-        slot_id: booking.slot_id,
-        instructor_id: slot.instructor_id,
-        price_amount: priceAmount,
-        paid_amount: paidAmount,
-        is_paid: isPaid,
-        has_payment_note: Boolean(paymentNote),
-      },
-    });
-
-    revalidateAdminCrmPaths();
-    revalidatePath("/admin/bookings");
-    revalidatePath("/student");
-
-    return {
-      status: "success",
-      message: isPaid ? "Оплата закрыта" : "Оплата сохранена",
-    };
   } catch (error) {
     console.error("updateBookingPaymentAction:", error);
 

@@ -192,18 +192,6 @@ function getErrorMessage(error: unknown) {
   return "Не удалось выполнить операцию";
 }
 
-function isMissingColumnError(error: { code?: string; message?: string } | null) {
-  const message = error?.message?.toLowerCase() ?? "";
-
-  return (
-    error?.code === "42703" ||
-    error?.code === "PGRST204" ||
-    message.includes("does not exist") ||
-    message.includes("could not find") ||
-    message.includes("schema cache")
-  );
-}
-
 function isPostgresErrorCode(error: unknown, code: string) {
   return (
     error &&
@@ -3058,8 +3046,11 @@ export async function createLessonTypeAction(
 
     const persistence = getLessonTypePersistence(category);
 
-    if (isPostgresBackend()) {
-      const lastType = await queryOne<{ sort_order: number | null }>(
+    if (!isPostgresBackend()) {
+      throw new Error("Управление типами занятий доступно только в PostgreSQL-версии");
+    }
+
+    const lastType = await queryOne<{ sort_order: number | null }>(
         `
           select sort_order
           from public.lesson_types
@@ -3068,7 +3059,7 @@ export async function createLessonTypeAction(
         `,
       );
 
-      await executeQuery(
+    await executeQuery(
         `
           insert into public.lesson_types (
             code, name, description, color, kind, requires_vehicle,
@@ -3091,74 +3082,18 @@ export async function createLessonTypeAction(
         ],
       );
 
-      revalidatePath("/admin");
+    revalidatePath("/admin");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
       revalidatePath("/");
       revalidatePath("/schedule");
       revalidatePath("/instructors");
 
-      return {
+    return {
         status: "success",
         message: "Тип занятия создан",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { data: lastType, error: lastTypeError } = await supabase
-      .from("lesson_types")
-      .select("sort_order")
-      .order("sort_order", { ascending: false })
-      .order("name", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (lastTypeError) {
-      throw new Error(lastTypeError.message);
-    }
-
-    const lessonTypePayload = {
-      code: makeCustomLessonTypeCode(),
-      name,
-      description,
-      color,
-      kind: persistence.kind,
-      requires_vehicle: persistence.requires_vehicle,
-      default_duration_minutes: durationMinutes,
-      tags: persistence.tags,
-      sort_order: (lastType?.sort_order ?? 0) + 10,
-      is_active: isActive,
     };
-    const { error } = await supabase.from("lesson_types").insert({
-      ...lessonTypePayload,
-      default_price_amount: null,
-    });
 
-    if (error) {
-      if (!isMissingColumnError(error)) {
-        throw new Error(error.message);
-      }
-
-      const { error: fallbackError } = await supabase
-        .from("lesson_types")
-        .insert(lessonTypePayload);
-
-      if (fallbackError) {
-        throw new Error(fallbackError.message);
-      }
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-    revalidatePath("/instructors");
-
-    return {
-      status: "success",
-      message: "Тип занятия создан",
-    };
   } catch (error) {
     console.error("createLessonTypeAction:", error);
 
@@ -3202,8 +3137,11 @@ export async function updateLessonTypeAction(
 
     const persistence = getLessonTypePersistence(category);
 
-    if (isPostgresBackend()) {
-      await executeQuery(
+    if (!isPostgresBackend()) {
+      throw new Error("Управление типами занятий доступно только в PostgreSQL-версии");
+    }
+
+    await executeQuery(
         `
           update public.lesson_types
           set name = $1,
@@ -3230,64 +3168,18 @@ export async function updateLessonTypeAction(
         ],
       );
 
-      revalidatePath("/admin");
+    revalidatePath("/admin");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
       revalidatePath("/");
       revalidatePath("/schedule");
       revalidatePath("/instructors");
 
-      return {
+    return {
         status: "success",
         message: "Тип занятия обновлён",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const lessonTypePayload = {
-      name,
-      description,
-      color,
-      kind: persistence.kind,
-      requires_vehicle: persistence.requires_vehicle,
-      default_duration_minutes: durationMinutes,
-      tags: persistence.tags,
-      is_active: isActive,
     };
-    const { error } = await supabase
-      .from("lesson_types")
-      .update({
-        ...lessonTypePayload,
-        default_price_amount: null,
-      })
-      .eq("id", lessonTypeId);
 
-    if (error) {
-      if (!isMissingColumnError(error)) {
-        throw new Error(error.message);
-      }
-
-      const { error: fallbackError } = await supabase
-        .from("lesson_types")
-        .update(lessonTypePayload)
-        .eq("id", lessonTypeId);
-
-      if (fallbackError) {
-        throw new Error(fallbackError.message);
-      }
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-    revalidatePath("/instructors");
-
-    return {
-      status: "success",
-      message: "Тип занятия обновлён",
-    };
   } catch (error) {
     console.error("updateLessonTypeAction:", error);
 
@@ -3304,8 +3196,11 @@ export async function toggleLessonTypeActiveAction(formData: FormData) {
   const isActive = formData.get("is_active") === "true";
 
   try {
-    if (isPostgresBackend()) {
-      await executeQuery(
+    if (!isPostgresBackend()) {
+      throw new Error("Управление типами занятий доступно только в PostgreSQL-версии");
+    }
+
+    await executeQuery(
         `
           update public.lesson_types
           set is_active = $1
@@ -3314,31 +3209,14 @@ export async function toggleLessonTypeActiveAction(formData: FormData) {
         [isActive, lessonTypeId],
       );
 
-      revalidatePath("/admin");
+    revalidatePath("/admin");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
       revalidatePath("/");
       revalidatePath("/schedule");
       revalidatePath("/instructors");
-      return;
-    }
+    return;
 
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("lesson_types")
-      .update({ is_active: isActive })
-      .eq("id", lessonTypeId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-    revalidatePath("/instructors");
   } catch (error) {
     console.error("toggleLessonTypeActiveAction:", error);
     throw error;
@@ -3355,8 +3233,11 @@ export async function deleteLessonTypeAction(
     await requireLessonTypeManager();
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
 
-    if (isPostgresBackend()) {
-      const slotCount = await queryOne<{ count: string }>(
+    if (!isPostgresBackend()) {
+      throw new Error("Управление типами занятий доступно только в PostgreSQL-версии");
+    }
+
+    const slotCount = await queryOne<{ count: string }>(
         `
           select count(*)::text as count
           from public.slots
@@ -3365,7 +3246,7 @@ export async function deleteLessonTypeAction(
         [lessonTypeId],
       );
 
-      if (Number(slotCount?.count ?? 0) > 0) {
+    if (Number(slotCount?.count ?? 0) > 0) {
         return {
           status: "error",
           message:
@@ -3373,14 +3254,14 @@ export async function deleteLessonTypeAction(
         };
       }
 
-      await executeQuery(
+    await executeQuery(
         `
           delete from public.student_access_lesson_types
           where lesson_type_id = $1
         `,
         [lessonTypeId],
       );
-      await executeQuery(
+    await executeQuery(
         `
           delete from public.lesson_types
           where id = $1
@@ -3388,7 +3269,7 @@ export async function deleteLessonTypeAction(
         [lessonTypeId],
       );
 
-      revalidatePath("/admin");
+    revalidatePath("/admin");
       revalidatePath("/admin/settings");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
@@ -3398,62 +3279,11 @@ export async function deleteLessonTypeAction(
       revalidatePath("/schedule");
       revalidatePath("/instructors");
 
-      return {
+    return {
         status: "success",
         message: "Тип занятия удалён навсегда",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { count, error: slotCountError } = await supabase
-      .from("slots")
-      .select("id", { count: "exact", head: true })
-      .eq("lesson_type_id", lessonTypeId);
-
-    if (slotCountError) {
-      throw new Error(slotCountError.message);
-    }
-
-    if ((count ?? 0) > 0) {
-      return {
-        status: "error",
-        message:
-          "Этот тип уже используется в расписании. Чтобы не потерять историю, его можно скрыть или сначала удалить связанные слоты.",
-      };
-    }
-
-    const { error: accessLinksDeleteError } = await supabase
-      .from("student_access_lesson_types")
-      .delete()
-      .eq("lesson_type_id", lessonTypeId);
-
-    if (accessLinksDeleteError) {
-      throw new Error(accessLinksDeleteError.message);
-    }
-
-    const { error } = await supabase
-      .from("lesson_types")
-      .delete()
-      .eq("id", lessonTypeId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/settings");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/admin/reports");
-    revalidatePath("/admin/students");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-    revalidatePath("/instructors");
-
-    return {
-      status: "success",
-      message: "Тип занятия удалён навсегда",
     };
+
   } catch (error) {
     console.error("deleteLessonTypeAction:", error);
 
@@ -3474,8 +3304,11 @@ export async function moveLessonTypeAction(formData: FormData) {
   }
 
   try {
-    if (isPostgresBackend()) {
-      const lessonTypes = await queryRows<{
+    if (!isPostgresBackend()) {
+      throw new Error("Управление типами занятий доступно только в PostgreSQL-версии");
+    }
+
+    const lessonTypes = await queryRows<{
         id: string;
         sort_order: number;
         name: string;
@@ -3486,13 +3319,13 @@ export async function moveLessonTypeAction(formData: FormData) {
           order by sort_order, name
         `,
       );
-      const currentIndex = lessonTypes.findIndex(
+    const currentIndex = lessonTypes.findIndex(
         (lessonType) => lessonType.id === lessonTypeId,
       );
-      const targetIndex =
+    const targetIndex =
         direction === "up" ? currentIndex - 1 : currentIndex + 1;
 
-      if (
+    if (
         currentIndex === -1 ||
         targetIndex < 0 ||
         targetIndex >= lessonTypes.length
@@ -3500,10 +3333,10 @@ export async function moveLessonTypeAction(formData: FormData) {
         return;
       }
 
-      const current = lessonTypes[currentIndex];
-      const target = lessonTypes[targetIndex];
+    const current = lessonTypes[currentIndex];
+    const target = lessonTypes[targetIndex];
 
-      await executeQuery(
+    await executeQuery(
         `
           update public.lesson_types
           set sort_order = $1
@@ -3511,7 +3344,7 @@ export async function moveLessonTypeAction(formData: FormData) {
         `,
         [target.sort_order, current.id],
       );
-      await executeQuery(
+    await executeQuery(
         `
           update public.lesson_types
           set sort_order = $1
@@ -3520,67 +3353,14 @@ export async function moveLessonTypeAction(formData: FormData) {
         [current.sort_order, target.id],
       );
 
-      revalidatePath("/admin");
+    revalidatePath("/admin");
       revalidatePath("/admin/schedule");
       revalidatePath("/admin/bookings");
       revalidatePath("/");
       revalidatePath("/schedule");
       revalidatePath("/instructors");
-      return;
-    }
+    return;
 
-    const supabase = createAdminClient();
-    const { data, error } = await supabase
-      .from("lesson_types")
-      .select("id, sort_order, name")
-      .order("sort_order")
-      .order("name");
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    const lessonTypes = data ?? [];
-    const currentIndex = lessonTypes.findIndex(
-      (lessonType) => lessonType.id === lessonTypeId,
-    );
-    const targetIndex =
-      direction === "up" ? currentIndex - 1 : currentIndex + 1;
-
-    if (
-      currentIndex === -1 ||
-      targetIndex < 0 ||
-      targetIndex >= lessonTypes.length
-    ) {
-      return;
-    }
-
-    const current = lessonTypes[currentIndex];
-    const target = lessonTypes[targetIndex];
-    const { error: currentError } = await supabase
-      .from("lesson_types")
-      .update({ sort_order: target.sort_order })
-      .eq("id", current.id);
-
-    if (currentError) {
-      throw new Error(currentError.message);
-    }
-
-    const { error: targetError } = await supabase
-      .from("lesson_types")
-      .update({ sort_order: current.sort_order })
-      .eq("id", target.id);
-
-    if (targetError) {
-      throw new Error(targetError.message);
-    }
-
-    revalidatePath("/admin");
-    revalidatePath("/admin/schedule");
-    revalidatePath("/admin/bookings");
-    revalidatePath("/");
-    revalidatePath("/schedule");
-    revalidatePath("/instructors");
   } catch (error) {
     console.error("moveLessonTypeAction:", error);
     throw error;

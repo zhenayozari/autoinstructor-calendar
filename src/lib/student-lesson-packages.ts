@@ -76,14 +76,14 @@ async function countConfirmedBookings({
 }) {
   let query = supabase
     .from("bookings")
-    .select("id", { count: "exact", head: true })
+    .select("lesson_units")
     .eq("status", "confirmed");
 
   query = packageId
     ? query.eq("student_lesson_package_id", packageId)
     : query.eq("student_access_id", accessId);
 
-  const { count, error } = await query;
+  const { data, error } = await query;
 
   if (error) {
     if (packageId && isMissingPricingTableError(error)) {
@@ -93,7 +93,10 @@ async function countConfirmedBookings({
     throw new Error(error.message);
   }
 
-  return count ?? 0;
+  return (data ?? []).reduce(
+    (total, booking) => total + Math.max(Number(booking.lesson_units ?? 1), 1),
+    0,
+  );
 }
 
 async function countConfirmedBookingsInWeek({
@@ -187,7 +190,7 @@ async function countConfirmedBookingsPostgres({
   const row = packageId
     ? await queryOne<{ count: string }>(
         `
-          select count(*)::text as count
+          select coalesce(sum(coalesce(lesson_units, 1)), 0)::text as count
           from public.bookings
           where status = 'confirmed'
             and student_lesson_package_id = $1
@@ -196,7 +199,7 @@ async function countConfirmedBookingsPostgres({
       )
     : await queryOne<{ count: string }>(
         `
-          select count(*)::text as count
+          select coalesce(sum(coalesce(lesson_units, 1)), 0)::text as count
           from public.bookings
           where status = 'confirmed'
             and student_access_id = $1
@@ -205,6 +208,27 @@ async function countConfirmedBookingsPostgres({
       );
 
   return readCount(row?.count);
+}
+
+export async function hasAdditionalTotalLessonUnitPostgres({
+  accessId,
+  packageId,
+  totalLessonLimit,
+}: {
+  accessId: string;
+  packageId: string | null;
+  totalLessonLimit: number | null;
+}) {
+  if (totalLessonLimit === null) {
+    return true;
+  }
+
+  const totalUsed = await countConfirmedBookingsPostgres({
+    accessId,
+    packageId,
+  });
+
+  return totalUsed + 1 <= totalLessonLimit;
 }
 
 async function countConfirmedBookingsInWeekPostgres({

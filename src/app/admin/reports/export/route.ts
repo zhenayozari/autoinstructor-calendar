@@ -11,6 +11,7 @@ type ExportRow = {
   lesson_type_name: string;
   booking_category: string;
   lesson_state: string;
+  lesson_units: number | null;
   price_amount: number | null;
   paid_amount: number | null;
 };
@@ -131,6 +132,7 @@ export async function GET(request: Request) {
              coalesce(lesson_type.name, 'Не указан') as lesson_type_name,
              b.booking_category,
              b.lesson_state,
+             b.lesson_units,
              b.price_amount,
              b.paid_amount
       from public.schedule_days sd
@@ -148,6 +150,7 @@ export async function GET(request: Request) {
 
   const amount = (row: ExportRow) => row.price_amount ?? 0;
   const paid = (row: ExportRow) => row.paid_amount ?? 0;
+  const lessonUnits = (row: ExportRow) => row.lesson_units ?? 1;
   const debt = (row: ExportRow) => Math.max(amount(row) - paid(row), 0);
   const completed = rows.filter((row) => row.lesson_state === "completed");
   const scheduled = rows.filter((row) => row.lesson_state === "scheduled");
@@ -165,22 +168,22 @@ export async function GET(request: Request) {
     ["Важно", "Будущие неоплаченные занятия показываются отдельно и входят в общий долг."],
     [],
     ["Общая сводка", "Сумма, ₽", "Количество занятий"],
-    ["Стоимость занятий для учеников", sum(rows, amount), rows.length],
-    ["Получено от учеников", sum(rows, paid), rows.filter((row) => paid(row) > 0).length],
-    ["Долг учеников", sum(rows, debt), rows.filter((row) => debt(row) > 0).length],
-    ["Занятия без стоимости (0 ₽)", 0, withoutPrice(rows).length],
+    ["Стоимость занятий для учеников", sum(rows, amount), sum(rows, lessonUnits)],
+    ["Получено от учеников", sum(rows, paid), sum(rows.filter((row) => paid(row) > 0), lessonUnits)],
+    ["Долг учеников", sum(rows, debt), sum(rows.filter((row) => debt(row) > 0), lessonUnits)],
+    ["Занятия без стоимости (0 ₽)", 0, sum(withoutPrice(rows), lessonUnits)],
     [],
     ["За проведённые занятия", "Сумма, ₽", "Количество занятий"],
-    ["Стоимость проведённых занятий", sum(completed, amount), completed.length],
-    ["Получено за проведённые занятия", sum(completed, paid), completed.filter((row) => paid(row) > 0).length],
-    ["Осталось получить за проведённые занятия", sum(completed, debt), completed.filter((row) => debt(row) > 0).length],
-    ["Проведённые занятия без стоимости (0 ₽)", 0, withoutPrice(completed).length],
+    ["Стоимость проведённых занятий", sum(completed, amount), sum(completed, lessonUnits)],
+    ["Получено за проведённые занятия", sum(completed, paid), sum(completed.filter((row) => paid(row) > 0), lessonUnits)],
+    ["Осталось получить за проведённые занятия", sum(completed, debt), sum(completed.filter((row) => debt(row) > 0), lessonUnits)],
+    ["Проведённые занятия без стоимости (0 ₽)", 0, sum(withoutPrice(completed), lessonUnits)],
     [],
     ["Будущие занятия", "Сумма, ₽", "Количество занятий"],
-    ["Стоимость будущих занятий", sum(scheduled, amount), scheduled.length],
-    ["Оплачено заранее", sum(scheduled, paid), scheduled.filter((row) => paid(row) > 0).length],
-    ["Не оплачено за будущие занятия", sum(scheduled, debt), scheduled.filter((row) => debt(row) > 0).length],
-    ["Будущие занятия без стоимости (0 ₽)", 0, withoutPrice(scheduled).length],
+    ["Стоимость будущих занятий", sum(scheduled, amount), sum(scheduled, lessonUnits)],
+    ["Оплачено заранее", sum(scheduled, paid), sum(scheduled.filter((row) => paid(row) > 0), lessonUnits)],
+    ["Не оплачено за будущие занятия", sum(scheduled, debt), sum(scheduled.filter((row) => debt(row) > 0), lessonUnits)],
+    ["Будущие занятия без стоимости (0 ₽)", 0, sum(withoutPrice(scheduled), lessonUnits)],
     [],
     [
       "Дата",
@@ -190,6 +193,8 @@ export async function GET(request: Request) {
       "Тип занятия",
       "Категория",
       "Статус",
+      "Занятий",
+      "Особенность",
       "Стоимость, ₽",
       "Получено, ₽",
       "Долг ученика, ₽",
@@ -202,6 +207,8 @@ export async function GET(request: Request) {
       row.lesson_type_name,
       categoryLabel(row.booking_category),
       stateLabel(row.lesson_state),
+      lessonUnits(row),
+      lessonUnits(row) === 2 ? "Экзаменационный маршрут" : "",
       amount(row),
       paid(row),
       debt(row),

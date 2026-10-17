@@ -1,6 +1,7 @@
 import "server-only";
 
 import { executeQuery, queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
+import { hasAdditionalTotalLessonUnitPostgres } from "@/lib/student-lesson-packages";
 import type {
   BookingCategory,
   InstructorPayoutAccrualPolicy,
@@ -1059,6 +1060,7 @@ type BookingPayoutContext = {
   school_id: string | null;
   lesson_type_id: string;
   student_access_id: string | null;
+  student_lesson_package_id: string | null;
   lesson_date: string;
   slot_end_time: string;
   price_amount: number | null;
@@ -1096,6 +1098,7 @@ async function getBookingPayoutContext(bookingId: string) {
              coalesce(b.school_id, sa.school_id, s.school_id) as school_id,
              s.lesson_type_id,
              b.student_access_id,
+             b.student_lesson_package_id,
              d.date::text as lesson_date,
              s.end_time::text as slot_end_time,
              b.price_amount,
@@ -1123,10 +1126,8 @@ async function getBookingPayoutContext(bookingId: string) {
 
 export async function applyOwnerExamRouteToBooking({
   bookingId,
-  createdByMemberId,
 }: {
   bookingId: string;
-  createdByMemberId: string | null;
 }) {
   const context = await getBookingPayoutContext(bookingId);
 
@@ -1145,6 +1146,39 @@ export async function applyOwnerExamRouteToBooking({
 
   if (currentUnits.lesson_units > 1) {
     throw new Error("Экзаменационный маршрут уже применён к этой записи");
+  }
+
+  const limit = context.student_lesson_package_id
+    ? await queryOne<{ total_lesson_limit: number | null }>(
+        `
+          select total_lesson_limit
+          from public.student_lesson_packages
+          where id = $1
+          limit 1
+        `,
+        [context.student_lesson_package_id],
+      )
+    : context.student_access_id
+      ? await queryOne<{ total_lesson_limit: number | null }>(
+          `
+            select total_lesson_limit
+            from public.student_accesses
+            where id = $1
+            limit 1
+          `,
+          [context.student_access_id],
+        )
+      : null;
+
+  if (
+    context.student_access_id &&
+    !(await hasAdditionalTotalLessonUnitPostgres({
+      accessId: context.student_access_id,
+      packageId: context.student_lesson_package_id,
+      totalLessonLimit: limit?.total_lesson_limit ?? null,
+    }))
+  ) {
+    throw new Error("Для экзаменационного маршрута нужно ещё одно занятие общего лимита. Откройте карточку ученика и добавьте занятие.");
   }
 
   const configuredPrice = context.school_id && context.lesson_type_id
@@ -1171,91 +1205,20 @@ export async function applyOwnerExamRouteToBooking({
     throw new Error("Сумма начисления слишком большая");
   }
 
-  const existingEntry = await queryOne<{
-    id: string;
-    paid_amount: number;
-  }>(
-    `
-      select entries.id,
-             coalesce(payments.paid_amount, 0)::integer as paid_amount
-      from public.instructor_payout_entries entries
-      left join lateral (
-        select sum(allocations.amount)::integer as paid_amount
-        from public.instructor_payout_payment_allocations allocations
-        where allocations.payout_entry_id = entries.id
-      ) payments on true
-      where entries.booking_id = $1
-        and entries.entry_type = 'booking_accrual'
-        and entries.status = 'planned'
-      limit 1
-      for update of entries
-    `,
-    [bookingId],
-  );
-
-  if (existingEntry && existingEntry.paid_amount > 0) {
-    throw new Error("Эту выплату уже отметили как выданную. Сначала отмените выплату");
-  }
-
   await executeQuery(
     `
       update public.bookings
-      set lesson_units = 2
+      set lesson_units = 2,
+          price_amount = $2,
+          is_paid = coalesce(paid_amount, 0) >= $2,
+          paid_at = case
+            when coalesce(paid_amount, 0) >= $2 then coalesce(paid_at, now())
+            else null
+          end
       where id = $1
     `,
-    [bookingId],
+    [bookingId, totalAmount],
   );
-
-  if (existingEntry) {
-    await executeQuery(
-      `
-        update public.instructor_payout_entries
-        set amount = $2,
-            note = 'Экзаменационный маршрут: начисление за 2 занятия',
-            updated_at = now(),
-            created_by_member_id = coalesce($3, created_by_member_id)
-        where id = $1
-      `,
-      [existingEntry.id, totalAmount, createdByMemberId],
-    );
-  } else {
-    await executeQuery(
-      `
-        insert into public.instructor_payout_entries (
-          organization_id,
-          instructor_id,
-          booking_id,
-          slot_id,
-          school_id,
-          lesson_type_id,
-          student_access_id,
-          entry_type,
-          accrual_policy,
-          status,
-          amount,
-          planned_at,
-          event_at,
-          note,
-          created_by_member_id
-        )
-        values ($1, $2, $3, $4, $5, $6, $7,
-                'booking_accrual', 'postpaid', 'planned', $8,
-                now(), now(), $9, $10)
-      `,
-      [
-        context.organization_id,
-        context.instructor_id,
-        context.booking_id,
-        context.slot_id,
-        context.school_id,
-        context.lesson_type_id,
-        context.student_access_id,
-        totalAmount,
-        "Экзаменационный маршрут: начисление за 2 занятия",
-        createdByMemberId,
-      ],
-    );
-  }
 
   return { baseAmount, totalAmount };
 }

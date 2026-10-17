@@ -23,7 +23,10 @@ import {
   getSchoolPaymentRulePostgres,
   isMissingPricingTableError,
 } from "@/lib/pricing";
-import { selectStudentLessonPackageForBookingPostgres } from "@/lib/student-lesson-packages";
+import {
+  hasAdditionalTotalLessonUnitPostgres,
+  selectStudentLessonPackageForBookingPostgres,
+} from "@/lib/student-lesson-packages";
 import {
   applyOwnerExamRouteToBooking,
   correctInstructorPayoutForBooking,
@@ -89,6 +92,10 @@ export type SourceSettlementActionState = {
 export type BookingCategoryActionState = {
   status: "idle" | "success" | "error";
   message: string;
+};
+
+export type ExamRouteActionState = BookingCategoryActionState & {
+  studentAccessId: string | null;
 };
 
 const INITIAL_STATE: SlotActionState = {
@@ -2708,11 +2715,17 @@ export async function cancelBookingAction(formData: FormData) {
   }
 }
 
-export async function applyOwnerExamRouteAction(formData: FormData) {
-  const bookingId = readRequiredString(formData, "booking_id");
-  const membership = await requireActiveOrganizationMember();
+export async function applyOwnerExamRouteAction(
+  previousState: ExamRouteActionState,
+  formData: FormData,
+): Promise<ExamRouteActionState> {
+  void previousState;
+  let studentAccessId: string | null = null;
 
   try {
+    const bookingId = readRequiredString(formData, "booking_id");
+    const membership = await requireActiveOrganizationMember();
+
     if (!isPostgresBackend()) {
       throw new Error("Экзаменационный маршрут доступен только в PostgreSQL-версии");
     }
@@ -2720,12 +2733,25 @@ export async function applyOwnerExamRouteAction(formData: FormData) {
     const booking = await queryOne<{
       instructor_id: string;
       organization_id: string;
+      student_access_id: string | null;
+      student_lesson_package_id: string | null;
+      total_lesson_limit: number | null;
     }>(
       `
-        select s.instructor_id, i.organization_id
+        select s.instructor_id,
+               i.organization_id,
+               b.student_access_id,
+               b.student_lesson_package_id,
+               case
+                 when b.student_lesson_package_id is null then accesses.total_lesson_limit
+                 else packages.total_lesson_limit
+               end as total_lesson_limit
         from public.bookings b
         join public.slots s on s.id = b.slot_id
         join public.instructors i on i.id = s.instructor_id
+        left join public.student_accesses accesses on accesses.id = b.student_access_id
+        left join public.student_lesson_packages packages
+          on packages.id = b.student_lesson_package_id
         where b.id = $1
           and b.status = 'confirmed'
         limit 1
@@ -2737,6 +2763,8 @@ export async function applyOwnerExamRouteAction(formData: FormData) {
       throw new Error("Запись не найдена или уже отменена");
     }
 
+    studentAccessId = booking.student_access_id;
+
     if (
       membership.role !== "owner" ||
       membership.instructorId !== booking.instructor_id ||
@@ -2745,11 +2773,24 @@ export async function applyOwnerExamRouteAction(formData: FormData) {
       throw new Error("Экзаменационный маршрут доступен только инструктору-владельцу");
     }
 
+    if (
+      booking.student_access_id &&
+      !(await hasAdditionalTotalLessonUnitPostgres({
+        accessId: booking.student_access_id,
+        packageId: booking.student_lesson_package_id,
+        totalLessonLimit: booking.total_lesson_limit,
+      }))
+    ) {
+      return {
+        status: "error",
+        message:
+          "Для экзаменационного маршрута нужно ещё одно занятие общего лимита. Откройте карточку ученика и добавьте занятие.",
+        studentAccessId: booking.student_access_id,
+      };
+    }
+
     const result = await withTransaction(() =>
-      applyOwnerExamRouteToBooking({
-        bookingId,
-        createdByMemberId: membership.id,
-      }),
+      applyOwnerExamRouteToBooking({ bookingId }),
     );
 
     await logAuditEvent({
@@ -2769,9 +2810,21 @@ export async function applyOwnerExamRouteAction(formData: FormData) {
     revalidatePath("/admin/reports");
     revalidatePath("/director/reports");
     revalidatePath("/student");
+    return {
+      status: "success",
+      message: "Экзаменационный маршрут применён: учтены 2 занятия.",
+      studentAccessId: booking.student_access_id,
+    };
   } catch (error) {
     console.error("applyOwnerExamRouteAction:", error);
-    throw error;
+    return {
+      status: "error",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Не удалось применить экзаменационный маршрут",
+      studentAccessId,
+    };
   }
 }
 

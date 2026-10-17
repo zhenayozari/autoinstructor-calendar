@@ -533,7 +533,7 @@ async function getUsedCounts(accessId: string, visibleWeekStart: string) {
   const [totalBookingData, weekBookingData] = await Promise.all([
     queryOne<{ count: string }>(
       `
-        select count(*)::text as count
+        select coalesce(sum(coalesce(lesson_units, 1)), 0)::text as count
         from public.bookings
         where student_access_id = $1
           and status = 'confirmed'

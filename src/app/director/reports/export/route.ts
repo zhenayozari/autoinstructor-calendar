@@ -20,6 +20,7 @@ type LessonRow = {
   school_name: string;
   lesson_type_name: string;
   lesson_state: string;
+  lesson_units: number | null;
   price_amount: number | null;
   paid_amount: number | null;
   direct_instructor_income_amount: number | null;
@@ -182,6 +183,7 @@ export async function GET(request: Request) {
                coalesce(schools.name, 'Без источника') as school_name,
                coalesce(lesson_types.name, 'Тип не указан') as lesson_type_name,
                bookings.lesson_state,
+               bookings.lesson_units,
                bookings.price_amount,
                bookings.paid_amount,
                bookings.direct_instructor_income_amount,
@@ -302,6 +304,13 @@ export async function GET(request: Request) {
     worksheet.addRow([]);
 
     const totalLessonPrice = instructorLessons.reduce((sum, row) => sum + (row.price_amount ?? 0), 0);
+    const totalLessonUnits = instructorLessons.reduce(
+      (sum, row) => sum + (row.lesson_units ?? 1),
+      0,
+    );
+    const completedLessonUnits = instructorLessons
+      .filter((row) => row.lesson_state === "completed")
+      .reduce((sum, row) => sum + (row.lesson_units ?? 1), 0);
     const totalLessonPaid = instructorLessons.reduce(
       (sum, row) =>
         sum + (row.prepaid_credit_id ? 0 : (row.paid_amount ?? 0)),
@@ -363,8 +372,8 @@ export async function GET(request: Request) {
     addSectionTitle(worksheet, "Сводка за период");
     addTableHeader(worksheet, ["Показатель", "Сумма / количество"]);
     const summaryRows: Array<[string, string | number, boolean?]> = [
-      ["Все занятия", instructorLessons.length],
-      ["Проведено", instructorLessons.filter((row) => row.lesson_state === "completed").length],
+      ["Все занятия", totalLessonUnits],
+      ["Проведено", completedLessonUnits],
       ["Стоимость занятий для учеников", totalLessonPrice, true],
       ["Получено за обычные занятия", totalLessonPaid, true],
       ["Получено предоплатами", studentPrepaidAmount, true],
@@ -400,6 +409,8 @@ export async function GET(request: Request) {
       "Источник",
       "Тип занятия",
       "Статус",
+      "Занятий",
+      "Особенность",
       "Стоимость",
       "Получено",
       "Долг ученика",
@@ -417,15 +428,17 @@ export async function GET(request: Request) {
           lesson.school_name,
           lesson.lesson_type_name,
           lessonStateLabel(lesson.lesson_state),
+          lesson.lesson_units ?? 1,
+          lesson.lesson_units === 2 ? "Экзаменационный маршрут" : "",
           price,
           paid,
           Math.max(price - paid, 0),
         ]);
-        styleMoneyCells(row, [7, 8, 9]);
+        styleMoneyCells(row, [9, 10, 11]);
       }
       worksheet.autoFilter = {
         from: { row: worksheet.rowCount - instructorLessons.length, column: 1 },
-        to: { row: worksheet.rowCount, column: 9 },
+        to: { row: worksheet.rowCount, column: 11 },
       };
     }
     worksheet.addRow([]);

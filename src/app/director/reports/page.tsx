@@ -68,7 +68,10 @@ type ReportSlot = Pick<
   "id" | "instructor_id" | "schedule_day_id" | "start_time" | "end_time"
 >;
 
-type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
+type ReportBooking = Pick<
+  Booking,
+  "id" | "slot_id" | "student_label" | "lesson_units"
+> & {
   student_access_id: string | null;
   school_id: string | null;
   price_amount: number | null;
@@ -1210,8 +1213,7 @@ function ExamRouteReport({ items }: { items: ExamRouteReportItem[] }) {
       <CardHeader className="pb-3">
         <CardTitle>Экзаменационные маршруты</CardTitle>
         <CardDescription>
-          Эти записи остаются одним занятием в расписании, но начисление по ним
-          рассчитано как за 2 занятия.
+          Эти записи остаются одной записью в расписании, но учтены как 2 занятия.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -1472,7 +1474,8 @@ export default async function DirectorReportsPage({
                    bookings.student_access_id, bookings.school_id,
                    bookings.price_amount, bookings.paid_amount,
                    bookings.is_paid, bookings.booking_category,
-                   bookings.lesson_state, bookings.direct_instructor_income_amount,
+                   bookings.lesson_units, bookings.lesson_state,
+                   bookings.direct_instructor_income_amount,
                    bookings.direct_instructor_income_recognized_at::text
                      as direct_instructor_income_recognized_at,
                    prepaid_usages.credit_id::text as prepaid_credit_id
@@ -1863,37 +1866,19 @@ export default async function DirectorReportsPage({
           [],
           [],
         ];
-  const examRouteItems =
-    reportInstructorIds.length > 0
-      ? await queryRows<ExamRouteReportItem>(
-          `
-            select entries.booking_id::text,
-                   entries.student_access_id::text,
-                   coalesce(accesses.display_label, bookings.student_label, 'Без ученика') as student_label,
-                   coalesce(instructors.public_name, instructors.name) as instructor_name,
-                   coalesce(schools.name, 'Без автошколы') as school_name,
-                   coalesce(lesson_types.name, 'Тип занятия не указан') as lesson_type_name,
-                   days.date::text as lesson_date,
-                   slots.start_time::text as start_time,
-                   entries.amount
-            from public.instructor_payout_entry_balances entries
-            join public.bookings bookings on bookings.id = entries.booking_id
-            join public.slots slots on slots.id = bookings.slot_id
-            join public.schedule_days days on days.id = slots.schedule_day_id
-            join public.instructors instructors on instructors.id = entries.instructor_id
-            left join public.student_accesses accesses on accesses.id = entries.student_access_id
-            left join public.schools schools on schools.id = entries.school_id
-            left join public.lesson_types lesson_types on lesson_types.id = entries.lesson_type_id
-            where entries.organization_id = $1
-              and entries.instructor_id = any($2::uuid[])
-              and entries.status = 'planned'
-              and entries.note = 'Экзаменационный маршрут: начисление за 2 занятия'
-              and days.date between $3::date and $4::date
-            order by days.date, slots.start_time, student_label
-          `,
-          [membership.organizationId, reportInstructorIds, from, to],
-        )
-      : [];
+  const examRouteItems: ExamRouteReportItem[] = reportItems
+    .filter((item) => item.lesson_units === 2)
+    .map((item) => ({
+      booking_id: item.id,
+      student_access_id: item.student_access_id,
+      student_label: item.student_label,
+      instructor_name: item.instructor.public_name ?? item.instructor.name,
+      school_name: item.school?.name ?? "Без автошколы",
+      lesson_type_name: "Вождение",
+      lesson_date: item.scheduleDay.date,
+      start_time: item.slot.start_time,
+      amount: item.price_amount ?? 0,
+    }));
   const studentPrepaidAmount = studentPrepaymentCashGroups.reduce(
     (sum, group) => sum + group.prepaid_amount,
     0,

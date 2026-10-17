@@ -66,7 +66,7 @@ type StudentAccessLessonTypeRow = {
 
 type StudentBookingRow = Pick<
   Booking,
-  "id" | "slot_id" | "student_access_id"
+  "id" | "slot_id" | "student_access_id" | "lesson_units"
 > & {
   student_access_id: string;
   price_amount: number | null;
@@ -676,7 +676,7 @@ export default async function DirectorStudentsPage({
       ? await queryRows<StudentBookingRow>(
           `
             select id, slot_id, student_access_id, price_amount, paid_amount,
-                   is_paid, lesson_state
+                   is_paid, lesson_state, lesson_units
             from public.bookings
             where student_access_id = any($1::uuid[])
               and status = 'confirmed'
@@ -733,9 +733,15 @@ export default async function DirectorStudentsPage({
     for (const booking of accessBookings) {
       if (!slotsById.has(booking.slot_id)) continue;
 
-      if (booking.lesson_state === "scheduled") summary.plannedCount += 1;
-      if (booking.lesson_state === "completed") summary.completedCount += 1;
-      if (booking.lesson_state === "no_show") summary.noShowCount += 1;
+      const lessonUnits = Math.max(booking.lesson_units ?? 1, 1);
+
+      if (booking.lesson_state === "scheduled") {
+        summary.plannedCount += lessonUnits;
+      }
+      if (booking.lesson_state === "completed") {
+        summary.completedCount += lessonUnits;
+      }
+      if (booking.lesson_state === "no_show") summary.noShowCount += lessonUnits;
 
       summary.paidAmount += booking.paid_amount ?? 0;
       summary.debtAmount += getDebtAmount(booking);

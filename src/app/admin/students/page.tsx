@@ -93,6 +93,7 @@ type StudentBookingRow = Pick<
   | "student_lesson_package_id"
   | "school_id"
   | "lesson_state"
+  | "lesson_units"
 > & {
   student_access_id: string;
   price_amount?: number | null;
@@ -526,6 +527,7 @@ export default async function AdminStudentsPage({
                  bookings.student_lesson_package_id,
                  bookings.school_id,
                  bookings.lesson_state,
+                 bookings.lesson_units,
                  bookings.booking_category,
                  coalesce(
                    bookings.direct_instructor_income_amount,
@@ -576,7 +578,8 @@ export default async function AdminStudentsPage({
       studentBookings = await queryRows<StudentBookingRow>(
         `
           select id, slot_id, student_access_id, student_lesson_package_id,
-                 school_id, price_amount, paid_amount, is_paid, lesson_state
+                 school_id, price_amount, paid_amount, is_paid, lesson_state,
+                 lesson_units
           from public.bookings
           where student_access_id = any($1::uuid[])
             and status = 'confirmed'
@@ -599,14 +602,14 @@ export default async function AdminStudentsPage({
           ? await supabase
               .from("bookings")
               .select(
-                "id, slot_id, student_access_id, student_lesson_package_id, school_id, lesson_state, booking_category",
+                "id, slot_id, student_access_id, student_lesson_package_id, school_id, lesson_state, lesson_units, booking_category",
               )
               .in("student_access_id", accessIds)
               .eq("status", "confirmed")
           : await supabase
               .from("bookings")
               .select(
-                "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state",
+                "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state, lesson_units",
               )
               .in("student_access_id", accessIds)
               .eq("status", "confirmed")
@@ -801,18 +804,24 @@ export default async function AdminStudentsPage({
           new Date(second.slot.start_time).getTime() -
           new Date(first.slot.start_time).getTime(),
       );
-    const plannedCount = lessons.filter(
-      ({ booking }) => booking.lesson_state === "scheduled",
-    ).length;
+    const getLessonUnits = (booking: StudentBookingRow) =>
+      Math.max(booking.lesson_units ?? 1, 1);
+    const plannedCount = lessons
+      .filter(({ booking }) => booking.lesson_state === "scheduled")
+      .reduce((total, { booking }) => total + getLessonUnits(booking), 0);
     const completedLessons = lessons.filter(
       ({ booking }) => booking.lesson_state === "completed",
     );
-    const noShowCount = lessons.filter(
-      ({ booking }) => booking.lesson_state === "no_show",
-    ).length;
-    const paidCount = completedLessons.filter(
-      ({ booking }) => booking.is_paid,
-    ).length;
+    const completedCount = completedLessons.reduce(
+      (total, { booking }) => total + getLessonUnits(booking),
+      0,
+    );
+    const noShowCount = lessons
+      .filter(({ booking }) => booking.lesson_state === "no_show")
+      .reduce((total, { booking }) => total + getLessonUnits(booking), 0);
+    const paidCount = completedLessons
+      .filter(({ booking }) => booking.is_paid)
+      .reduce((total, { booking }) => total + getLessonUnits(booking), 0);
     const unpaidCompletedLessons = completedLessons.filter(
       ({ booking }) => !booking.is_paid,
     );
@@ -834,7 +843,7 @@ export default async function AdminStudentsPage({
     }));
     const crm: StudentAccessCrmSummary = {
       plannedCount,
-      completedCount: completedLessons.length,
+      completedCount,
       noShowCount,
       ...(isEmployeeInstructor
         ? {}
@@ -872,7 +881,10 @@ export default async function AdminStudentsPage({
         lessonTypes: (packageLessonTypeIdsByPackageId.get(item.id) ?? [])
           .map((lessonTypeId) => lessonTypesById.get(lessonTypeId))
           .filter((lessonType): lessonType is LessonType => Boolean(lessonType)),
-        usedCount: (bookingsByPackageId.get(item.id) ?? []).length,
+        usedCount: (bookingsByPackageId.get(item.id) ?? []).reduce(
+          (total, booking) => total + Math.max(booking.lesson_units ?? 1, 1),
+          0,
+        ),
       })),
     };
   });

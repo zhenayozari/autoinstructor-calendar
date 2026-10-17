@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   CalendarPlus,
   Check,
@@ -30,6 +31,7 @@ import {
   updateSlotAction,
   type BookingCategoryActionState,
   type BulkSlotDeleteActionState,
+  type ExamRouteActionState,
   type PublicationActionState,
   type SlotActionState,
 } from "@/app/admin/actions";
@@ -93,6 +95,12 @@ const INITIAL_SLOT_UPDATE_STATE: SlotActionState = {
 const INITIAL_BOOKING_CATEGORY_STATE: BookingCategoryActionState = {
   status: "idle",
   message: "",
+};
+
+const INITIAL_EXAM_ROUTE_STATE: ExamRouteActionState = {
+  status: "idle",
+  message: "",
+  studentAccessId: null,
 };
 
 function getShortLessonName(name: string) {
@@ -616,11 +624,16 @@ function SlotActions({
   adminEnabled: boolean;
   canUseExamRoute: boolean;
 }) {
+  const [examRouteState, examRouteAction] = useActionState(
+    applyOwnerExamRouteAction,
+    INITIAL_EXAM_ROUTE_STATE,
+  );
+
   return (
     <div className="space-y-2">
       {bookingId && canUseExamRoute && bookingLessonUnits === 2 && (
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
-          Экзаменационный маршрут уже применён: начислено за 2 занятия.
+          Экзаменационный маршрут уже применён: учтено 2 занятия.
         </p>
       )}
       {bookingId && canUseExamRoute && bookingLessonUnits !== 2 && (
@@ -631,14 +644,34 @@ function SlotActions({
           </summary>
           <div className="mt-3 space-y-3 text-xs leading-5 text-amber-950">
             <p>
-              Вам начислится сумма за 2 занятия. Цена берётся из этой записи:
-              индивидуальная цена важнее тарифа школы.
+              Будет списано 2 занятия общего лимита: одно за эту запись и ещё
+              одно за экзаменационный маршрут. Недельный лимит не изменится,
+              потому что в расписании это остаётся одной записью.
             </p>
             <p>
-              В отчёте запись останется одной, но будет помечена как
-              «Экзаменационный маршрут: 2 занятия».
+              Стоимость записи станет равна двум занятиям по её обычной цене.
             </p>
-            <form action={applyOwnerExamRouteAction}>
+            {examRouteState.status !== "idle" && (
+              <div
+                className={
+                  examRouteState.status === "error"
+                    ? "rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800"
+                    : "rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-800"
+                }
+              >
+                <p>{examRouteState.message}</p>
+                {examRouteState.status === "error" &&
+                  examRouteState.studentAccessId && (
+                    <Link
+                      href={`/admin/students?student=${examRouteState.studentAccessId}`}
+                      className="mt-1 inline-flex font-semibold underline underline-offset-2"
+                    >
+                      Открыть карточку ученика
+                    </Link>
+                  )}
+              </div>
+            )}
+            <form action={examRouteAction}>
               <input type="hidden" name="booking_id" value={bookingId} />
               <Button
                 type="submit"

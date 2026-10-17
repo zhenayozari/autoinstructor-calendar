@@ -18,6 +18,10 @@ import {
   FinanceOperationsTable,
   type FinanceOperation,
 } from "@/components/director/finance-operations-table";
+import {
+  getOwnerInstructorIds,
+  getOwnerPayoutPolicy,
+} from "@/lib/instructor-payouts";
 
 export const dynamic = "force-dynamic";
 
@@ -216,6 +220,11 @@ export default async function DirectorFinancesPage({
   const periodLabel = period === "custom" && periodBounds ? `Свой период: ${formatNumericDate(params.from!)} — ${formatNumericDate(params.to!)}` : periodOptions.find((option) => option.value === period)?.label ?? "Всё время";
   const currentFinanceHref = (target: FinanceView) => financeHref(target, period, params.from, params.to);
   const financeReturnPath = currentFinanceHref("instructor-settlements");
+  const [includeOwnerInPayouts, ownerInstructorIds] = await Promise.all([
+    getOwnerPayoutPolicy({ organizationId: membership.organizationId }),
+    getOwnerInstructorIds({ organizationId: membership.organizationId }),
+  ]);
+  const ownerInstructorIdSet = new Set(ownerInstructorIds);
 
   const [summary, studentPayments, instructorSettlements, instructorStudentSettlements, instructorPayments, instructorDirectIncome, operations, paymentOptions, paymentSchools, paymentLessonTypes, paymentPrices] = await Promise.all([
     queryRows<{
@@ -408,7 +417,28 @@ export default async function DirectorFinancesPage({
     ),
   ]);
 
-  const totals = summary[0] ?? { student_paid: 0, student_refunded: 0, instructor_accrued: 0, instructor_paid: 0, instructor_remaining: 0 };
+  const visibleInstructorSettlements = includeOwnerInPayouts
+    ? instructorSettlements
+    : instructorSettlements.filter((item) => !ownerInstructorIdSet.has(item.id));
+  const visibleInstructorIds = new Set(
+    visibleInstructorSettlements.map((item) => item.id),
+  );
+  const totalsFromQuery = summary[0] ?? { student_paid: 0, student_refunded: 0, instructor_accrued: 0, instructor_paid: 0, instructor_remaining: 0 };
+  const totals = {
+    ...totalsFromQuery,
+    instructor_accrued: visibleInstructorSettlements.reduce(
+      (sum, item) => sum + item.planned_amount,
+      0,
+    ),
+    instructor_paid: visibleInstructorSettlements.reduce(
+      (sum, item) => sum + item.paid_amount,
+      0,
+    ),
+    instructor_remaining: visibleInstructorSettlements.reduce(
+      (sum, item) => sum + item.remaining_amount,
+      0,
+    ),
+  };
   const studentRemaining = Math.max(totals.student_paid - totals.student_refunded, 0);
   const studentsWithPayments = new Set(studentPayments.map((payment) => payment.student_access_id)).size;
   const activePaymentCount = studentPayments.filter((payment) => payment.status === "active").length;
@@ -416,7 +446,7 @@ export default async function DirectorFinancesPage({
   const availableStudentUnits = studentPayments.reduce((sum, payment) => (
     sum + (payment.status === "active" ? Math.max(payment.quantity - payment.used_quantity, 0) : 0)
   ), 0);
-  const financeInstructorItems: FinanceInstructorItem[] = instructorSettlements.map((item) => ({
+  const financeInstructorItems: FinanceInstructorItem[] = visibleInstructorSettlements.map((item) => ({
     id: item.id,
     name: item.instructor_name,
     plannedAmount: item.planned_amount,
@@ -425,7 +455,11 @@ export default async function DirectorFinancesPage({
     directIncomeAmount:
       instructorDirectIncome.find((income) => income.instructor_id === item.id)?.amount ?? 0,
     students: instructorStudentSettlements
-      .filter((student) => student.instructor_id === item.id)
+      .filter(
+        (student) =>
+          visibleInstructorIds.has(student.instructor_id) &&
+          student.instructor_id === item.id,
+      )
       .map((student) => ({
         id: student.student_access_id,
         name: student.student_name,
@@ -436,7 +470,11 @@ export default async function DirectorFinancesPage({
         adjustmentCount: student.adjustment_count,
       })),
     payments: instructorPayments
-      .filter((payment) => payment.instructor_id === item.id)
+      .filter(
+        (payment) =>
+          visibleInstructorIds.has(payment.instructor_id) &&
+          payment.instructor_id === item.id,
+      )
       .map((payment) => ({
         id: payment.id,
         amount: payment.amount,

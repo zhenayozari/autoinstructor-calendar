@@ -67,7 +67,10 @@ type ReportSlot = Pick<
   | "end_time"
 >;
 
-type ReportBooking = Pick<Booking, "id" | "slot_id" | "student_label"> & {
+type ReportBooking = Pick<
+  Booking,
+  "id" | "slot_id" | "student_label" | "lesson_units"
+> & {
   student_access_id: string | null;
   school_id: string | null;
   price_amount: number | null;
@@ -215,6 +218,7 @@ type InstructorPayoutPaymentDetail = {
 
 type ExamRouteReportItem = {
   booking_id: string;
+  student_access_id: string | null;
   student_label: string;
   school_name: string;
   lesson_type_name: string;
@@ -531,8 +535,8 @@ function ExamRouteDetails({ items }: { items: ExamRouteReportItem[] }) {
       <CardHeader className="pb-3">
         <CardTitle>Экзаменационные маршруты</CardTitle>
         <CardDescription>
-          Здесь видно, за какие записи начислено как за 2 занятия. В расписании
-          запись при этом остаётся одной.
+          Здесь видны записи, которые учтены как 2 занятия. В расписании запись
+          при этом остаётся одной.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -542,7 +546,16 @@ function ExamRouteDetails({ items }: { items: ExamRouteReportItem[] }) {
             className="grid gap-2 rounded-xl border border-amber-200 bg-white px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
           >
             <div className="min-w-0">
-              <p className="font-semibold">{item.student_label}</p>
+              {item.student_access_id ? (
+                <Link
+                  href={`/admin/students?student=${item.student_access_id}`}
+                  className="font-semibold text-blue-700 hover:underline"
+                >
+                  {item.student_label}
+                </Link>
+              ) : (
+                <span className="font-semibold">{item.student_label}</span>
+              )}
               <p className="mt-1 text-xs text-zinc-500">
                 {formatReportDate(item.lesson_date)} · {item.start_time.slice(0, 5)}
               </p>
@@ -1277,7 +1290,8 @@ export default async function AdminReportsPage({
           `
             select id, slot_id, student_label, student_access_id, school_id,
                    price_amount, paid_amount, is_paid, paid_at::text as paid_at,
-                   booking_category, lesson_state, completed_at::text as completed_at,
+                   booking_category, lesson_units, lesson_state,
+                   completed_at::text as completed_at,
                    direct_instructor_income_amount,
                    direct_instructor_income_recognized_at::text
                      as direct_instructor_income_recognized_at
@@ -1379,34 +1393,18 @@ export default async function AdminReportsPage({
     (sum, item) => sum + (item.direct_instructor_income_amount ?? 0),
     0,
   );
-  const examRouteItems =
-    isOwnerInstructorReport && selectedInstructor
-      ? await queryRows<ExamRouteReportItem>(
-          `
-            select entries.booking_id::text,
-                   coalesce(accesses.display_label, bookings.student_label, 'Без ученика') as student_label,
-                   coalesce(schools.name, 'Без автошколы') as school_name,
-                   coalesce(lesson_types.name, 'Тип занятия не указан') as lesson_type_name,
-                   days.date::text as lesson_date,
-                   slots.start_time::text as start_time,
-                   entries.amount
-            from public.instructor_payout_entry_balances entries
-            join public.bookings bookings on bookings.id = entries.booking_id
-            join public.slots slots on slots.id = bookings.slot_id
-            join public.schedule_days days on days.id = slots.schedule_day_id
-            left join public.student_accesses accesses on accesses.id = entries.student_access_id
-            left join public.schools schools on schools.id = entries.school_id
-            left join public.lesson_types lesson_types on lesson_types.id = entries.lesson_type_id
-            where entries.organization_id = $1
-              and entries.instructor_id = $2
-              and entries.status = 'planned'
-              and entries.note = 'Экзаменационный маршрут: начисление за 2 занятия'
-              and days.date between $3::date and $4::date
-            order by days.date, slots.start_time, student_label
-          `,
-          [membership.organizationId, selectedInstructor.id, from, to],
-        )
-      : [];
+  const examRouteItems: ExamRouteReportItem[] = reportItems
+    .filter((item) => item.lesson_units === 2)
+    .map((item) => ({
+      booking_id: item.id,
+      student_access_id: item.student_access_id,
+      student_label: item.student_label,
+      school_name: item.school?.name ?? "Без автошколы",
+      lesson_type_name: item.lessonType.name,
+      lesson_date: item.scheduleDay.date,
+      start_time: item.slot.start_time,
+      amount: item.price_amount ?? 0,
+    }));
   const settlementItems = settlementBookings
     .map(buildReportItem)
     .filter((item): item is ReportItem => Boolean(item))

@@ -1,17 +1,10 @@
 import { headers } from "next/headers";
 import { requireActiveOrganizationMember } from "@/lib/auth";
-import { isPostgresBackend } from "@/lib/backend-mode";
 import { queryRows } from "@/lib/db/postgres";
 import {
-  buildActiveInstructorsQuery,
   getSelectedInstructor,
   getSelectedInstructorId,
 } from "@/lib/queries";
-import {
-  createAdminClient,
-  hasSupabaseAdminKey,
-} from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import { getSchedulableLessonTypes } from "@/lib/lesson-types";
 import { autoCompletePastBookings } from "@/lib/auto-complete-bookings";
 import {
@@ -36,7 +29,6 @@ import {
   type StudentAccessCrmSummary,
 } from "@/components/admin/student-accesses-panel";
 import { getPublicOrigin } from "@/lib/public-origin";
-import { isMissingPricingTableError } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 
@@ -119,8 +111,7 @@ export default async function AdminStudentsPage({
   const params = (await searchParams) ?? {};
   const requestHeaders = await headers();
   const membership = await requireActiveOrganizationMember();
-  const postgresBackend = isPostgresBackend();
-  const adminEnabled = postgresBackend || hasSupabaseAdminKey();
+  const adminEnabled = true;
   const origin = getPublicOrigin(requestHeaders);
   const isEmployeeInstructor = membership.role === "instructor";
   let instructors: Instructor[] = [];
@@ -137,35 +128,20 @@ export default async function AdminStudentsPage({
   let studentPaymentChanges: StudentBookingPaymentChangeRow[] = [];
   let prepaidCredits: StudentPrepaidCreditRow[] = [];
   let schoolLessonTypePrices: SchoolLessonTypePrice[] = [];
-  let loadError: { message: string } | null = null;
-
-  if (postgresBackend) {
-    instructors = await queryRows<Instructor>(
-      `
-        select id, name, slug, public_name, timezone
-        from public.instructors
-        where organization_id = $1
-          and is_active = true
-          and ($2::uuid is null or id = $2::uuid)
-        order by name
-      `,
-      [
-        membership.organizationId,
-        membership.isInstructor ? membership.instructorId : null,
-      ],
-    );
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: instructorData, error: instructorError } =
-      await buildActiveInstructorsQuery(
-        supabase,
-        membership,
-        "id, name, slug, public_name",
-      );
-
-    instructors = (instructorData ?? []) as Instructor[];
-    loadError = instructorError;
-  }
+  instructors = await queryRows<Instructor>(
+    `
+      select id, name, slug, public_name, timezone
+      from public.instructors
+      where organization_id = $1
+        and is_active = true
+        and ($2::uuid is null or id = $2::uuid)
+      order by name
+    `,
+    [
+      membership.organizationId,
+      membership.isInstructor ? membership.instructorId : null,
+    ],
+  );
 
   const selectedInstructorId = getSelectedInstructorId(
     membership,
@@ -182,7 +158,6 @@ export default async function AdminStudentsPage({
   let visibleSchoolIds = new Set<string>();
 
   if (
-    postgresBackend &&
     selectedInstructor &&
     !canManageStudentLessonPackages
   ) {
@@ -210,156 +185,90 @@ export default async function AdminStudentsPage({
 
   await autoCompletePastBookings({ instructorIds: selectedInstructorIds });
 
-  if (postgresBackend) {
-    const [
-      lessonTypeData,
-      schoolData,
-      accessData,
-      requestData,
-      settingsData,
-    ] = await Promise.all([
-      queryRows<LessonType>(
-        `
-          select id, code, name, color, kind, tags, sort_order, is_active,
-                 default_duration_minutes, default_price_amount, requires_vehicle
-          from public.lesson_types
-          order by sort_order, name
-        `,
-      ),
-      queryRows<School>(
-        `
-          select id, organization_id, name, color, default_price, payment_rule,
-                 is_active, created_at::text as created_at, updated_at::text as updated_at
-          from public.schools
-          where organization_id = $1
-          order by name
-        `,
-        [membership.organizationId],
-      ),
-      selectedInstructorIds.length > 0
-        ? queryRows<StudentAccessRow>(
-            `
-              select id, instructor_id, display_label, first_name, last_name,
-                     student_phone, student_photo_url, login,
-                     total_lesson_limit, weekly_lesson_limit, school_id,
-                     is_active, passed_exam, exam_status, is_archived, archived_at::text as archived_at,
-                     profile_completed_at::text as profile_completed_at,
-                     personal_data_consent_at::text as personal_data_consent_at,
-                     personal_data_consent_source,
-                     created_at::text as created_at, updated_at::text as updated_at
-              from public.student_accesses
-              where organization_id = $1
-                and instructor_id = any($2::uuid[])
-              order by created_at desc
-            `,
-            [membership.organizationId, selectedInstructorIds],
-          )
-        : Promise.resolve([]),
-      selectedInstructorIds.length > 0
-        ? queryRows<StudentRegistrationRequest>(
-            `
-              select id, organization_id, instructor_id, first_name, last_name,
-                     student_phone, school_text, login, status,
-                     reviewed_at::text as reviewed_at, created_at::text as created_at,
-                     updated_at::text as updated_at
-              from public.student_registration_requests
-              where organization_id = $1
-                and instructor_id = any($2::uuid[])
-                and status = 'pending'
-              order by created_at desc
-            `,
-            [membership.organizationId, selectedInstructorIds],
-          )
-        : Promise.resolve([]),
-      selectedInstructorIds.length > 0
-        ? queryRows<Partial<InstructorSetting>>(
-            `
-              select instructor_id, student_registration_token,
-                     student_registration_enabled,
-                     student_registration_token_updated_at::text
-                       as student_registration_token_updated_at
-              from public.instructor_settings
-              where instructor_id = any($1::uuid[])
-            `,
-            [selectedInstructorIds],
-          )
-        : Promise.resolve([]),
-    ]);
-
-    lessonTypes = lessonTypeData;
-    schools = schoolData;
-    accesses = accessData;
-    pendingRequests = requestData;
-    settingData = settingsData;
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const [
-      { data: lessonTypeData, error: lessonTypeError },
-      { data: schoolData, error: schoolError },
-      { data: accessData, error: accessError },
-      { data: requestData, error: requestError },
-      { data: settingsData, error: settingError },
-    ] = await Promise.all([
-      supabase
-        .from("lesson_types")
-        .select(
-          "id, code, name, color, kind, tags, sort_order, is_active, default_duration_minutes, default_price_amount, requires_vehicle",
+  const [
+    lessonTypeData,
+    schoolData,
+    accessData,
+    requestData,
+    settingsData,
+  ] = await Promise.all([
+    queryRows<LessonType>(
+      `
+        select id, code, name, color, kind, tags, sort_order, is_active,
+               default_duration_minutes, default_price_amount, requires_vehicle
+        from public.lesson_types
+        order by sort_order, name
+      `,
+    ),
+    queryRows<School>(
+      `
+        select id, organization_id, name, color, default_price, payment_rule,
+               is_active, created_at::text as created_at, updated_at::text as updated_at
+        from public.schools
+        where organization_id = $1
+        order by name
+      `,
+      [membership.organizationId],
+    ),
+    selectedInstructorIds.length > 0
+      ? queryRows<StudentAccessRow>(
+          `
+            select id, instructor_id, display_label, first_name, last_name,
+                   student_phone, student_photo_url, login,
+                   total_lesson_limit, weekly_lesson_limit, school_id,
+                   is_active, passed_exam, exam_status, is_archived, archived_at::text as archived_at,
+                   profile_completed_at::text as profile_completed_at,
+                   personal_data_consent_at::text as personal_data_consent_at,
+                   personal_data_consent_source,
+                   created_at::text as created_at, updated_at::text as updated_at
+            from public.student_accesses
+            where organization_id = $1
+              and instructor_id = any($2::uuid[])
+            order by created_at desc
+          `,
+          [membership.organizationId, selectedInstructorIds],
         )
-        .order("sort_order")
-        .order("name"),
-      supabase
-        .from("schools")
-        .select("id, organization_id, name, color, default_price, is_active, created_at, updated_at")
-        .eq("organization_id", membership.organizationId)
-        .order("name"),
-      adminEnabled && selectedInstructorIds.length > 0
-        ? supabase
-            .from("student_accesses")
-            .select(
-              "id, instructor_id, display_label, first_name, last_name, student_phone, student_photo_url, login, total_lesson_limit, weekly_lesson_limit, school_id, is_active, passed_exam, is_archived, archived_at, created_at, updated_at",
-            )
-            .eq("organization_id", membership.organizationId)
-            .in("instructor_id", selectedInstructorIds)
-            .order("created_at", { ascending: false })
-        : Promise.resolve({ data: [], error: null }),
-      adminEnabled && selectedInstructorIds.length > 0
-        ? supabase
-            .from("student_registration_requests")
-            .select(
-              "id, organization_id, instructor_id, first_name, last_name, student_phone, school_text, login, status, reviewed_at, created_at, updated_at",
-            )
-            .eq("organization_id", membership.organizationId)
-            .in("instructor_id", selectedInstructorIds)
-            .eq("status", "pending")
-            .order("created_at", { ascending: false })
-        : Promise.resolve({ data: [], error: null }),
-      adminEnabled && selectedInstructorIds.length > 0
-        ? supabase
-            .from("instructor_settings")
-            .select(
-              "instructor_id, student_registration_token, student_registration_enabled, student_registration_token_updated_at",
-            )
-            .in("instructor_id", selectedInstructorIds)
-        : Promise.resolve({ data: [], error: null }),
-    ]);
+      : Promise.resolve([]),
+    selectedInstructorIds.length > 0
+      ? queryRows<StudentRegistrationRequest>(
+          `
+            select id, organization_id, instructor_id, first_name, last_name,
+                   student_phone, school_text, login, status,
+                   reviewed_at::text as reviewed_at, created_at::text as created_at,
+                   updated_at::text as updated_at
+            from public.student_registration_requests
+            where organization_id = $1
+              and instructor_id = any($2::uuid[])
+              and status = 'pending'
+            order by created_at desc
+          `,
+          [membership.organizationId, selectedInstructorIds],
+        )
+      : Promise.resolve([]),
+    selectedInstructorIds.length > 0
+      ? queryRows<Partial<InstructorSetting>>(
+          `
+            select instructor_id, student_registration_token,
+                   student_registration_enabled,
+                   student_registration_token_updated_at::text
+                     as student_registration_token_updated_at
+            from public.instructor_settings
+            where instructor_id = any($1::uuid[])
+          `,
+          [selectedInstructorIds],
+        )
+      : Promise.resolve([]),
+  ]);
 
-    lessonTypes = (lessonTypeData ?? []) as LessonType[];
-    schools = (schoolData ?? []) as School[];
-    accesses = (accessData ?? []) as StudentAccessRow[];
-    pendingRequests = (requestData ?? []) as StudentRegistrationRequest[];
-    settingData = (settingsData ?? []) as Partial<InstructorSetting>[];
-    loadError =
-      loadError ??
-      lessonTypeError ??
-      schoolError ??
-      accessError ??
-      requestError ??
-      settingError;
-  }
+  lessonTypes = lessonTypeData;
+  schools = schoolData;
+  accesses = accessData;
+  pendingRequests = requestData;
+  settingData = settingsData;
 
   const accessIds = accesses.map((access) => access.id);
 
-  if (postgresBackend && accessIds.length > 0 && canManageStudentPrices) {
+  if (accessIds.length > 0 && canManageStudentPrices) {
     [schoolLessonTypePrices, prepaidCredits] = await Promise.all([
       queryRows<SchoolLessonTypePrice>(
         `
@@ -442,224 +351,138 @@ export default async function AdminStudentsPage({
     ]);
   }
 
-  if (postgresBackend) {
-    accessLessonTypes =
-      accessIds.length > 0
-        ? await queryRows<StudentAccessLessonTypeRow>(
-            `
-              select student_access_id, lesson_type_id
-              from public.student_access_lesson_types
-              where student_access_id = any($1::uuid[])
-            `,
-            [accessIds],
-          )
-        : [];
-    packages =
-      accessIds.length > 0
-        ? await queryRows<StudentLessonPackageRow>(
-            `
-              select id, student_access_id, organization_id, instructor_id,
-                     school_id, booking_category, custom_price_amount,
-                     payment_rule_override, total_lesson_limit,
-                     weekly_lesson_limit, is_active, sort_order,
-                     created_at::text as created_at, updated_at::text as updated_at
-              from public.student_lesson_packages
-              where student_access_id = any($1::uuid[])
-              order by sort_order, created_at
-            `,
-            [accessIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: accessLessonTypeData, error: accessLessonTypeError } =
-      adminEnabled && accessIds.length > 0
-        ? await supabase
-            .from("student_access_lesson_types")
-            .select("student_access_id, lesson_type_id")
-            .in("student_access_id", accessIds)
-        : { data: [], error: null };
-    const { data: packageData, error: packageError } =
-      adminEnabled && accessIds.length > 0
-        ? await supabase
-            .from("student_lesson_packages")
-            .select(
-              "id, student_access_id, organization_id, instructor_id, school_id, booking_category, custom_price_amount, payment_rule_override, total_lesson_limit, weekly_lesson_limit, is_active, sort_order, created_at, updated_at",
-            )
-            .in("student_access_id", accessIds)
-            .order("sort_order")
-            .order("created_at")
-        : { data: [], error: null };
-
-    accessLessonTypes = (accessLessonTypeData ??
-      []) as StudentAccessLessonTypeRow[];
-    packages = (packageData ?? []) as StudentLessonPackageRow[];
-    loadError =
-      loadError ??
-      accessLessonTypeError ??
-      (packageError && !isMissingPricingTableError(packageError)
-        ? packageError
-        : null);
-  }
+  accessLessonTypes =
+    accessIds.length > 0
+      ? await queryRows<StudentAccessLessonTypeRow>(
+          `
+            select student_access_id, lesson_type_id
+            from public.student_access_lesson_types
+            where student_access_id = any($1::uuid[])
+          `,
+          [accessIds],
+        )
+      : [];
+  packages =
+    accessIds.length > 0
+      ? await queryRows<StudentLessonPackageRow>(
+          `
+            select id, student_access_id, organization_id, instructor_id,
+                   school_id, booking_category, custom_price_amount,
+                   payment_rule_override, total_lesson_limit,
+                   weekly_lesson_limit, is_active, sort_order,
+                   created_at::text as created_at, updated_at::text as updated_at
+            from public.student_lesson_packages
+            where student_access_id = any($1::uuid[])
+            order by sort_order, created_at
+          `,
+          [accessIds],
+        )
+      : [];
 
   const packageIds = packages.map((item) => item.id);
 
-  if (postgresBackend) {
-    packageLessonTypes =
-      packageIds.length > 0
-        ? await queryRows<StudentLessonPackageTypeRow>(
-            `
-              select package_id, lesson_type_id
-              from public.student_lesson_package_types
-              where package_id = any($1::uuid[])
-            `,
-            [packageIds],
-          )
-        : [];
-    if (accessIds.length === 0) {
-      studentBookings = [];
-    } else if (isEmployeeInstructor) {
-      studentBookings = await queryRows<StudentBookingRow>(
-        `
-          select bookings.id,
-                 bookings.slot_id,
-                 bookings.student_access_id,
-                 bookings.student_lesson_package_id,
-                 bookings.school_id,
-                 bookings.lesson_state,
-                 bookings.lesson_units,
-                 bookings.booking_category,
-                 coalesce(
-                   bookings.direct_instructor_income_amount,
-                   payout_entry.amount,
-                   payout_rule.amount
-                 ) as instructor_payout_amount
-          from public.bookings
-          left join public.slots lesson_slots
-            on lesson_slots.id = bookings.slot_id
-          left join lateral (
-            select entries.amount
-            from public.instructor_payout_entries entries
-            where entries.booking_id = bookings.id
-              and entries.entry_type = 'booking_accrual'
-              and entries.status = 'planned'
-            order by entries.created_at desc
-            limit 1
-          ) payout_entry on true
-          left join lateral (
-            select rules.amount
-            from public.instructor_payout_rate_rules rules
-            where rules.organization_id = $2::uuid
-              and rules.instructor_id = $3::uuid
-              and (rules.school_id is null or rules.school_id = bookings.school_id)
-              and (rules.lesson_type_id is null or rules.lesson_type_id = lesson_slots.lesson_type_id)
-              and (rules.booking_category is null or rules.booking_category = bookings.booking_category)
-              and rules.effective_from <= lesson_slots.start_time::date
-              and (rules.effective_to is null or rules.effective_to >= lesson_slots.start_time::date)
-              and (
-                rules.is_active = true
-                or lesson_slots.start_time::date <= coalesce(rules.effective_to, rules.disabled_at::date - 1, rules.updated_at::date - 1)
-              )
-            order by
-              rules.is_active desc,
-              case when rules.school_id is null then 0 else 1 end desc,
-              case when rules.lesson_type_id is null then 0 else 1 end desc,
-              case when rules.booking_category is null then 0 else 1 end desc,
-              rules.effective_from desc,
-              rules.created_at desc
-            limit 1
-          ) payout_rule on true
-          where bookings.student_access_id = any($1::uuid[])
-            and bookings.status = 'confirmed'
-        `,
-        [accessIds, membership.organizationId, selectedInstructorId],
-      );
-    } else {
-      studentBookings = await queryRows<StudentBookingRow>(
-        `
-          select id, slot_id, student_access_id, student_lesson_package_id,
-                 school_id, price_amount, paid_amount, is_paid, lesson_state,
-                 lesson_units
-          from public.bookings
-          where student_access_id = any($1::uuid[])
-            and status = 'confirmed'
-        `,
-        [accessIds],
-      );
-    }
+  packageLessonTypes =
+    packageIds.length > 0
+      ? await queryRows<StudentLessonPackageTypeRow>(
+          `
+            select package_id, lesson_type_id
+            from public.student_lesson_package_types
+            where package_id = any($1::uuid[])
+          `,
+          [packageIds],
+        )
+      : [];
+  if (accessIds.length === 0) {
+    studentBookings = [];
+  } else if (isEmployeeInstructor) {
+    studentBookings = await queryRows<StudentBookingRow>(
+      `
+        select bookings.id,
+               bookings.slot_id,
+               bookings.student_access_id,
+               bookings.student_lesson_package_id,
+               bookings.school_id,
+               bookings.lesson_state,
+               bookings.lesson_units,
+               bookings.booking_category,
+               coalesce(
+                 bookings.direct_instructor_income_amount,
+                 payout_entry.amount,
+                 payout_rule.amount
+               ) as instructor_payout_amount
+        from public.bookings
+        left join public.slots lesson_slots
+          on lesson_slots.id = bookings.slot_id
+        left join lateral (
+          select entries.amount
+          from public.instructor_payout_entries entries
+          where entries.booking_id = bookings.id
+            and entries.entry_type = 'booking_accrual'
+            and entries.status = 'planned'
+          order by entries.created_at desc
+          limit 1
+        ) payout_entry on true
+        left join lateral (
+          select rules.amount
+          from public.instructor_payout_rate_rules rules
+          where rules.organization_id = $2::uuid
+            and rules.instructor_id = $3::uuid
+            and (rules.school_id is null or rules.school_id = bookings.school_id)
+            and (rules.lesson_type_id is null or rules.lesson_type_id = lesson_slots.lesson_type_id)
+            and (rules.booking_category is null or rules.booking_category = bookings.booking_category)
+            and rules.effective_from <= lesson_slots.start_time::date
+            and (rules.effective_to is null or rules.effective_to >= lesson_slots.start_time::date)
+            and (
+              rules.is_active = true
+              or lesson_slots.start_time::date <= coalesce(rules.effective_to, rules.disabled_at::date - 1, rules.updated_at::date - 1)
+            )
+          order by
+            rules.is_active desc,
+            case when rules.school_id is null then 0 else 1 end desc,
+            case when rules.lesson_type_id is null then 0 else 1 end desc,
+            case when rules.booking_category is null then 0 else 1 end desc,
+            rules.effective_from desc,
+            rules.created_at desc
+          limit 1
+        ) payout_rule on true
+        where bookings.student_access_id = any($1::uuid[])
+          and bookings.status = 'confirmed'
+      `,
+      [accessIds, membership.organizationId, selectedInstructorId],
+    );
   } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: packageLessonTypeData, error: packageLessonTypeError } =
-      adminEnabled && packageIds.length > 0
-        ? await supabase
-            .from("student_lesson_package_types")
-            .select("package_id, lesson_type_id")
-            .in("package_id", packageIds)
-        : { data: [], error: null };
-    const bookingResult =
-      adminEnabled && accessIds.length > 0
-        ? isEmployeeInstructor
-          ? await supabase
-              .from("bookings")
-              .select(
-                "id, slot_id, student_access_id, student_lesson_package_id, school_id, lesson_state, lesson_units, booking_category",
-              )
-              .in("student_access_id", accessIds)
-              .eq("status", "confirmed")
-          : await supabase
-              .from("bookings")
-              .select(
-                "id, slot_id, student_access_id, student_lesson_package_id, school_id, price_amount, paid_amount, is_paid, lesson_state, lesson_units",
-              )
-              .in("student_access_id", accessIds)
-              .eq("status", "confirmed")
-        : { data: [], error: null };
-
-    packageLessonTypes = (packageLessonTypeData ??
-      []) as StudentLessonPackageTypeRow[];
-    studentBookings = (bookingResult.data ?? []) as StudentBookingRow[];
-    loadError =
-      loadError ??
-      (packageLessonTypeError && !isMissingPricingTableError(packageLessonTypeError)
-        ? packageLessonTypeError
-        : null) ??
-      bookingResult.error;
+    studentBookings = await queryRows<StudentBookingRow>(
+      `
+        select id, slot_id, student_access_id, student_lesson_package_id,
+               school_id, price_amount, paid_amount, is_paid, lesson_state,
+               lesson_units
+        from public.bookings
+        where student_access_id = any($1::uuid[])
+          and status = 'confirmed'
+      `,
+      [accessIds],
+    );
   }
 
   const bookedSlotIds = studentBookings.map((booking) => booking.slot_id);
 
-  if (postgresBackend) {
-    studentSlots =
-      bookedSlotIds.length > 0
-        ? await queryRows<StudentSlotRow>(
-            `
-              select id, lesson_type_id, start_time::text as start_time,
-                     end_time::text as end_time, school_id
-              from public.slots
-              where id = any($1::uuid[])
-              order by start_time desc
-            `,
-            [bookedSlotIds],
-          )
-        : [];
-  } else {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: slotData, error: slotError } =
-      adminEnabled && bookedSlotIds.length > 0
-        ? await supabase
-            .from("slots")
-            .select("id, lesson_type_id, start_time, end_time, school_id")
-            .in("id", bookedSlotIds)
-            .order("start_time", { ascending: false })
-        : { data: [], error: null };
-
-    studentSlots = (slotData ?? []) as StudentSlotRow[];
-    loadError = loadError ?? slotError;
-  }
+  studentSlots =
+    bookedSlotIds.length > 0
+      ? await queryRows<StudentSlotRow>(
+          `
+            select id, lesson_type_id, start_time::text as start_time,
+                   end_time::text as end_time, school_id
+            from public.slots
+            where id = any($1::uuid[])
+            order by start_time desc
+          `,
+          [bookedSlotIds],
+        )
+      : [];
 
   const bookingIds = studentBookings.map((booking) => booking.id);
 
-  if (postgresBackend && !isEmployeeInstructor) {
+  if (!isEmployeeInstructor) {
     studentPaymentChanges =
       bookingIds.length > 0
         ? await queryRows<StudentBookingPaymentChangeRow>(
@@ -679,22 +502,6 @@ export default async function AdminStudentsPage({
             ],
           )
         : [];
-  } else if (!isEmployeeInstructor) {
-    const supabase = adminEnabled ? createAdminClient() : await createClient();
-    const { data: paymentChangeData, error: paymentChangeError } =
-      adminEnabled && bookingIds.length > 0
-        ? await supabase
-            .from("audit_logs")
-            .select("entity_id, created_at")
-            .eq("organization_id", membership.organizationId)
-            .eq("entity_type", "booking")
-            .in("entity_id", bookingIds)
-            .in("action", ["booking.payment_updated", "booking.payment_toggled"])
-            .order("created_at", { ascending: false })
-        : { data: [], error: null };
-
-    studentPaymentChanges = (paymentChangeData ?? []) as StudentBookingPaymentChangeRow[];
-    loadError = loadError ?? paymentChangeError;
   }
 
   const lessonTypeIdsByAccessId = new Map<string, string[]>();
@@ -940,12 +747,6 @@ export default async function AdminStudentsPage({
             </div>
           </div>
         </details>
-
-        {loadError && (
-          <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            Не удалось загрузить учеников: {loadError.message}
-          </div>
-        )}
 
         {selectedInstructor ? (
           <StudentAccessesPanel

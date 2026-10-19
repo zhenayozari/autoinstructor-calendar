@@ -689,48 +689,27 @@ async function syncAccessLessonTypesFromPackages({
 async function getManageableAccess(accessId: string) {
   const membership = await requireActiveOrganizationMember();
 
-  if (isPostgresBackend()) {
-    const data = await queryOne<{
-      id: string;
-      instructor_id: string;
-      organization_id: string;
-      login: string;
-      display_label: string;
-      student_phone: string | null;
-      school_id: string | null;
-    }>(
-      `
-        select id, instructor_id, organization_id, login, display_label,
-               student_phone, school_id
-        from public.student_accesses
-        where id = $1
-          and organization_id = $2
-        limit 1
-      `,
-      [accessId, membership.organizationId],
-    );
+  const data = await queryOne<{
+    id: string;
+    instructor_id: string;
+    organization_id: string;
+    login: string;
+    display_label: string;
+    student_phone: string | null;
+    school_id: string | null;
+  }>(
+    `
+      select id, instructor_id, organization_id, login, display_label,
+             student_phone, school_id
+      from public.student_accesses
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [accessId, membership.organizationId],
+  );
 
-    if (!data) {
-      throw new Error("Учебный доступ не найден");
-    }
-
-    await requireInstructorAccess(data.instructor_id);
-
-    return {
-      membership,
-      access: data,
-    };
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("student_accesses")
-    .select("id, instructor_id, organization_id, login, display_label, student_phone, school_id")
-    .eq("id", accessId)
-    .eq("organization_id", membership.organizationId)
-    .maybeSingle();
-
-  if (error || !data) {
+  if (!data) {
     throw new Error("Учебный доступ не найден");
   }
 
@@ -738,15 +717,7 @@ async function getManageableAccess(accessId: string) {
 
   return {
     membership,
-    access: data as {
-      id: string;
-      instructor_id: string;
-      organization_id: string;
-      login: string;
-      display_label: string;
-      student_phone: string | null;
-      school_id: string | null;
-    },
+    access: data,
   };
 }
 
@@ -1100,57 +1071,13 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
   const { membership, access } = await getManageableAccess(accessId);
   assertOwnerCanDelete(membership);
 
-  if (isPostgresBackend()) {
-    await withTransaction((client) =>
-      purgeStudentAccessData({
-        client,
-        organizationId: membership.organizationId,
-        studentAccessId: access.id,
-      }),
-    );
-
-    await logAuditEvent({
-      membership,
-      action: "student_access.deleted",
-      entityType: "student_access",
-      entityId: access.id,
-      metadata: {
-        instructor_id: access.instructor_id,
-      },
-    });
-
-    revalidateStudentAccessPaths();
-    return;
-  }
-
-  const supabase = createAdminClient();
-  const { error: bookingsError } = await supabase
-    .from("bookings")
-    .delete()
-    .eq("student_access_id", access.id);
-
-  if (bookingsError) {
-    throw new Error(bookingsError.message);
-  }
-
-  const { error: lessonTypesError } = await supabase
-    .from("student_access_lesson_types")
-    .delete()
-    .eq("student_access_id", access.id);
-
-  if (lessonTypesError) {
-    throw new Error(lessonTypesError.message);
-  }
-
-  const { error: accessError } = await supabase
-    .from("student_accesses")
-    .delete()
-    .eq("id", access.id)
-    .eq("organization_id", membership.organizationId);
-
-  if (accessError) {
-    throw new Error(accessError.message);
-  }
+  await withTransaction((client) =>
+    purgeStudentAccessData({
+      client,
+      organizationId: membership.organizationId,
+      studentAccessId: access.id,
+    }),
+  );
 
   await logAuditEvent({
     membership,
@@ -1168,48 +1095,18 @@ async function deleteStudentAccessById(accessId: string, formData: FormData) {
 async function restoreStudentAccessById(accessId: string) {
   const { membership, access } = await getManageableAccess(accessId);
 
-  if (isPostgresBackend()) {
-    await executeQuery(
-      `
-        update public.student_accesses
-        set is_archived = false,
-            archived_at = null,
-            is_active = true,
-            updated_at = now()
-        where id = $1
-          and instructor_id = $2
-      `,
-      [access.id, access.instructor_id],
-    );
-
-    await logAuditEvent({
-      membership,
-      action: "student_access.restored",
-      entityType: "student_access",
-      entityId: access.id,
-      metadata: {
-        instructor_id: access.instructor_id,
-      },
-    });
-
-    revalidateStudentAccessPaths();
-    return;
-  }
-
-  const supabase = createAdminClient();
-  const { error } = await supabase
-    .from("student_accesses")
-    .update({
-      is_archived: false,
-      archived_at: null,
-      is_active: true,
-    })
-    .eq("id", access.id)
-    .eq("instructor_id", access.instructor_id);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  await executeQuery(
+    `
+      update public.student_accesses
+      set is_archived = false,
+          archived_at = null,
+          is_active = true,
+          updated_at = now()
+      where id = $1
+        and instructor_id = $2
+    `,
+    [access.id, access.instructor_id],
+  );
 
   await logAuditEvent({
     membership,
@@ -1227,67 +1124,40 @@ async function restoreStudentAccessById(accessId: string) {
 async function getManageableRegistrationRequest(requestId: string) {
   const membership = await requireActiveOrganizationMember();
 
-  if (isPostgresBackend()) {
-    const data = await queryOne<{
-      id: string;
-      organization_id: string;
-      instructor_id: string;
-      first_name: string | null;
-      last_name: string | null;
-      student_phone: string | null;
-      login: string;
-      password_hash: string;
-      status: "pending" | "approved" | "rejected";
-      personal_data_consent_at: string | null;
-      personal_data_consent_source: string | null;
-      personal_data_consent_ip: string | null;
-      personal_data_consent_user_agent: string | null;
-      personal_data_consent_document_ids: string[];
-      personal_data_consent_document_versions: unknown;
-    }>(
-      `
-        select id, organization_id, instructor_id, first_name, last_name,
-               student_phone, login, password_hash, status,
-               personal_data_consent_at::text as personal_data_consent_at,
-               personal_data_consent_source, personal_data_consent_ip,
-               personal_data_consent_user_agent,
-               personal_data_consent_document_ids,
-               personal_data_consent_document_versions
-        from public.student_registration_requests
-        where id = $1
-          and organization_id = $2
-        limit 1
-      `,
-      [requestId, membership.organizationId],
-    );
+  const data = await queryOne<{
+    id: string;
+    organization_id: string;
+    instructor_id: string;
+    first_name: string | null;
+    last_name: string | null;
+    student_phone: string | null;
+    login: string;
+    password_hash: string;
+    status: "pending" | "approved" | "rejected";
+    personal_data_consent_at: string | null;
+    personal_data_consent_source: string | null;
+    personal_data_consent_ip: string | null;
+    personal_data_consent_user_agent: string | null;
+    personal_data_consent_document_ids: string[];
+    personal_data_consent_document_versions: unknown;
+  }>(
+    `
+      select id, organization_id, instructor_id, first_name, last_name,
+             student_phone, login, password_hash, status,
+             personal_data_consent_at::text as personal_data_consent_at,
+             personal_data_consent_source, personal_data_consent_ip,
+             personal_data_consent_user_agent,
+             personal_data_consent_document_ids,
+             personal_data_consent_document_versions
+      from public.student_registration_requests
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [requestId, membership.organizationId],
+  );
 
-    if (!data) {
-      throw new Error("Заявка не найдена");
-    }
-
-    await requireInstructorAccess(data.instructor_id);
-
-    if (data.status !== "pending") {
-      throw new Error("Эта заявка уже обработана");
-    }
-
-    return {
-      membership,
-      request: data,
-    };
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("student_registration_requests")
-    .select(
-      "id, organization_id, instructor_id, first_name, last_name, student_phone, login, password_hash, status",
-    )
-    .eq("id", requestId)
-    .eq("organization_id", membership.organizationId)
-    .maybeSingle();
-
-  if (error || !data) {
+  if (!data) {
     throw new Error("Заявка не найдена");
   }
 
@@ -1299,23 +1169,7 @@ async function getManageableRegistrationRequest(requestId: string) {
 
   return {
     membership,
-    request: data as {
-      id: string;
-      organization_id: string;
-      instructor_id: string;
-      first_name: string | null;
-      last_name: string | null;
-      student_phone: string | null;
-      login: string;
-      password_hash: string;
-      status: "pending" | "approved" | "rejected";
-      personal_data_consent_at?: string | null;
-      personal_data_consent_source?: string | null;
-      personal_data_consent_ip?: string | null;
-      personal_data_consent_user_agent?: string | null;
-      personal_data_consent_document_ids?: string[];
-      personal_data_consent_document_versions?: unknown;
-    },
+    request: data,
   };
 }
 
@@ -1831,50 +1685,17 @@ export async function rejectStudentRegistrationRequestAction(
     const { membership, request } =
       await getManageableRegistrationRequest(requestId);
 
-    if (isPostgresBackend()) {
-      await executeQuery(
-        `
-          update public.student_registration_requests
-          set status = 'rejected',
-              reviewed_at = $1,
-              updated_at = now()
-          where id = $2
-            and status = 'pending'
-        `,
-        [new Date().toISOString(), request.id],
-      );
-
-      await logAuditEvent({
-        membership,
-        action: "student_registration.rejected",
-        entityType: "student_registration_request",
-        entityId: request.id,
-        metadata: {
-          instructor_id: request.instructor_id,
-        },
-      });
-
-      revalidatePath("/admin/students");
-
-      return {
-        status: "success",
-        message: "Заявка отклонена",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_registration_requests")
-      .update({
-        status: "rejected",
-        reviewed_at: new Date().toISOString(),
-      })
-      .eq("id", request.id)
-      .eq("status", "pending");
-
-    if (error) {
-      throw new Error(error.message);
-    }
+    await executeQuery(
+      `
+        update public.student_registration_requests
+        set status = 'rejected',
+            reviewed_at = $1,
+            updated_at = now()
+        where id = $2
+          and status = 'pending'
+      `,
+      [new Date().toISOString(), request.id],
+    );
 
     await logAuditEvent({
       membership,
@@ -2205,8 +2026,7 @@ export async function updateStudentAccessDetailsAction(
       updates.password_hash = hashStudentAccessSecret(newSecret);
     }
 
-    if (isPostgresBackend()) {
-      try {
+    try {
         if (updates.password_hash) {
           await executeQuery(
             `
@@ -2273,42 +2093,6 @@ export async function updateStudentAccessDetailsAction(
 
       revalidatePath("/admin/students");
 
-      return {
-        status: "success",
-        message: newSecret
-          ? "Данные обновлены. Не забудьте передать ученику новый ПИН-код/пароль."
-          : "Данные ученика обновлены",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_accesses")
-      .update(updates)
-      .eq("id", access.id)
-      .eq("instructor_id", access.instructor_id);
-
-    if (error) {
-      if (error.code === "23505") {
-        throw new Error("Такой логин уже используется");
-      }
-
-      throw new Error(error.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "student_access.details_updated",
-      entityType: "student_access",
-      entityId: access.id,
-      metadata: {
-        instructor_id: access.instructor_id,
-        secret_changed: Boolean(newSecret),
-      },
-    });
-
-    revalidatePath("/admin/students");
-
     return {
       status: "success",
       message: newSecret
@@ -2357,47 +2141,28 @@ export async function updateStudentProfileAction(
       throw new Error("ФИО должно быть не длиннее 80 символов");
     }
 
-    if (isPostgresBackend()) {
-      await executeQuery(
-        `
-          update public.student_accesses
-          set first_name = $1,
-              last_name = $2,
-              student_phone = $3,
-              display_label = $4,
-              updated_at = now()
-          where id = $5
-            and organization_id = $6
-            and instructor_id = $7
-        `,
-        [
-          firstName,
-          lastName,
-          studentPhone,
-          displayLabel,
-          access.id,
-          membership.organizationId,
-          access.instructor_id,
-        ],
-      );
-    } else {
-      const supabase = createAdminClient();
-      const { error } = await supabase
-        .from("student_accesses")
-        .update({
-          first_name: firstName,
-          last_name: lastName,
-          student_phone: studentPhone,
-          display_label: displayLabel,
-        })
-        .eq("id", access.id)
-        .eq("organization_id", membership.organizationId)
-        .eq("instructor_id", access.instructor_id);
-
-      if (error) {
-        throw new Error(error.message);
-      }
-    }
+    await executeQuery(
+      `
+        update public.student_accesses
+        set first_name = $1,
+            last_name = $2,
+            student_phone = $3,
+            display_label = $4,
+            updated_at = now()
+        where id = $5
+          and organization_id = $6
+          and instructor_id = $7
+      `,
+      [
+        firstName,
+        lastName,
+        studentPhone,
+        displayLabel,
+        access.id,
+        membership.organizationId,
+        access.instructor_id,
+      ],
+    );
 
     await logAuditEvent({
       membership,
@@ -2444,41 +2209,24 @@ export async function updateStudentExamStatusAction(
         : "training";
     const passedExam = examStatus === "passed";
 
-    if (isPostgresBackend()) {
-      await executeQuery(
-        `
-          update public.student_accesses
-          set exam_status = $1,
-              passed_exam = $2,
-              updated_at = now()
-          where id = $3
-            and organization_id = $4
-            and instructor_id = $5
-        `,
-        [
-          examStatus,
-          passedExam,
-          access.id,
-          membership.organizationId,
-          access.instructor_id,
-        ],
-      );
-    } else {
-      if (examStatus === "failed") {
-        throw new Error(
-          "Статус «Не сдал в ГАИ» доступен после перехода на новую базу",
-        );
-      }
-      const supabase = createAdminClient();
-      const { error } = await supabase
-        .from("student_accesses")
-        .update({ passed_exam: passedExam })
-        .eq("id", access.id)
-        .eq("organization_id", membership.organizationId)
-        .eq("instructor_id", access.instructor_id);
-
-      if (error) throw new Error(error.message);
-    }
+    await executeQuery(
+      `
+        update public.student_accesses
+        set exam_status = $1,
+            passed_exam = $2,
+            updated_at = now()
+        where id = $3
+          and organization_id = $4
+          and instructor_id = $5
+      `,
+      [
+        examStatus,
+        passedExam,
+        access.id,
+        membership.organizationId,
+        access.instructor_id,
+      ],
+    );
 
     await logAuditEvent({
       membership,
@@ -2522,53 +2270,19 @@ export async function archiveStudentAccessAction(
     const accessId = readRequiredString(formData, "student_access_id");
     const { membership, access } = await getManageableAccess(accessId);
 
-    if (isPostgresBackend()) {
-      await executeQuery(
-        `
-          update public.student_accesses
-          set is_archived = true,
-              archived_at = $1,
-              is_active = false,
-              updated_at = now()
-          where id = $2
-            and instructor_id = $3
-        `,
-        [new Date().toISOString(), access.id, access.instructor_id],
-      );
-      await revokeAllStudentSessions(access.id);
-
-      await logAuditEvent({
-        membership,
-        action: "student_access.archived",
-        entityType: "student_access",
-        entityId: access.id,
-        metadata: {
-          instructor_id: access.instructor_id,
-        },
-      });
-
-      revalidateStudentAccessPaths();
-
-      return {
-        status: "success",
-        message: "Ученик перемещён в архив",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_accesses")
-      .update({
-        is_archived: true,
-        archived_at: new Date().toISOString(),
-        is_active: false,
-      })
-      .eq("id", access.id)
-      .eq("instructor_id", access.instructor_id);
-
-    if (error) {
-      throw new Error(error.message);
-    }
+    await executeQuery(
+      `
+        update public.student_accesses
+        set is_archived = true,
+            archived_at = $1,
+            is_active = false,
+            updated_at = now()
+        where id = $2
+          and instructor_id = $3
+      `,
+      [new Date().toISOString(), access.id, access.instructor_id],
+    );
+    await revokeAllStudentSessions(access.id);
 
     await logAuditEvent({
       membership,
@@ -2685,50 +2399,19 @@ export async function toggleStudentAccessAction(
     const isActive = formData.get("is_active") === "true";
     const { membership, access } = await getManageableAccess(accessId);
 
-    if (isPostgresBackend()) {
-      await executeQuery(
-        `
-          update public.student_accesses
-          set is_active = $1,
-              updated_at = now()
-          where id = $2
-            and instructor_id = $3
-        `,
-        [isActive, access.id, access.instructor_id],
-      );
+    await executeQuery(
+      `
+        update public.student_accesses
+        set is_active = $1,
+            updated_at = now()
+        where id = $2
+          and instructor_id = $3
+      `,
+      [isActive, access.id, access.instructor_id],
+    );
 
-      if (!isActive) {
-        await revokeAllStudentSessions(access.id);
-      }
-
-      await logAuditEvent({
-        membership,
-        action: isActive ? "student_access.enabled" : "student_access.disabled",
-        entityType: "student_access",
-        entityId: access.id,
-        metadata: {
-          instructor_id: access.instructor_id,
-          is_active: isActive,
-        },
-      });
-
-      revalidatePath("/admin/students");
-
-      return {
-        status: "success",
-        message: isActive ? "Доступ включён" : "Доступ отключён",
-      };
-    }
-
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_accesses")
-      .update({ is_active: isActive })
-      .eq("id", access.id)
-      .eq("instructor_id", access.instructor_id);
-
-    if (error) {
-      throw new Error(error.message);
+    if (!isActive) {
+      await revokeAllStudentSessions(access.id);
     }
 
     await logAuditEvent({

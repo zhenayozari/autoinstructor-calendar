@@ -18,7 +18,6 @@ import {
   STUDENT_SECRET_MIN_LENGTH,
 } from "@/lib/student-secret-policy";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isMissingPricingTableError } from "@/lib/pricing";
 import { purgeStudentAccessData } from "@/lib/destructive-data-cleanup";
 import type {
   BookingCategory,
@@ -182,34 +181,16 @@ async function validateLessonTypes(lessonTypeIds: string[]) {
 
   const uniqueIds = [...new Set(lessonTypeIds)];
 
-  if (isPostgresBackend()) {
-    const data = await queryRows<{ id: string }>(
-      `
-        select id
-        from public.lesson_types
-        where id = any($1::uuid[])
-      `,
-      [uniqueIds],
-    );
+  const data = await queryRows<{ id: string }>(
+    `
+      select id
+      from public.lesson_types
+      where id = any($1::uuid[])
+    `,
+    [uniqueIds],
+  );
 
-    if (data.length !== uniqueIds.length) {
-      throw new Error("Один из выбранных типов занятий не найден");
-    }
-
-    return uniqueIds;
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("lesson_types")
-    .select("id")
-    .in("id", uniqueIds);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  if ((data ?? []).length !== uniqueIds.length) {
+  if (data.length !== uniqueIds.length) {
     throw new Error("Один из выбранных типов занятий не найден");
   }
 
@@ -224,36 +205,16 @@ async function validateSchoolId(
     return null;
   }
 
-  if (isPostgresBackend()) {
-    const data = await queryOne<{ id: string }>(
-      `
-        select id
-        from public.schools
-        where id = $1
-          and organization_id = $2
-        limit 1
-      `,
-      [schoolId, organizationId],
-    );
-
-    if (!data) {
-      throw new Error("Автошкола не найдена");
-    }
-
-    return schoolId;
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("schools")
-    .select("id")
-    .eq("id", schoolId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  const data = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.schools
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [schoolId, organizationId],
+  );
 
   if (!data) {
     throw new Error("Автошкола не найдена");
@@ -279,137 +240,66 @@ async function validateRequiredSchoolId(
 }
 
 async function replaceAccessLessonTypes({
-  supabase,
   accessId,
   lessonTypeIds,
 }: {
-  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   lessonTypeIds: string[];
 }) {
-  if (isPostgresBackend()) {
-    await executeQuery(
-      `
-        delete from public.student_access_lesson_types
-        where student_access_id = $1
-      `,
-      [accessId],
-    );
-
-    if (lessonTypeIds.length === 0) {
-      return;
-    }
-
-    await executeQuery(
-      `
-        insert into public.student_access_lesson_types (
-          student_access_id, lesson_type_id
-        )
-        select $1::uuid, unnest($2::uuid[])
-      `,
-      [accessId, lessonTypeIds],
-    );
-    return;
-  }
-
-  if (!supabase) {
-    throw new Error("Supabase client is required");
-  }
-
-  const { error: deleteError } = await supabase
-    .from("student_access_lesson_types")
-    .delete()
-    .eq("student_access_id", accessId);
-
-  if (deleteError) {
-    throw new Error(deleteError.message);
-  }
+  await executeQuery(
+    `
+      delete from public.student_access_lesson_types
+      where student_access_id = $1
+    `,
+    [accessId],
+  );
 
   if (lessonTypeIds.length === 0) {
     return;
   }
 
-  const { error: insertError } = await supabase
-    .from("student_access_lesson_types")
-    .insert(
-      lessonTypeIds.map((lessonTypeId) => ({
-        student_access_id: accessId,
-        lesson_type_id: lessonTypeId,
-      })),
-    );
-
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
+  await executeQuery(
+    `
+      insert into public.student_access_lesson_types (
+        student_access_id, lesson_type_id
+      )
+      select $1::uuid, unnest($2::uuid[])
+    `,
+    [accessId, lessonTypeIds],
+  );
 }
 
 async function replacePackageLessonTypes({
-  supabase,
   packageId,
   lessonTypeIds,
 }: {
-  supabase?: ReturnType<typeof createAdminClient>;
   packageId: string;
   lessonTypeIds: string[];
 }) {
-  if (isPostgresBackend()) {
-    await executeQuery(
-      `
-        delete from public.student_lesson_package_types
-        where package_id = $1
-      `,
-      [packageId],
-    );
-
-    if (lessonTypeIds.length === 0) {
-      return;
-    }
-
-    await executeQuery(
-      `
-        insert into public.student_lesson_package_types (
-          package_id, lesson_type_id
-        )
-        select $1::uuid, unnest($2::uuid[])
-      `,
-      [packageId, lessonTypeIds],
-    );
-    return;
-  }
-
-  if (!supabase) {
-    throw new Error("Supabase client is required");
-  }
-
-  const { error: deleteError } = await supabase
-    .from("student_lesson_package_types")
-    .delete()
-    .eq("package_id", packageId);
-
-  if (deleteError) {
-    throw new Error(deleteError.message);
-  }
+  await executeQuery(
+    `
+      delete from public.student_lesson_package_types
+      where package_id = $1
+    `,
+    [packageId],
+  );
 
   if (lessonTypeIds.length === 0) {
     return;
   }
 
-  const { error: insertError } = await supabase
-    .from("student_lesson_package_types")
-    .insert(
-      lessonTypeIds.map((lessonTypeId) => ({
-        package_id: packageId,
-        lesson_type_id: lessonTypeId,
-      })),
-    );
-
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
+  await executeQuery(
+    `
+      insert into public.student_lesson_package_types (
+        package_id, lesson_type_id
+      )
+      select $1::uuid, unnest($2::uuid[])
+    `,
+    [packageId, lessonTypeIds],
+  );
 }
 
 async function syncPrimaryStudentLessonPackage({
-  supabase,
   accessId,
   organizationId,
   instructorId,
@@ -421,7 +311,6 @@ async function syncPrimaryStudentLessonPackage({
   isActive,
   lessonTypeIds,
 }: {
-  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   organizationId: string;
   instructorId: string;
@@ -433,8 +322,7 @@ async function syncPrimaryStudentLessonPackage({
   isActive: boolean;
   lessonTypeIds: string[];
 }) {
-  if (isPostgresBackend()) {
-    const existingPackage = await queryOne<{ id: string }>(
+  const existingPackage = await queryOne<{ id: string }>(
       `
         select id
         from public.student_lesson_packages
@@ -505,105 +393,23 @@ async function syncPrimaryStudentLessonPackage({
       packageId = packageRow.id;
     }
 
-    await replacePackageLessonTypes({
-      supabase,
-      packageId,
-      lessonTypeIds,
-    });
-
-    return packageId;
+  if (!packageId) {
+    throw new Error("Не удалось создать доступ к занятиям");
   }
 
-  if (!supabase) {
-    throw new Error("Supabase client is required");
-  }
-
-  const { data: existingPackage, error: packageLookupError } = await supabase
-    .from("student_lesson_packages")
-    .select("id")
-    .eq("student_access_id", accessId)
-    .eq("sort_order", 100)
-    .maybeSingle();
-
-  if (packageLookupError) {
-    if (isMissingPricingTableError(packageLookupError)) {
-      return null;
-    }
-
-    throw new Error(packageLookupError.message);
-  }
-
-  let packageId = existingPackage?.id as string | undefined;
-
-  if (packageId) {
-    const { error } = await supabase
-      .from("student_lesson_packages")
-      .update({
-        organization_id: organizationId,
-        instructor_id: instructorId,
-        school_id: schoolId,
-        booking_category: "regular",
-        custom_price_amount: customPriceAmount,
-        payment_rule_override: paymentRuleOverride,
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        is_active: isActive,
-      })
-      .eq("id", packageId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-  } else {
-    const { data, error } = await supabase
-      .from("student_lesson_packages")
-      .insert({
-        student_access_id: accessId,
-        organization_id: organizationId,
-        instructor_id: instructorId,
-        school_id: schoolId,
-        booking_category: "regular",
-        custom_price_amount: customPriceAmount,
-        payment_rule_override: paymentRuleOverride,
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        is_active: isActive,
-        sort_order: 100,
-      })
-      .select("id")
-      .single();
-
-    if (error || !data) {
-      if (isMissingPricingTableError(error)) {
-        return null;
-      }
-
-      throw new Error(error?.message ?? "Не удалось создать доступ к занятиям");
-    }
-
-    packageId = data.id as string;
-  }
-
-  await replacePackageLessonTypes({
-    supabase,
-    packageId,
-    lessonTypeIds,
-  });
+  await replacePackageLessonTypes({ packageId, lessonTypeIds });
 
   return packageId;
 }
 
 async function syncAccessLessonTypesFromPackages({
-  supabase,
   accessId,
   fallbackLessonTypeIds,
 }: {
-  supabase?: ReturnType<typeof createAdminClient>;
   accessId: string;
   fallbackLessonTypeIds: string[];
 }) {
-  if (isPostgresBackend()) {
-    const packages = await queryRows<{ id: string }>(
+  const packages = await queryRows<{ id: string }>(
       `
         select id
         from public.student_lesson_packages
@@ -630,57 +436,7 @@ async function syncAccessLessonTypesFromPackages({
       }
     }
 
-    await replaceAccessLessonTypes({
-      supabase,
-      accessId,
-      lessonTypeIds: [...lessonTypeIds],
-    });
-    return;
-  }
-
-  if (!supabase) {
-    throw new Error("Supabase client is required");
-  }
-
-  const { data: packages, error: packageError } = await supabase
-    .from("student_lesson_packages")
-    .select("id")
-    .eq("student_access_id", accessId)
-    .eq("is_active", true);
-
-  if (packageError) {
-    if (isMissingPricingTableError(packageError)) {
-      await replaceAccessLessonTypes({
-        supabase,
-        accessId,
-        lessonTypeIds: fallbackLessonTypeIds,
-      });
-      return;
-    }
-
-    throw new Error(packageError.message);
-  }
-
-  const packageIds = (packages ?? []).map((item) => item.id as string);
-  const lessonTypeIds = new Set(fallbackLessonTypeIds);
-
-  if (packageIds.length > 0) {
-    const { data: packageTypes, error: packageTypesError } = await supabase
-      .from("student_lesson_package_types")
-      .select("lesson_type_id")
-      .in("package_id", packageIds);
-
-    if (packageTypesError) {
-      throw new Error(packageTypesError.message);
-    }
-
-    for (const item of packageTypes ?? []) {
-      lessonTypeIds.add(item.lesson_type_id as string);
-    }
-  }
-
   await replaceAccessLessonTypes({
-    supabase,
     accessId,
     lessonTypeIds: [...lessonTypeIds],
   });
@@ -724,76 +480,36 @@ async function getManageableAccess(accessId: string) {
 async function getManageableStudentLessonPackage(packageId: string) {
   const membership = await requireActiveOrganizationMember();
 
-  if (isPostgresBackend()) {
-    const data = await queryOne<{
-      id: string;
-      student_access_id: string;
-      instructor_id: string;
-      organization_id: string;
-      sort_order: number;
-      school_id: string | null;
-      custom_price_amount: number | null;
-      payment_rule_override: SchoolPaymentRule | null;
-    }>(
-      `
-        select id, student_access_id, instructor_id, organization_id, sort_order,
-               school_id, custom_price_amount, payment_rule_override
-        from public.student_lesson_packages
-        where id = $1
-          and organization_id = $2
-        limit 1
-      `,
-      [packageId, membership.organizationId],
-    );
-
-    if (!data) {
-      throw new Error("Доступ к занятиям не найден");
-    }
-
-    await requireInstructorAccess(data.instructor_id);
-
-    return {
-      membership,
-      packageRow: data,
-    };
-  }
-
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from("student_lesson_packages")
-    .select("id, student_access_id, instructor_id, organization_id, sort_order, school_id, custom_price_amount, payment_rule_override")
-    .eq("id", packageId)
-    .eq("organization_id", membership.organizationId)
-    .maybeSingle();
-
-  if (error) {
-    if (isMissingPricingTableError(error)) {
-      throw new Error(
-        "Сначала примените миграцию для пакетов занятий в Supabase",
-      );
-    }
-
-    throw new Error(error.message);
-  }
+  const data = await queryOne<{
+    id: string;
+    student_access_id: string;
+    instructor_id: string;
+    organization_id: string;
+    sort_order: number;
+    school_id: string | null;
+    custom_price_amount: number | null;
+    payment_rule_override: SchoolPaymentRule | null;
+  }>(
+    `
+      select id, student_access_id, instructor_id, organization_id, sort_order,
+             school_id, custom_price_amount, payment_rule_override
+      from public.student_lesson_packages
+      where id = $1
+        and organization_id = $2
+      limit 1
+    `,
+    [packageId, membership.organizationId],
+  );
 
   if (!data) {
     throw new Error("Доступ к занятиям не найден");
   }
 
-  await requireInstructorAccess(data.instructor_id as string);
+  await requireInstructorAccess(data.instructor_id);
 
   return {
     membership,
-    packageRow: data as {
-      id: string;
-      student_access_id: string;
-      instructor_id: string;
-      organization_id: string;
-      sort_order: number;
-      school_id: string | null;
-      custom_price_amount: number | null;
-      payment_rule_override: SchoolPaymentRule | null;
-    },
+    packageRow: data,
   };
 }
 
@@ -828,10 +544,6 @@ async function canManageStudentLessonPackages({
     return true;
   }
 
-  if (!isPostgresBackend()) {
-    return false;
-  }
-
   const settings = await queryOne<{ can_manage_student_packages: boolean }>(
     `
       select can_manage_student_packages
@@ -861,7 +573,7 @@ async function canManagePrivateStudentPackagePrice({
     return true;
   }
 
-  if (!isPostgresBackend() || bookingCategory !== "extra") {
+  if (bookingCategory !== "extra") {
     return false;
   }
 
@@ -932,10 +644,6 @@ async function canManagePrivateStudentPackageTerms({
   schoolId: string;
   bookingCategory: BookingCategory;
 }) {
-  if (!isPostgresBackend()) {
-    return false;
-  }
-
   const school = await queryOne<{ name: string; is_active: boolean }>(
     `
       select name, is_active
@@ -996,55 +704,26 @@ function assertCanManageStudentPrepaidCredits(
 
 async function getPrimaryPackageTerms({
   accessId,
-  supabase,
 }: {
   accessId: string;
-  supabase?: ReturnType<typeof createAdminClient>;
 }) {
-  if (isPostgresBackend()) {
-    const row = await queryOne<{
-      custom_price_amount: number | null;
-      payment_rule_override: SchoolPaymentRule | null;
-    }>(
-      `
-        select custom_price_amount, payment_rule_override
-        from public.student_lesson_packages
-        where student_access_id = $1
-          and sort_order = 100
-        limit 1
-      `,
-      [accessId],
-    );
-
-    return {
-      customPriceAmount: row?.custom_price_amount ?? null,
-      paymentRuleOverride: row?.payment_rule_override ?? null,
-    };
-  }
-
-  const client = supabase ?? createAdminClient();
-  const { data, error } = await client
-    .from("student_lesson_packages")
-    .select("custom_price_amount, payment_rule_override")
-    .eq("student_access_id", accessId)
-    .eq("sort_order", 100)
-    .maybeSingle();
-
-  if (error && !isMissingPricingTableError(error)) {
-    throw new Error(error.message);
-  }
+  const row = await queryOne<{
+    custom_price_amount: number | null;
+    payment_rule_override: SchoolPaymentRule | null;
+  }>(
+    `
+      select custom_price_amount, payment_rule_override
+      from public.student_lesson_packages
+      where student_access_id = $1
+        and sort_order = 100
+      limit 1
+    `,
+    [accessId],
+  );
 
   return {
-    customPriceAmount:
-      typeof data?.custom_price_amount === "number"
-        ? data.custom_price_amount
-        : null,
-    paymentRuleOverride:
-      data?.payment_rule_override === "manual" ||
-      data?.payment_rule_override === "prepaid" ||
-      data?.payment_rule_override === "settle_later"
-        ? data.payment_rule_override
-        : null,
+    customPriceAmount: row?.custom_price_amount ?? null,
+    paymentRuleOverride: row?.payment_rule_override ?? null,
   };
 }
 
@@ -1232,7 +911,7 @@ export async function createStudentAccessAction(
       throw new Error("Метка ученика должна быть не длиннее 80 символов");
     }
 
-    if (isPostgresBackend()) {
+    {
       const access = await queryOne<{ id: string }>(
         `
           insert into public.student_accesses (
@@ -1309,63 +988,6 @@ export async function createStudentAccessAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data: access, error } = await supabase
-      .from("student_accesses")
-      .insert({
-        organization_id: membership.organizationId,
-        instructor_id: instructorId,
-        display_label: displayLabel,
-        student_phone: studentPhone,
-        login,
-        password_hash: hashStudentAccessSecret(secret),
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        school_id: schoolId,
-        is_active: isActive,
-      })
-      .select("id")
-      .single();
-
-    if (error || !access) {
-      if (error?.code === "23505") {
-        throw new Error("Такой логин уже используется");
-      }
-
-      throw new Error(error?.message ?? "Не удалось добавить ученика");
-    }
-
-    try {
-      await replaceAccessLessonTypes({
-        supabase,
-        accessId: access.id,
-        lessonTypeIds,
-      });
-      await syncPrimaryStudentLessonPackage({
-        supabase,
-        accessId: access.id,
-        organizationId: membership.organizationId,
-        instructorId,
-        schoolId,
-        customPriceAmount: effectiveCustomPriceAmount,
-        paymentRuleOverride: effectivePaymentRuleOverride,
-        totalLessonLimit,
-        weeklyLessonLimit,
-        isActive,
-        lessonTypeIds,
-      });
-    } catch (lessonTypesError) {
-      await supabase.from("student_accesses").delete().eq("id", access.id);
-      throw lessonTypesError;
-    }
-
-    revalidatePath("/admin/students");
-
-    return {
-      status: "success",
-      message:
-        "Доступ создан. Передайте ученику логин и ПИН-код: кабинет откроется после заполнения профиля и согласия.",
-    };
   } catch (error) {
     console.error("createStudentAccessAction:", error);
 
@@ -1439,7 +1061,7 @@ export async function approveStudentRegistrationRequestAction(
 
     validateLogin(login);
 
-    if (isPostgresBackend()) {
+    {
       const existingAccess = await queryOne<{ id: string }>(
         `
           select id
@@ -1567,103 +1189,6 @@ export async function approveStudentRegistrationRequestAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data: existingAccess, error: accessCheckError } = await supabase
-      .from("student_accesses")
-      .select("id")
-      .eq("organization_id", request.organization_id)
-      .eq("login", login)
-      .maybeSingle();
-
-    if (accessCheckError) {
-      throw new Error(accessCheckError.message);
-    }
-
-    if (existingAccess) {
-      throw new Error("Такой логин уже используется активным учеником");
-    }
-
-    const { data: access, error } = await supabase
-      .from("student_accesses")
-      .insert({
-        organization_id: request.organization_id,
-        instructor_id: request.instructor_id,
-        display_label: displayLabel,
-        student_phone: studentPhone,
-        login,
-        password_hash: request.password_hash,
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        school_id: schoolId,
-        is_active: isActive,
-      })
-      .select("id")
-      .single();
-
-    if (error || !access) {
-      if (error?.code === "23505") {
-        throw new Error("Такой логин уже используется");
-      }
-
-      throw new Error(error?.message ?? "Не удалось подтвердить ученика");
-    }
-
-    try {
-      await replaceAccessLessonTypes({
-        supabase,
-        accessId: access.id,
-        lessonTypeIds,
-      });
-      await syncPrimaryStudentLessonPackage({
-        supabase,
-        accessId: access.id,
-        organizationId: request.organization_id,
-        instructorId: request.instructor_id,
-        schoolId,
-        customPriceAmount: effectiveCustomPriceAmount,
-        paymentRuleOverride: effectivePaymentRuleOverride,
-        totalLessonLimit,
-        weeklyLessonLimit,
-        isActive,
-        lessonTypeIds,
-      });
-    } catch (lessonTypesError) {
-      await supabase.from("student_accesses").delete().eq("id", access.id);
-      throw lessonTypesError;
-    }
-
-    const { error: requestError } = await supabase
-      .from("student_registration_requests")
-      .update({
-        status: "approved",
-        reviewed_at: new Date().toISOString(),
-      })
-      .eq("id", request.id)
-      .eq("status", "pending");
-
-    if (requestError) {
-      throw new Error(requestError.message);
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "student_registration.approved",
-      entityType: "student_registration_request",
-      entityId: request.id,
-      metadata: {
-        instructor_id: request.instructor_id,
-        student_access_id: access.id,
-        is_active: isActive,
-        lesson_type_count: lessonTypeIds.length,
-      },
-    });
-
-    revalidatePath("/admin/students");
-
-    return {
-      status: "success",
-      message: "Заявка подтверждена. Ученик добавлен в активные.",
-    };
   } catch (error) {
     console.error("approveStudentRegistrationRequestAction:", error);
 
@@ -1811,7 +1336,7 @@ export async function updateStudentAccessAction(
       updates.password_hash = hashStudentAccessSecret(newSecret);
     }
 
-    if (isPostgresBackend()) {
+    {
       try {
         if (updates.password_hash) {
           await executeQuery(
@@ -1922,61 +1447,6 @@ export async function updateStudentAccessAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_accesses")
-      .update(updates)
-      .eq("id", access.id)
-      .eq("instructor_id", access.instructor_id);
-
-    if (error) {
-      if (error.code === "23505") {
-        throw new Error("Такой логин уже используется");
-      }
-
-      throw new Error(error.message);
-    }
-
-    await syncPrimaryStudentLessonPackage({
-      supabase,
-      accessId: access.id,
-      organizationId: access.organization_id,
-      instructorId: access.instructor_id,
-      schoolId,
-      customPriceAmount: effectiveCustomPriceAmount,
-      paymentRuleOverride: effectivePaymentRuleOverride,
-      totalLessonLimit,
-      weeklyLessonLimit,
-      isActive,
-      lessonTypeIds,
-    });
-    await syncAccessLessonTypesFromPackages({
-      supabase,
-      accessId: access.id,
-      fallbackLessonTypeIds: lessonTypeIds,
-    });
-
-    await logAuditEvent({
-      membership,
-      action: "student_access.updated",
-      entityType: "student_access",
-      entityId: access.id,
-      metadata: {
-        instructor_id: access.instructor_id,
-        is_active: isActive,
-        secret_changed: Boolean(newSecret),
-        lesson_type_count: lessonTypeIds.length,
-      },
-    });
-
-    revalidatePath("/admin/students");
-
-    return {
-      status: "success",
-      message: newSecret
-      ? "Доступ обновлён. Не забудьте передать ученику новый ПИН-код/пароль."
-        : "Доступ обновлён",
-    };
   } catch (error) {
     console.error("updateStudentAccessAction:", error);
 
@@ -2507,7 +1977,7 @@ export async function addStudentLessonPackageAction(
       readLessonTypeIds(formData),
     );
 
-    if (isPostgresBackend()) {
+    {
       const lastPackage = await queryOne<{ sort_order: number | null }>(
         `
           select sort_order
@@ -2592,89 +2062,6 @@ export async function addStudentLessonPackageAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { data: lastPackage, error: lastPackageError } = await supabase
-      .from("student_lesson_packages")
-      .select("sort_order")
-      .eq("student_access_id", access.id)
-      .order("sort_order", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (lastPackageError) {
-      if (isMissingPricingTableError(lastPackageError)) {
-        throw new Error(
-          "Сначала примените миграцию для пакетов занятий в Supabase",
-        );
-      }
-
-      throw new Error(lastPackageError.message);
-    }
-
-    const sortOrder =
-      typeof lastPackage?.sort_order === "number"
-        ? Math.max(lastPackage.sort_order + 10, 200)
-        : 200;
-    const { data: packageRow, error: packageError } = await supabase
-      .from("student_lesson_packages")
-      .insert({
-        student_access_id: access.id,
-        organization_id: membership.organizationId,
-        instructor_id: access.instructor_id,
-        school_id: schoolId,
-        booking_category: bookingCategory,
-        custom_price_amount: effectiveCustomPriceAmount,
-        payment_rule_override: effectivePaymentRuleOverride,
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        is_active: isActive,
-        sort_order: sortOrder,
-      })
-      .select("id")
-      .single();
-
-    if (packageError || !packageRow) {
-      throw new Error(packageError?.message ?? "Не удалось добавить пакет");
-    }
-
-    try {
-      await replacePackageLessonTypes({
-        supabase,
-        packageId: packageRow.id as string,
-        lessonTypeIds,
-      });
-      await syncAccessLessonTypesFromPackages({
-        supabase,
-        accessId: access.id,
-        fallbackLessonTypeIds: lessonTypeIds,
-      });
-    } catch (packageTypesError) {
-      await supabase
-        .from("student_lesson_packages")
-        .delete()
-        .eq("id", packageRow.id);
-      throw packageTypesError;
-    }
-
-    await logAuditEvent({
-      membership,
-      action: "student_lesson_package.created",
-      entityType: "student_access",
-      entityId: access.id,
-      metadata: {
-        instructor_id: access.instructor_id,
-        school_id: schoolId,
-        booking_category: bookingCategory,
-        lesson_type_count: lessonTypeIds.length,
-      },
-    });
-
-    revalidateStudentAccessPaths();
-
-    return {
-      status: "success",
-      message: "Дополнительный доступ добавлен",
-    };
   } catch (error) {
     console.error("addStudentLessonPackageAction:", error);
 
@@ -2762,7 +2149,7 @@ export async function updateStudentLessonPackageAction(
       readLessonTypeIds(formData),
     );
 
-    if (isPostgresBackend()) {
+    {
       await executeQuery(
         `
           update public.student_lesson_packages
@@ -2821,56 +2208,6 @@ export async function updateStudentLessonPackageAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { error } = await supabase
-      .from("student_lesson_packages")
-      .update({
-        school_id: schoolId,
-        booking_category: bookingCategory,
-        custom_price_amount: effectiveCustomPriceAmount,
-        payment_rule_override: effectivePaymentRuleOverride,
-        total_lesson_limit: totalLessonLimit,
-        weekly_lesson_limit: weeklyLessonLimit,
-        is_active: isActive,
-      })
-      .eq("id", packageRow.id)
-      .eq("organization_id", membership.organizationId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    await replacePackageLessonTypes({
-      supabase,
-      packageId: packageRow.id,
-      lessonTypeIds,
-    });
-    await syncAccessLessonTypesFromPackages({
-      supabase,
-      accessId: packageRow.student_access_id,
-      fallbackLessonTypeIds: lessonTypeIds,
-    });
-    await logAuditEvent({
-      membership,
-      action: "student_lesson_package.updated",
-      entityType: "student_access",
-      entityId: packageRow.student_access_id,
-      metadata: {
-        package_id: packageRow.id,
-        instructor_id: packageRow.instructor_id,
-        school_id: schoolId,
-        booking_category: bookingCategory,
-        is_active: isActive,
-        lesson_type_count: lessonTypeIds.length,
-      },
-    });
-
-    revalidateStudentAccessPaths();
-
-    return {
-      status: "success",
-      message: "Дополнительный доступ обновлён",
-    };
   } catch (error) {
     console.error("updateStudentLessonPackageAction:", error);
 
@@ -2901,7 +2238,7 @@ export async function deleteStudentLessonPackageAction(
       instructorId: packageRow.instructor_id,
     });
 
-    if (isPostgresBackend()) {
+    {
       const bookingCount = await queryOne<{ count: string }>(
         `
           select count(*)::text as count
@@ -2949,54 +2286,6 @@ export async function deleteStudentLessonPackageAction(
       };
     }
 
-    const supabase = createAdminClient();
-    const { count, error: bookingCountError } = await supabase
-      .from("bookings")
-      .select("id", { count: "exact", head: true })
-      .eq("student_lesson_package_id", packageRow.id);
-
-    if (bookingCountError) {
-      throw new Error(bookingCountError.message);
-    }
-
-    if ((count ?? 0) > 0) {
-      throw new Error(
-        "По этому доступу уже есть записи. Его можно отключить, но не удалить.",
-      );
-    }
-
-    const { error } = await supabase
-      .from("student_lesson_packages")
-      .delete()
-      .eq("id", packageRow.id)
-      .eq("organization_id", membership.organizationId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    await syncAccessLessonTypesFromPackages({
-      supabase,
-      accessId: packageRow.student_access_id,
-      fallbackLessonTypeIds: [],
-    });
-    await logAuditEvent({
-      membership,
-      action: "student_lesson_package.deleted",
-      entityType: "student_access",
-      entityId: packageRow.student_access_id,
-      metadata: {
-        package_id: packageRow.id,
-        instructor_id: packageRow.instructor_id,
-      },
-    });
-
-    revalidateStudentAccessPaths();
-
-    return {
-      status: "success",
-      message: "Дополнительный доступ удалён",
-    };
   } catch (error) {
     console.error("deleteStudentLessonPackageAction:", error);
 

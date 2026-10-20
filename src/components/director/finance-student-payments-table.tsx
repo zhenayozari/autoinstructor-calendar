@@ -15,6 +15,7 @@ type StudentPaymentRow = {
   instructor_name: string;
   school_name: string;
   lesson_type_name: string;
+  access_label: string | null;
   school_id: string;
   lesson_type_id: string;
   quantity: number;
@@ -288,7 +289,7 @@ function FragmentRow({
   return <>
     <tr className="border-t border-zinc-200 bg-white align-middle hover:bg-zinc-50">
       <td className={`px-3 py-3 pl-6 ${paymentAccent}`}><span className="font-semibold text-zinc-900">Оплата {paymentNumber} из {paymentCount}</span><span className="mt-1 block text-xs text-zinc-500">Отдельная запись об оплате</span></td>
-      <td className="px-3 py-3">{item.school_name}<span className="mt-1 block text-xs text-zinc-500">{item.lesson_type_name} · {item.instructor_name}</span></td>
+      <td className="px-3 py-3">{item.school_name}<span className="mt-1 block text-xs text-zinc-500">{item.lesson_type_name} · {item.instructor_name}</span>{item.access_label && <span className="mt-1 block text-xs font-medium text-zinc-700">Оплата за: {item.access_label}</span>}</td>
       <td className="px-3 py-3 text-right"><span className="font-semibold">{formatMoney(item.final_total_amount)}</span><span className="mt-1 block text-xs text-zinc-500">за {item.quantity} {item.quantity === 1 ? "занятие" : item.quantity < 5 ? "занятия" : "занятий"}</span></td>
       <td className="px-3 py-3 text-right">{item.used_quantity} из {item.quantity}<span className="mt-1 block text-xs text-zinc-500">использовано</span></td>
       <td className="px-3 py-3 text-right"><span className="font-semibold">{available}</span><span className="mt-1 block text-xs text-zinc-500">доступно для записи</span>{closed > 0 && <span className="mt-1 block text-xs text-red-600">закрыто: {closed}</span>}</td>

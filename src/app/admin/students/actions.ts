@@ -2239,18 +2239,31 @@ export async function deleteStudentLessonPackageAction(
     });
 
     {
-      const bookingCount = await queryOne<{ count: string }>(
-        `
-          select count(*)::text as count
-          from public.bookings
-          where student_lesson_package_id = $1
-        `,
-        [packageRow.id],
-      );
+      const [bookingCount, prepaidCreditCount] = await Promise.all([
+        queryOne<{ count: string }>(
+          `
+            select count(*)::text as count
+            from public.bookings
+            where student_lesson_package_id = $1
+          `,
+          [packageRow.id],
+        ),
+        queryOne<{ count: string }>(
+          `
+            select count(*)::text as count
+            from public.student_prepaid_credits
+            where student_lesson_package_id = $1
+          `,
+          [packageRow.id],
+        ),
+      ]);
 
-      if (Number(bookingCount?.count ?? 0) > 0) {
+      if (
+        Number(bookingCount?.count ?? 0) > 0 ||
+        Number(prepaidCreditCount?.count ?? 0) > 0
+      ) {
         throw new Error(
-          "По этому доступу уже есть записи. Его можно отключить, но не удалить.",
+          "По этому доступу уже есть записи или оплаты. Его можно отключить, но не удалить.",
         );
       }
 
@@ -2367,11 +2380,17 @@ async function getPrepaidLessonPrice({
   organizationId,
   schoolId,
   lessonTypeId,
+  customPriceAmount,
 }: {
   organizationId: string;
   schoolId: string;
   lessonTypeId: string;
+  customPriceAmount: number | null;
 }) {
+  if (customPriceAmount !== null) {
+    return customPriceAmount;
+  }
+
   const row = await queryOne<{ price_amount: number }>(
     `
       select price_amount
@@ -2412,13 +2431,57 @@ async function validatePrepaidLessonType(lessonTypeId: string) {
 
 async function validatePrepaidAccessSelection({
   accessId,
+  packageId,
   schoolId,
   lessonTypeId,
 }: {
   accessId: string;
+  packageId: string | null;
   schoolId: string;
   lessonTypeId: string;
 }) {
+  if (packageId) {
+    const packageRow = await queryOne<{
+      school_id: string | null;
+      custom_price_amount: number | null;
+    }>(
+      `
+        select school_id, custom_price_amount
+        from public.student_lesson_packages
+        where id = $1
+          and student_access_id = $2
+          and is_active = true
+        limit 1
+      `,
+      [packageId, accessId],
+    );
+
+    if (!packageRow) {
+      throw new Error("Выбранный доступ к занятиям недоступен");
+    }
+
+    if (!packageRow.school_id || packageRow.school_id !== schoolId) {
+      throw new Error("Источник оплаты должен совпадать с источником выбранного доступа");
+    }
+
+    const allowedType = await queryOne<{ lesson_type_id: string }>(
+      `
+        select lesson_type_id
+        from public.student_lesson_package_types
+        where package_id = $1
+          and lesson_type_id = $2
+        limit 1
+      `,
+      [packageId, lessonTypeId],
+    );
+
+    if (!allowedType) {
+      throw new Error("Выбранный тип занятия не входит в выбранный доступ");
+    }
+
+    return packageRow;
+  }
+
   const access = await queryOne<{ school_id: string | null }>(
     `
       select school_id
@@ -2447,6 +2510,8 @@ async function validatePrepaidAccessSelection({
   if (!allowedType) {
     throw new Error("Выбранный тип занятия не входит в доступ ученика");
   }
+
+  return { custom_price_amount: null };
 }
 
 export async function createStudentPrepaidCreditAction(
@@ -2468,10 +2533,12 @@ export async function createStudentPrepaidCreditAction(
       formData,
       membership.organizationId,
     );
+    const packageId = readOptionalString(formData, "student_lesson_package_id");
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     await validatePrepaidLessonType(lessonTypeId);
-    await validatePrepaidAccessSelection({
+    const packageTerms = await validatePrepaidAccessSelection({
       accessId,
+      packageId,
       schoolId,
       lessonTypeId,
     });
@@ -2484,6 +2551,7 @@ export async function createStudentPrepaidCreditAction(
       organizationId: membership.organizationId,
       schoolId,
       lessonTypeId,
+      customPriceAmount: packageTerms.custom_price_amount,
     });
     const finalTotalAmount = readOptionalMoneyAmount(
       formData,
@@ -2508,6 +2576,7 @@ export async function createStudentPrepaidCreditAction(
           insert into public.student_prepaid_credits (
             organization_id,
             student_access_id,
+            student_lesson_package_id,
             instructor_id,
             school_id,
             lesson_type_id,
@@ -2521,16 +2590,17 @@ export async function createStudentPrepaidCreditAction(
             created_by_member_id
           )
           values (
-            $1, $2, $3, $4, $5, $6::integer, $7::integer,
-            $7::bigint * $6::integer,
-            $8::bigint / $6::integer, $8::bigint,
-            coalesce($9::date, current_date), $10, $11
+            $1, $2, $3::uuid, $4, $5, $6, $7::integer, $8::integer,
+            $8::bigint * $7::integer,
+            $9::bigint / $7::integer, $9::bigint,
+            coalesce($10::date, current_date), $11, $12
           )
           returning id
         `,
         [
           membership.organizationId,
           access.id,
+          packageId,
           access.instructor_id,
           schoolId,
           lessonTypeId,
@@ -2562,6 +2632,7 @@ export async function createStudentPrepaidCreditAction(
       entityId: credit.id,
       metadata: {
         student_access_id: access.id,
+        student_lesson_package_id: packageId,
         instructor_id: access.instructor_id,
         school_id: schoolId,
         lesson_type_id: lessonTypeId,
@@ -2595,6 +2666,7 @@ export async function updateStudentPrepaidCreditAction(
     const credit = await queryOne<{
       id: string;
       student_access_id: string;
+      student_lesson_package_id: string | null;
       instructor_id: string;
       organization_id: string;
       school_id: string;
@@ -2607,6 +2679,7 @@ export async function updateStudentPrepaidCreditAction(
       `
         select credits.id,
                credits.student_access_id,
+               credits.student_lesson_package_id,
                credits.instructor_id,
                credits.organization_id,
                credits.school_id,
@@ -2647,8 +2720,9 @@ export async function updateStudentPrepaidCreditAction(
     );
     const lessonTypeId = readRequiredString(formData, "lesson_type_id");
     await validatePrepaidLessonType(lessonTypeId);
-    await validatePrepaidAccessSelection({
+    const packageTerms = await validatePrepaidAccessSelection({
       accessId: credit.student_access_id,
+      packageId: credit.student_lesson_package_id,
       schoolId,
       lessonTypeId,
     });
@@ -2677,6 +2751,7 @@ export async function updateStudentPrepaidCreditAction(
       organizationId: membership.organizationId,
       schoolId,
       lessonTypeId,
+      customPriceAmount: packageTerms.custom_price_amount,
     });
     const finalTotalAmount = readOptionalMoneyAmount(
       formData,

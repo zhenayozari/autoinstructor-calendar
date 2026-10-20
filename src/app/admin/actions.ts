@@ -25,6 +25,7 @@ import {
 } from "@/lib/pricing";
 import {
   hasAdditionalTotalLessonUnitPostgres,
+  lockStudentAccessForBookingPostgres,
   selectStudentLessonPackageForBookingPostgres,
 } from "@/lib/student-lesson-packages";
 import {
@@ -2944,43 +2945,45 @@ export async function assignStudentToSlotAction(
         lessonDate: scheduleDay.date,
       });
 
-      const selectedPackage = await selectStudentLessonPackageForBookingPostgres({
-        access,
-        lessonTypeId: slot.lesson_type_id,
-        lessonDate: scheduleDay.date,
-        legacyLessonTypeIds: allowedLessonTypes.map(
-          (item) => item.lesson_type_id,
-        ),
-      });
-
-      const configuredPriceAmount =
-        await getConfiguredLessonPriceAmountPostgres({
-          organizationId: access.organization_id,
-          schoolId: selectedPackage.schoolId,
-          lessonTypeId: slot.lesson_type_id,
-        });
-      const packagePriceAmount =
-        selectedPackage.customPriceAmount ?? configuredPriceAmount;
-      const priceAmount = getEffectiveBookingPriceAmount({
-        priceAmount: packagePriceAmount,
-        bookingCategory: selectedPackage.bookingCategory,
-      });
-      const paymentRule =
-        selectedPackage.paymentRuleOverride ??
-        (await getSchoolPaymentRulePostgres({
-          organizationId: access.organization_id,
-          schoolId: selectedPackage.schoolId,
-        }));
-      const paymentFields = getInitialBookingPaymentFields({
-        priceAmount,
-        paymentRule,
-        bookingCategory: selectedPackage.bookingCategory,
-      });
-
       let createdBookingId: string | null = null;
+      let priceAmount: number | null = null;
 
       try {
         await withTransaction(async () => {
+          await lockStudentAccessForBookingPostgres(access.id);
+
+          const selectedPackage =
+            await selectStudentLessonPackageForBookingPostgres({
+              access,
+              lessonTypeId: slot.lesson_type_id,
+              lessonDate: scheduleDay.date,
+              legacyLessonTypeIds: allowedLessonTypes.map(
+                (item) => item.lesson_type_id,
+              ),
+            });
+          const configuredPriceAmount =
+            await getConfiguredLessonPriceAmountPostgres({
+              organizationId: access.organization_id,
+              schoolId: selectedPackage.schoolId,
+              lessonTypeId: slot.lesson_type_id,
+            });
+          const packagePriceAmount =
+            selectedPackage.customPriceAmount ?? configuredPriceAmount;
+          priceAmount = getEffectiveBookingPriceAmount({
+            priceAmount: packagePriceAmount,
+            bookingCategory: selectedPackage.bookingCategory,
+          });
+          const paymentRule =
+            selectedPackage.paymentRuleOverride ??
+            (await getSchoolPaymentRulePostgres({
+              organizationId: access.organization_id,
+              schoolId: selectedPackage.schoolId,
+            }));
+          const paymentFields = getInitialBookingPaymentFields({
+            priceAmount,
+            paymentRule,
+            bookingCategory: selectedPackage.bookingCategory,
+          });
           const createdBooking = await queryOne<{ id: string }>(
             `
               insert into public.bookings (
@@ -3014,6 +3017,7 @@ export async function assignStudentToSlotAction(
           await applyPrepaidCreditToBooking({
             bookingId: createdBookingId,
             studentAccessId: access.id,
+            studentLessonPackageId: selectedPackage.id,
             schoolId: selectedPackage.schoolId,
             lessonTypeId: slot.lesson_type_id,
             amount: priceAmount ?? 0,

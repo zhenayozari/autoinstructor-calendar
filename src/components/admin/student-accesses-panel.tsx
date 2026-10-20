@@ -1964,12 +1964,9 @@ function StudentAccessCard({
             accessId={access.id}
             accessSchoolId={access.school_id}
             accessLessonTypeIds={access.lesson_type_ids}
+            packages={access.packages ?? []}
             credits={access.prepaidCredits ?? []}
-            schools={
-              access.school_id
-                ? schools.filter((school) => school.id === access.school_id)
-                : schools
-            }
+            schools={schools}
             lessonTypes={lessonTypes}
             prices={schoolLessonTypePrices}
             canManage

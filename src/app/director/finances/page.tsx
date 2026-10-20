@@ -37,6 +37,7 @@ type StudentPaymentRow = {
   instructor_name: string;
   school_name: string;
   lesson_type_name: string;
+  access_label: string | null;
   school_id: string;
   lesson_type_id: string;
   quantity: number;
@@ -249,6 +250,11 @@ export default async function DirectorFinancesPage({
         select credits.id::text, accesses.id::text as student_access_id, accesses.display_label as student_label,
                coalesce(instructors.public_name, instructors.name) as instructor_name,
                schools.name as school_name, lesson_types.name as lesson_type_name,
+               case
+                 when packages.id is null then null
+                 when packages.sort_order <= 100 then 'Основной доступ'
+                 else 'Дополнительный доступ'
+               end as access_label,
                credits.school_id::text, credits.lesson_type_id::text,
                credits.quantity, coalesce(usages.used_quantity, 0)::integer as used_quantity,
                credits.final_total_amount::integer,
@@ -262,6 +268,8 @@ export default async function DirectorFinancesPage({
         join public.instructors instructors on instructors.id = credits.instructor_id
         join public.schools schools on schools.id = credits.school_id
         join public.lesson_types lesson_types on lesson_types.id = credits.lesson_type_id
+        left join public.student_lesson_packages packages
+          on packages.id = credits.student_lesson_package_id
         left join lateral (
           select count(*)::integer as used_quantity from public.student_prepaid_credit_usages
           where credit_id = credits.id and status = 'active'
@@ -576,6 +584,51 @@ export default async function DirectorFinancesPage({
                     <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-950"><strong>Занятий доступно для записи: {availableStudentUnits}</strong><p className="mt-1 text-xs">Это оплаченные, но ещё не использованные занятия учеников.</p></div>
                   </div>
                   <Link href={currentFinanceHref("instructor-settlements")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">Открыть расчёты с инструкторами</Link>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Последние предоплаты учеников</CardTitle>
+                  <CardDescription>
+                    Кто и когда внёс оплату за выбранный период.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {studentPayments.length === 0 ? (
+                    <p className="text-sm text-zinc-500">
+                      Предоплат за выбранный период нет.
+                    </p>
+                  ) : (
+                    <div className="divide-y rounded-xl border border-zinc-200 bg-white text-sm">
+                      {studentPayments.slice(0, 5).map((payment) => (
+                        <div key={payment.id} className="flex items-start justify-between gap-3 px-3 py-3">
+                          <div className="min-w-0">
+                            <Link
+                              href={`/director/students?view=list&status=all&student=${payment.student_access_id}#student-${payment.student_access_id}`}
+                              className="font-semibold text-zinc-900 underline decoration-zinc-300 underline-offset-4"
+                            >
+                              {payment.student_label}
+                            </Link>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {formatNumericDate(payment.paid_at.slice(0, 10))} · {payment.school_name} · {payment.lesson_type_name}
+                            </p>
+                            {payment.access_label && (
+                              <p className="mt-1 text-xs text-zinc-600">
+                                Оплата за: {payment.access_label}
+                              </p>
+                            )}
+                          </div>
+                          <span className="shrink-0 font-semibold text-emerald-800">
+                            {formatMoney(payment.final_total_amount)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <Link href={currentFinanceHref("student-payments")} className="mt-3 inline-block text-sm font-semibold text-zinc-800 underline underline-offset-4">
+                    Открыть все оплаты учеников
+                  </Link>
                 </CardContent>
               </Card>
             </section>

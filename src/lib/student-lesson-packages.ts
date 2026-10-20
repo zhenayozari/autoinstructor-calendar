@@ -180,6 +180,22 @@ function readCount(value: string | number | bigint | null | undefined) {
   return Number(value ?? 0);
 }
 
+export async function lockStudentAccessForBookingPostgres(accessId: string) {
+  const access = await queryOne<{ id: string }>(
+    `
+      select id
+      from public.student_accesses
+      where id = $1
+      for update
+    `,
+    [accessId],
+  );
+
+  if (!access) {
+    throw new Error("Доступ ученика больше не найден");
+  }
+}
+
 async function countConfirmedBookingsPostgres({
   accessId,
   packageId,

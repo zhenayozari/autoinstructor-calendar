@@ -594,6 +594,7 @@ export default async function DirectorStudentsPage({
                 select credits.id,
                        credits.organization_id,
                        credits.student_access_id,
+                       credits.student_lesson_package_id,
                        credits.instructor_id,
                        credits.school_id,
                        credits.lesson_type_id,

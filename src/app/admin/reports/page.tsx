@@ -227,6 +227,20 @@ type ExamRouteReportItem = {
   amount: number;
 };
 
+type PrepaidCreditReportItem = {
+  id: string;
+  student_access_id: string;
+  student_label: string;
+  school_name: string;
+  lesson_type_name: string;
+  package_label: string | null;
+  quantity: number;
+  used_quantity: number;
+  final_total_amount: number;
+  status: "active" | "cancelled";
+  paid_at: string;
+};
+
 function getMonthBounds(dateValue: string) {
   const [year, month] = dateValue.split("-").map(Number);
   const start = new Date(Date.UTC(year, month - 1, 1));
@@ -568,6 +582,60 @@ function ExamRouteDetails({ items }: { items: ExamRouteReportItem[] }) {
             </span>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PrepaidCreditDetails({ items }: { items: PrepaidCreditReportItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <Card className="border-emerald-200 bg-emerald-50/30">
+      <CardHeader className="pb-3">
+        <CardTitle>Предоплаты учеников</CardTitle>
+        <CardDescription>
+          Здесь видны внесённые предоплаты за выбранный период. Они не
+          изменяют расчёт стоимости и долга по отдельным занятиям.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {items.map((item) => {
+          const availableQuantity =
+            item.status === "active"
+              ? Math.max(item.quantity - item.used_quantity, 0)
+              : 0;
+
+          return (
+            <div
+              key={item.id}
+              className="grid gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+            >
+              <div className="min-w-0">
+                <Link
+                  href={`/admin/students?student=${item.student_access_id}`}
+                  className="font-semibold text-blue-700 hover:underline"
+                >
+                  {item.student_label}
+                </Link>
+                <p className="mt-1 text-xs text-zinc-500">
+                  {formatReportDate(item.paid_at.slice(0, 10))} · {item.school_name} ·{" "}
+                  {item.lesson_type_name}
+                </p>
+                <p className="text-xs text-zinc-500">
+                  {item.package_label ? `Оплата за: ${item.package_label} · ` : ""}
+                  {item.quantity} {item.quantity === 1 ? "занятие" : item.quantity < 5 ? "занятия" : "занятий"}
+                  {" · "}использовано: {item.used_quantity}
+                  {" · "}доступно: {availableQuantity}
+                  {item.status === "cancelled" ? " · остаток закрыт" : ""}
+                </p>
+              </div>
+              <span className="font-semibold text-emerald-900">
+                {formatMoney(item.final_total_amount)}
+              </span>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -1261,6 +1329,87 @@ export default async function AdminReportsPage({
 
   const selectedLessonTypeId =
     params.lessonType && params.lessonType !== "all" ? params.lessonType : "all";
+  const ownerPrepaidCreditConditions = [
+    "credits.organization_id = $1",
+    "credits.instructor_id = $2",
+    "credits.paid_at::date between $3::date and $4::date",
+  ];
+  const ownerPrepaidCreditValues: unknown[] = [
+    membership.organizationId,
+    selectedInstructor?.id ?? null,
+    from,
+    to,
+  ];
+
+  if (selectedSchoolId !== "all") {
+    ownerPrepaidCreditValues.push(selectedSchoolId);
+    ownerPrepaidCreditConditions.push(
+      `credits.school_id = $${ownerPrepaidCreditValues.length}::uuid`,
+    );
+  }
+
+  if (selectedStudentId !== "all") {
+    ownerPrepaidCreditValues.push(selectedStudentId);
+    ownerPrepaidCreditConditions.push(
+      `credits.student_access_id = $${ownerPrepaidCreditValues.length}::uuid`,
+    );
+  }
+
+  if (selectedLessonTypeId !== "all") {
+    ownerPrepaidCreditValues.push(selectedLessonTypeId);
+    ownerPrepaidCreditConditions.push(
+      `credits.lesson_type_id = $${ownerPrepaidCreditValues.length}::uuid`,
+    );
+  }
+
+  if (selectedBookingCategory !== "all") {
+    ownerPrepaidCreditValues.push(selectedBookingCategory);
+    ownerPrepaidCreditConditions.push(
+      `coalesce(packages.booking_category, 'regular') = $${ownerPrepaidCreditValues.length}`,
+    );
+  }
+
+  if (selectedLessonState !== "all") {
+    ownerPrepaidCreditConditions.push("false");
+  }
+
+  const ownerPrepaidCredits =
+    isOwnerInstructorReport && selectedInstructor && selectedPayment !== "unpaid"
+      ? await queryRows<PrepaidCreditReportItem>(
+          `
+            select credits.id::text,
+                   accesses.id::text as student_access_id,
+                   accesses.display_label as student_label,
+                   schools.name as school_name,
+                   lesson_types.name as lesson_type_name,
+                   case
+                     when packages.id is null then null
+                     when packages.sort_order <= 100 then 'Основной доступ'
+                     else 'Дополнительный доступ'
+                   end as package_label,
+                   credits.quantity,
+                   coalesce(usages.used_quantity, 0)::integer as used_quantity,
+                   credits.final_total_amount::integer,
+                   credits.status,
+                   credits.paid_at::text
+            from public.student_prepaid_credits credits
+            join public.student_accesses accesses on accesses.id = credits.student_access_id
+            join public.schools schools on schools.id = credits.school_id
+            join public.lesson_types lesson_types on lesson_types.id = credits.lesson_type_id
+            left join public.student_lesson_packages packages
+              on packages.id = credits.student_lesson_package_id
+            left join lateral (
+              select count(*)::integer as used_quantity
+              from public.student_prepaid_credit_usages usages
+              where usages.credit_id = credits.id
+                and usages.status = 'active'
+            ) usages on true
+            where ${ownerPrepaidCreditConditions.join("\n              and ")}
+            order by credits.paid_at desc, credits.created_at desc
+          `,
+          ownerPrepaidCreditValues,
+        )
+      : [];
   const scheduleDayIds = scheduleDays.map((day) => day.id);
 
   slots =
@@ -1982,6 +2131,8 @@ export default async function AdminReportsPage({
                 tone="amber"
               />
             </div>
+
+            <PrepaidCreditDetails items={ownerPrepaidCredits} />
 
             <ExamRouteDetails items={examRouteItems} />
 

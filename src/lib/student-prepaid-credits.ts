@@ -3,6 +3,7 @@ import { queryOne } from "@/lib/db/postgres";
 type ApplyPrepaidCreditParams = {
   bookingId: string;
   studentAccessId: string;
+  studentLessonPackageId: string | null;
   schoolId: string | null;
   lessonTypeId: string;
   amount: number;
@@ -11,6 +12,7 @@ type ApplyPrepaidCreditParams = {
 export async function applyPrepaidCreditToBooking({
   bookingId,
   studentAccessId,
+  studentLessonPackageId,
   schoolId,
   lessonTypeId,
   amount,
@@ -26,13 +28,24 @@ export async function applyPrepaidCreditToBooking({
           and credits.school_id = $3
           and credits.lesson_type_id = $4
           and credits.status = 'active'
+          and (
+            ($6::uuid is not null and (
+              credits.student_lesson_package_id = $6::uuid
+              or credits.student_lesson_package_id is null
+            ))
+            or ($6::uuid is null and credits.student_lesson_package_id is null)
+          )
           and credits.quantity > (
             select count(*)
             from public.student_prepaid_credit_usages active_usages
             where active_usages.credit_id = credits.id
               and active_usages.status = 'active'
           )
-        order by credits.paid_at, credits.created_at, credits.id
+        order by case
+                   when credits.student_lesson_package_id = $6::uuid then 0
+                   else 1
+                 end,
+                 credits.paid_at, credits.created_at, credits.id
         for update skip locked
         limit 1
       ), inserted_usage as (
@@ -56,7 +69,14 @@ export async function applyPrepaidCreditToBooking({
         and exists (select 1 from inserted_usage)
       returning bookings.id
     `,
-    [bookingId, studentAccessId, schoolId, lessonTypeId, amount],
+    [
+      bookingId,
+      studentAccessId,
+      schoolId,
+      lessonTypeId,
+      amount,
+      studentLessonPackageId,
+    ],
   );
 
   return Boolean(usage);

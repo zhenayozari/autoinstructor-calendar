@@ -1,7 +1,10 @@
 import "server-only";
 
 import { executeQuery, queryOne, queryRows, withTransaction } from "@/lib/db/postgres";
-import { hasAdditionalTotalLessonUnitPostgres } from "@/lib/student-lesson-packages";
+import {
+  hasAdditionalTotalLessonUnitPostgres,
+  lockStudentAccessForBookingPostgres,
+} from "@/lib/student-lesson-packages";
 import type {
   BookingCategory,
   InstructorPayoutAccrualPolicy,
@@ -1133,6 +1136,10 @@ export async function applyOwnerExamRouteToBooking({
 
   if (!context || context.booking_status !== "confirmed") {
     throw new Error("Запись не найдена или уже отменена");
+  }
+
+  if (context.student_access_id) {
+    await lockStudentAccessForBookingPostgres(context.student_access_id);
   }
 
   const currentUnits = await queryOne<{ lesson_units: number }>(

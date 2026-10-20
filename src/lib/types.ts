@@ -169,6 +169,7 @@ export type StudentPrepaidCredit = {
   id: string;
   organization_id: string;
   student_access_id: string;
+  student_lesson_package_id: string | null;
   instructor_id: string;
   school_id: string;
   lesson_type_id: string;

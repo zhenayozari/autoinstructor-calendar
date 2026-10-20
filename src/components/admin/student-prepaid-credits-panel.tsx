@@ -15,6 +15,7 @@ import type {
   LessonType,
   School,
   SchoolLessonTypePrice,
+  StudentLessonPackage,
   StudentPrepaidCredit,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -313,6 +314,20 @@ function getPrice(
   );
 }
 
+function getPackageLabel(
+  packageItem: Pick<
+    StudentLessonPackage,
+    "sort_order" | "school_id" | "booking_category"
+  >,
+  schools: School[],
+) {
+  const school = schools.find((item) => item.id === packageItem.school_id);
+  const accessLabel =
+    packageItem.sort_order <= 100 ? "Основной доступ" : "Дополнительный доступ";
+
+  return `${accessLabel} · ${school?.name ?? "Источник не указан"}`;
+}
+
 function PrepaidCreditForm({
   accessId,
   schoolId: initialSchoolId,
@@ -322,7 +337,9 @@ function PrepaidCreditForm({
   paidAt: initialPaidAt,
   paymentNote: initialPaymentNote,
   creditId,
+  studentLessonPackageId: initialPackageId,
   usedQuantity = 0,
+  packages = [],
   schools,
   lessonTypes,
   prices,
@@ -335,7 +352,9 @@ function PrepaidCreditForm({
   paidAt?: string;
   paymentNote?: string | null;
   creditId?: string;
+  studentLessonPackageId?: string | null;
   usedQuantity?: number;
+  packages?: StudentLessonPackage[];
   schools: School[];
   lessonTypes: LessonType[];
   prices: SchoolLessonTypePrice[];
@@ -345,13 +364,36 @@ function PrepaidCreditForm({
     ? updateStudentPrepaidCreditAction
     : createStudentPrepaidCreditAction;
   const [state, formAction, isPending] = useActionState(action, INITIAL_STATE);
-  const defaultSchoolId = initialSchoolId ?? schools[0]?.id ?? "";
-  const defaultLessonTypeId = initialLessonTypeId ?? lessonTypes[0]?.id ?? "";
-  const initialCalculatedUnitPrice = getPrice(
-    prices,
-    defaultSchoolId,
-    defaultLessonTypeId,
+  const availablePackages = packages.filter(
+    (packageItem) =>
+      packageItem.is_active &&
+      Boolean(packageItem.school_id) &&
+      packageItem.lesson_type_ids.length > 0,
   );
+  const defaultPackageId =
+    initialPackageId ??
+    availablePackages.find((packageItem) => packageItem.sort_order <= 100)?.id ??
+    availablePackages[0]?.id ??
+    "";
+  const [selectedPackageId, setSelectedPackageId] = useState(defaultPackageId);
+  const selectedPackage =
+    availablePackages.find((packageItem) => packageItem.id === selectedPackageId) ??
+    null;
+  const defaultSchoolId =
+    selectedPackage?.school_id ?? initialSchoolId ?? schools[0]?.id ?? "";
+  const allowedLessonTypes = selectedPackage
+    ? lessonTypes.filter((lessonType) =>
+        selectedPackage.lesson_type_ids.includes(lessonType.id),
+      )
+    : lessonTypes;
+  const defaultLessonTypeId =
+    initialLessonTypeId &&
+    allowedLessonTypes.some((lessonType) => lessonType.id === initialLessonTypeId)
+      ? initialLessonTypeId
+      : allowedLessonTypes[0]?.id ?? "";
+  const initialCalculatedUnitPrice =
+    selectedPackage?.custom_price_amount ??
+    getPrice(prices, defaultSchoolId, defaultLessonTypeId);
   const initialCalculatedTotal =
     initialCalculatedUnitPrice !== null
       ? initialCalculatedUnitPrice * (initialQuantity ?? 1)
@@ -366,11 +408,9 @@ function PrepaidCreditForm({
   const [isFinalTotalCustom, setIsFinalTotalCustom] = useState(
     initialFinalTotalAmount !== undefined,
   );
-  const calculatedUnitPrice = getPrice(
-    prices,
-    selectedSchoolId,
-    selectedLessonTypeId,
-  );
+  const calculatedUnitPrice =
+    selectedPackage?.custom_price_amount ??
+    getPrice(prices, selectedSchoolId, selectedLessonTypeId);
   const calculatedTotalAmount = useMemo(() => {
     const parsedQuantity = Number(quantity);
     return calculatedUnitPrice !== null && Number.isInteger(parsedQuantity)
@@ -382,10 +422,13 @@ function PrepaidCreditForm({
     nextSchoolId: string,
     nextLessonTypeId: string,
     nextQuantity: string,
+    nextPackage: StudentLessonPackage | null = selectedPackage,
   ) {
     if (isFinalTotalCustom) return;
 
-    const nextPrice = getPrice(prices, nextSchoolId, nextLessonTypeId);
+    const nextPrice =
+      nextPackage?.custom_price_amount ??
+      getPrice(prices, nextSchoolId, nextLessonTypeId);
     const parsedQuantity = Number(nextQuantity);
     const nextTotal =
       nextPrice !== null && Number.isInteger(parsedQuantity) && parsedQuantity >= 1
@@ -396,6 +439,7 @@ function PrepaidCreditForm({
   }
 
   const canChangeSourceAndType = !isEditing || usedQuantity === 0;
+  const isPackageBound = Boolean(selectedPackage);
 
   return (
     <form action={formAction} className="space-y-3 rounded-xl border bg-zinc-50 p-3">
@@ -407,27 +451,88 @@ function PrepaidCreditForm({
           value={creditId}
         />
       )}
+      {isEditing && initialPackageId && (
+        <input
+          type="hidden"
+          name="student_lesson_package_id"
+          value={initialPackageId}
+        />
+      )}
       <div className="grid gap-3 md:grid-cols-2">
+        {!isEditing && (
+          <div className="space-y-1 md:col-span-2">
+            <Label>Оплата за доступ к занятиям</Label>
+            <select
+              name="student_lesson_package_id"
+              className={selectClassName}
+              value={selectedPackageId}
+              onChange={(event) => {
+                const nextPackageId = event.target.value;
+                const nextPackage =
+                  availablePackages.find((item) => item.id === nextPackageId) ??
+                  null;
+                const nextSchoolId = nextPackage?.school_id ?? "";
+                const nextLessonTypeId = nextPackage?.lesson_type_ids.includes(
+                  selectedLessonTypeId,
+                )
+                  ? selectedLessonTypeId
+                  : nextPackage?.lesson_type_ids[0] ?? "";
+                setSelectedPackageId(nextPackageId);
+                setSelectedSchoolId(nextSchoolId);
+                setSelectedLessonTypeId(nextLessonTypeId);
+                syncCalculatedTotal(
+                  nextSchoolId,
+                  nextLessonTypeId,
+                  quantity,
+                  nextPackage,
+                );
+              }}
+              disabled={isPending || availablePackages.length === 0}
+              required
+            >
+              {availablePackages.map((packageItem) => (
+                <option key={packageItem.id} value={packageItem.id}>
+                  {getPackageLabel(packageItem, schools)}
+                </option>
+              ))}
+            </select>
+            {availablePackages.length === 0 && (
+              <p className="text-xs text-red-700">
+                Для оплаты нужен активный доступ с источником и типом занятия.
+              </p>
+            )}
+          </div>
+        )}
         <div className="space-y-1">
           <Label>Источник</Label>
-          <select
-            name="school_id"
-            className={selectClassName}
-            value={selectedSchoolId}
-            onChange={(event) => {
-              const nextSchoolId = event.target.value;
-              setSelectedSchoolId(nextSchoolId);
-              syncCalculatedTotal(nextSchoolId, selectedLessonTypeId, quantity);
-            }}
-            disabled={!canChangeSourceAndType || isPending}
-            required
-          >
-            {schools.map((school) => (
-              <option key={school.id} value={school.id}>
-                {school.name}
-              </option>
-            ))}
-          </select>
+          {isPackageBound ? (
+            <>
+              <input type="hidden" name="school_id" value={selectedSchoolId} />
+              <div className="flex h-10 items-center rounded-xl border bg-white px-3 text-sm">
+                {schools.find((school) => school.id === selectedSchoolId)?.name ??
+                  "Источник не указан"}
+              </div>
+            </>
+          ) : (
+            <select
+              name="school_id"
+              className={selectClassName}
+              value={selectedSchoolId}
+              onChange={(event) => {
+                const nextSchoolId = event.target.value;
+                setSelectedSchoolId(nextSchoolId);
+                syncCalculatedTotal(nextSchoolId, selectedLessonTypeId, quantity);
+              }}
+              disabled={!canChangeSourceAndType || isPending}
+              required
+            >
+              {schools.map((school) => (
+                <option key={school.id} value={school.id}>
+                  {school.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="space-y-1">
           <Label>Тип занятия</Label>
@@ -443,7 +548,7 @@ function PrepaidCreditForm({
             disabled={!canChangeSourceAndType || isPending}
             required
           >
-            {lessonTypes.map((lessonType) => (
+            {allowedLessonTypes.map((lessonType) => (
               <option key={lessonType.id} value={lessonType.id}>
                 {lessonType.name}
               </option>
@@ -599,6 +704,7 @@ export function StudentPrepaidCreditsPanel({
   accessId,
   accessSchoolId,
   accessLessonTypeIds,
+  packages,
   credits,
   schools,
   lessonTypes,
@@ -608,6 +714,7 @@ export function StudentPrepaidCreditsPanel({
   accessId: string;
   accessSchoolId: string | null;
   accessLessonTypeIds: string[];
+  packages: StudentLessonPackage[];
   credits: StudentPrepaidCredit[];
   schools: School[];
   lessonTypes: LessonType[];
@@ -629,6 +736,9 @@ export function StudentPrepaidCreditsPanel({
           const lessonType = lessonTypes.find(
             (item) => item.id === credit.lesson_type_id,
           );
+          const creditPackage = credit.student_lesson_package_id
+            ? packages.find((item) => item.id === credit.student_lesson_package_id) ?? null
+            : null;
           const remaining = Math.max(credit.quantity - credit.used_quantity, 0);
 
           return (
@@ -646,6 +756,11 @@ export function StudentPrepaidCreditsPanel({
                   <p className="mt-1 text-xs text-zinc-600">
                     Оплата ученика: {formatMoney(credit.final_unit_price)} за занятие · всего {formatMoney(credit.final_total_amount)}
                   </p>
+                  {creditPackage && (
+                    <p className="mt-1 text-xs text-zinc-600">
+                      Оплата за: {getPackageLabel(creditPackage, schools)}
+                    </p>
+                  )}
                   {credit.status === "cancelled" && credit.cancellation_note && (
                     <p className="mt-1 text-xs text-red-700">
                       Причина отмены: {credit.cancellation_note}
@@ -687,7 +802,9 @@ export function StudentPrepaidCreditsPanel({
                       finalTotalAmount={credit.final_total_amount}
                       paidAt={credit.paid_at}
                       paymentNote={credit.payment_note}
+                      studentLessonPackageId={credit.student_lesson_package_id}
                       usedQuantity={credit.used_quantity}
+                      packages={packages}
                       schools={schools}
                       lessonTypes={allowedLessonTypes}
                       prices={prices}
@@ -731,6 +848,7 @@ export function StudentPrepaidCreditsPanel({
           <PrepaidCreditForm
             accessId={accessId}
             schoolId={accessSchoolId ?? undefined}
+            packages={packages}
             schools={schools}
             lessonTypes={allowedLessonTypes}
             prices={prices}
